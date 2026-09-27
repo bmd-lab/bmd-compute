@@ -591,10 +591,24 @@ def test_dispersion_consideration_workflow_statuses_are_stage_local_and_non_muta
         assert already_selected.bmd_compute_support["workflow"]["selected_stage_indices"] == [1]
         assert workflow.to_dict() == before
 
+    # SOC + D3 is an allowed combination on PBE Static, so an SOC-only PBE
+    # Static stage is a supported, not-yet-selected dispersion candidate.
+    soc_static = WorkflowSpec([StageSpec(StageType.STATIC, Theory.PBE, {Modifier.SOC})])
+    soc_static_before = soc_static.to_dict()
+    soc_candidate = consideration_by_id(
+        sns2_structure(),
+        DISPERSION_TWO_DIMENSIONAL_CONNECTIVITY_CONSIDERATION_ID,
+        workflow=soc_static,
+    )
+    assert soc_candidate.selection_state == NOT_SELECTED
+    assert soc_candidate.bmd_compute_support["workflow"]["supported_stage_indices"] == [1]
+    assert soc_candidate.bmd_compute_support["workflow"]["selected_stage_indices"] == []
+    assert soc_static.to_dict() == soc_static_before
+
     for workflow in (
         WorkflowSpec([StageSpec(StageType.STATIC, Theory.HSE06)]),
+        WorkflowSpec([StageSpec(StageType.STATIC, Theory.HSE06, {Modifier.SOC})]),
         WorkflowSpec([StageSpec(StageType.DOS, Theory.PBE)]),
-        WorkflowSpec([StageSpec(StageType.STATIC, Theory.PBE, {Modifier.SOC})]),
     ):
         before = workflow.to_dict()
         unsupported = consideration_by_id(

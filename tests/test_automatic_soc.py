@@ -393,6 +393,10 @@ def test_bi2se3_dos_and_band_apply_soc_to_hse_stages_only(desired_output, termin
     assert soc["automatic_application_state"] == AUTOMATIC_APPLICATION_APPLIED
     rendered = response.template.render(context)
     assert "in the HSE06 Static Energy and HSE06" in rendered
+    assert (
+        "The van der Waals correction has been included automatically in the "
+        "PBE Geometry Optimisation stage."
+    ) in rendered
 
     submission_spec = context["submission_spec"]
     flow_spec = submission_spec["flow_spec"]

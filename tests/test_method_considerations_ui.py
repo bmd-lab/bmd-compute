@@ -292,9 +292,14 @@ def test_sns2_renders_dispersion_consideration_with_structural_trigger():
     assert 'class="step-mark advisory"' in html
     assert "Likely 2-dimensional structure detected" in html
     assert "The van der Waals correction has been included automatically" in html
-    assert "PBE Geometry Optimisation" in html
-    assert "PBE Static Energy" in html
+    # The analysed default Desired Output (Static Energy) has a single PBE
+    # Static stage, so the summary names that stage and no relaxation.
+    assert (
+        "The van der Waals correction has been included automatically in the "
+        "PBE Static Energy stage."
+    ) in html
     block = method_considerations_block(html)
+    assert "PBE Geometry Optimisation" not in block
     assert "Advisory</span>" not in block
     assert "Triggered by" not in block
     assert "Two-dimensional bonded connectivity" not in block

@@ -675,10 +675,12 @@ def _method_consideration_browser_summary(consideration: dict) -> str:
     )
     if consideration_id == DISPERSION_TWO_DIMENSIONAL_CONNECTIVITY_CONSIDERATION_ID:
         if is_applied:
+            stage_phrase, _ = _automatic_application_stage_phrase(consideration)
+            stage_text = stage_phrase or "applicable PBE stages"
             return (
                 "Likely 2-dimensional structure detected. The van der Waals "
-                "correction has been included automatically in the applicable "
-                "PBE stages. Choose Custom workflow to configure this manually."
+                f"correction has been included automatically in the {stage_text}. "
+                "Choose Custom workflow to configure this manually."
             )
         support = _method_consideration_support_phrase(consideration)
         suffix = f" for {support}" if support else ""
