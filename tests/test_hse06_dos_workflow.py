@@ -505,7 +505,6 @@ def test_existing_pbe_dos_preview_and_recommended_recipe_remain_unchanged():
 
 def test_hse06_dos_rejects_unsupported_modifiers():
     unsupported_workflows = (
-        _hse_dos_workflow(modifiers={Modifier.SOC}),
         _hse_dos_workflow(modifiers={Modifier.DFT_U}),
         _hse_dos_workflow(modifiers={Modifier.DISPERSION}),
     )

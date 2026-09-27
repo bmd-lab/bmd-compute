@@ -33,6 +33,12 @@ DISPERSION_CONSIDERATION_ID = "dispersion.two_dimensional_connectivity"
 SOC_CONSIDERATION_ID = "soc.heavy_elements"
 AUTOMATIC_APPLICATION_APPLIED = "applied"
 AUTOMATIC_APPLICATION_ADVISORY = "advisory"
+AUTOMATIC_APPLICATION_NOT_APPLICABLE = "not_applicable"
+SOC_EXCLUDED_STAGE_TYPES = frozenset({StageType.RELAX})
+SOC_NOT_APPLICABLE_REASON = (
+    "BMD Compute keeps geometry optimisation stages non-SOC, and this Desired "
+    "Output contains no stage that receives SOC."
+)
 IMPLEMENTATION_SOURCE = "backend.calculations.default_treatments"
 
 
@@ -80,6 +86,7 @@ class ResolvedDefaultWorkflow:
     advisory_consideration_ids: tuple[str, ...] = field(default_factory=tuple)
     desired_output: str | None = None
     mode: str = "bmd_managed_desired_output"
+    not_applicable_considerations: tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "base_workflow", validate_workflow_spec(self.base_workflow))
@@ -94,6 +101,11 @@ class ResolvedDefaultWorkflow:
             "advisory_consideration_ids",
             tuple(str(item) for item in self.advisory_consideration_ids),
         )
+        object.__setattr__(
+            self,
+            "not_applicable_considerations",
+            tuple(_json_safe_mapping(item) for item in self.not_applicable_considerations),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,6 +118,10 @@ class ResolvedDefaultWorkflow:
                 for treatment in self.applied_treatments
             ],
             "advisory_consideration_ids": list(self.advisory_consideration_ids),
+            "not_applicable_considerations": [
+                dict(item)
+                for item in self.not_applicable_considerations
+            ],
             "source": IMPLEMENTATION_SOURCE,
         }
 
@@ -142,6 +158,20 @@ def resolve_default_treatments(
         if treatment is not None:
             applied.append(treatment)
 
+    not_applicable: list[dict[str, Any]] = []
+    if SOC_CONSIDERATION_ID in consideration_ids:
+        stages, treatment = _apply_soc(stages)
+        if treatment is not None:
+            applied.append(treatment)
+        else:
+            not_applicable.append(
+                {
+                    "consideration_id": SOC_CONSIDERATION_ID,
+                    "modifier": Modifier.SOC.value,
+                    "reason": SOC_NOT_APPLICABLE_REASON,
+                }
+            )
+
     resolved = validate_workflow_spec(
         WorkflowSpec(
             stages=stages,
@@ -150,10 +180,12 @@ def resolve_default_treatments(
         )
     )
     applied_ids = {treatment.consideration_id for treatment in applied}
+    not_applicable_ids = {item["consideration_id"] for item in not_applicable}
     advisory_ids = tuple(
         consideration_id
         for consideration_id in consideration_ids
         if consideration_id not in applied_ids
+        and consideration_id not in not_applicable_ids
     )
     return ResolvedDefaultWorkflow(
         base_workflow=normalized_base,
@@ -161,6 +193,7 @@ def resolve_default_treatments(
         applied_treatments=tuple(applied),
         advisory_consideration_ids=advisory_ids,
         desired_output=desired_output,
+        not_applicable_considerations=tuple(not_applicable),
     )
 
 
@@ -194,12 +227,24 @@ def automatic_default_treatment_policy() -> dict[str, Any]:
                 ],
                 "support_guard": "backend.calculations.registry.validate_stage_spec",
             },
-        ],
-        "advisory_only": [
             {
                 "consideration_id": SOC_CONSIDERATION_ID,
                 "modifier": Modifier.SOC.value,
+                "display_name": modifier_display_name(Modifier.SOC),
+                "trigger_source": "backend.calculations.method_considerations",
+                "application": "every non-relaxation stage in the selected BMD-managed Desired Output workflow",
+                "excluded_stage_types": sorted(
+                    stage_type.value for stage_type in SOC_EXCLUDED_STAGE_TYPES
+                ),
+                "executable": "vasp_ncl",
+                "initial_magnetic_moments": (
+                    "zero vector MAGMOM unless the structure contains an element in "
+                    "the spin method-consideration screen or the stage is Spin Polarised"
+                ),
+                "support_guard": "backend.calculations.registry.validate_stage_spec",
             },
+        ],
+        "advisory_only": [
             {
                 "modifier": Modifier.DFT_U.value,
             },
@@ -255,6 +300,39 @@ def _apply_dispersion(
             consideration_id=DISPERSION_CONSIDERATION_ID,
             modifier=Modifier.DISPERSION,
             display_name=modifier_display_name(Modifier.DISPERSION),
+            stage_indices=tuple(
+                application["stage_index"]
+                for application in stage_applications
+            ),
+            stage_applications=tuple(stage_applications),
+        )
+    return tuple(resolved_stages), treatment
+
+
+def _apply_soc(
+    stages: Iterable[StageSpec],
+) -> tuple[tuple[StageSpec, ...], AppliedDefaultTreatment | None]:
+    resolved_stages: list[StageSpec] = []
+    stage_applications: list[dict[str, Any]] = []
+    for index, stage in enumerate(stages, start=1):
+        if stage.stage_type in SOC_EXCLUDED_STAGE_TYPES:
+            resolved_stages.append(stage)
+            continue
+        resolved = _stage_with_modifier(stage, Modifier.SOC)
+        _validate_automatic_stage(
+            resolved,
+            modifier=Modifier.SOC,
+            consideration_id=SOC_CONSIDERATION_ID,
+        )
+        resolved_stages.append(resolved)
+        stage_applications.append(_stage_application(index, resolved))
+
+    treatment = None
+    if stage_applications:
+        treatment = AppliedDefaultTreatment(
+            consideration_id=SOC_CONSIDERATION_ID,
+            modifier=Modifier.SOC,
+            display_name=modifier_display_name(Modifier.SOC),
             stage_indices=tuple(
                 application["stage_index"]
                 for application in stage_applications
@@ -351,10 +429,13 @@ def _json_safe_value(value):
 __all__ = [
     "AUTOMATIC_APPLICATION_ADVISORY",
     "AUTOMATIC_APPLICATION_APPLIED",
+    "AUTOMATIC_APPLICATION_NOT_APPLICABLE",
     "AppliedDefaultTreatment",
     "DISPERSION_CONSIDERATION_ID",
     "ResolvedDefaultWorkflow",
     "SOC_CONSIDERATION_ID",
+    "SOC_EXCLUDED_STAGE_TYPES",
+    "SOC_NOT_APPLICABLE_REASON",
     "SPIN_CONSIDERATION_ID",
     "automatic_default_treatment_policy",
     "resolve_default_treatments",

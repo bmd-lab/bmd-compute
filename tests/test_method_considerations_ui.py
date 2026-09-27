@@ -214,7 +214,10 @@ def test_real_style_bi2se3_renders_independent_dispersion_and_soc_considerations
     assert "van der Waals correction applied" in html
     assert "Likely 2-dimensional structure detected" in html
     assert "The van der Waals correction has been included automatically" in html
-    assert "Bi detected. Suggested to activate the Spin-Orbit Coupling (SOC)" in html
+    assert soc["automatic_application_state"] == "applied"
+    assert soc["browser_display_name"] == "Spin-Orbit Coupling (SOC) applied"
+    assert "Bi detected. Spin-orbit coupling (SOC) has been included automatically in the PBE Static Energy stage, which runs with vasp_ncl." in html
+    assert "Suggested to activate the Spin-Orbit Coupling" not in html
     block = method_considerations_block(html)
     assert "Two-dimensional bonded connectivity" not in block
     assert "heavy p-block" not in block
@@ -228,7 +231,9 @@ def test_pt_containing_structure_renders_soc_consideration_with_5d_trigger():
 
     assert consideration["trigger_elements"] == ["Pt"]
     assert consideration["trigger_classes"] == ["5d_transition_metals"]
-    assert "Pt detected. Suggested to activate the Spin-Orbit Coupling (SOC)" in html
+    assert consideration["automatic_application_state"] == "applied"
+    assert "Pt detected. Spin-orbit coupling (SOC) has been included automatically in the PBE Static Energy stage, which runs with vasp_ncl." in html
+    assert "Suggested to activate the Spin-Orbit Coupling" not in html
     assert "5d transition metal" not in method_considerations_block(html)
     assert "Se \u2014" not in html
 
@@ -246,7 +251,7 @@ def test_multi_trigger_bi_pt_se_renders_one_consideration_and_actual_triggers_on
         "heavy_p_block",
     ]
     assert html.count('data-method-consideration-id="soc.heavy_elements"') == 1
-    assert "Bi and Pt detected. Suggested to activate the Spin-Orbit Coupling (SOC)" in html
+    assert "Bi and Pt detected. Spin-orbit coupling (SOC) has been included automatically in the PBE Static Energy stage, which runs with vasp_ncl." in html
     block = method_considerations_block(html)
     assert "heavy p-block" not in block
     assert "5d transition metal" not in block
@@ -357,7 +362,8 @@ def test_eu_and_ir_render_independent_spin_and_soc_cards():
         assert "Spin Polarisation" in html
         assert "Spin-Orbit Coupling (SOC)" in html
         assert f"{symbol} detected. Spin Polarisation has been included automatically" in html
-        assert f"{symbol} detected. Suggested to activate the Spin-Orbit Coupling (SOC)" in html
+        assert f"{symbol} detected. Spin-orbit coupling (SOC) has been included automatically in the PBE Static Energy stage, which runs with vasp_ncl." in html
+        assert "Suggested to activate the Spin-Orbit Coupling" not in html
         block = method_considerations_block(html)
         assert spin_label not in block
         assert soc_label not in block

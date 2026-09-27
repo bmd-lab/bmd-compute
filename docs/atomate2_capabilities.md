@@ -166,7 +166,7 @@ BMD Compute does not silently inherit DFT+U into ordinary PBE. If DFT+U is reque
 
 ### Spin-Orbit Coupling
 
-Status: implemented narrowly for reviewed PBE Static Energy stages.
+Status: implemented for PBE and HSE06 Static Energy stages and HSE06 DOS and Band Structure stages. In BMD-managed Desired Output workflows SOC is applied automatically to every non-relaxation stage when the heavy-element SOC policy triggers; Custom workflows remain manual.
 
 Validated examples include:
 
@@ -183,9 +183,11 @@ ISYM = 0
 SAXIS = 0 0 1
 ISPIN omitted
 LELF omitted
-vector MAGMOM
-vasp_ncl executable
+vector MAGMOM (zero unless the structure is in the spin screen or the stage is Spin Polarised)
+vasp_ncl executable, Custodian auto_gamma disabled
 ```
+
+HSE06 Band Structure + SOC keeps `HSEBSSetGenerator`'s zero-weight high-symmetry path and `reciprocal_density = 64`, but replaces its symmetry-reduced weighted SCF points with every point of the same mesh (equal weights) because `ISYM = 0` makes VASP use the listed points as the complete sampling. The expansion is checked against the generator's own reduced mesh and refuses to proceed on any mismatch. HSE06 DOS + SOC keeps the automatic uniform mesh.
 
 ## Deliberately Unsupported Or Unvalidated
 
@@ -195,17 +197,11 @@ Status: deliberately unsupported.
 
 No reviewed BMD Compute HSE06 DOS implementation is enabled. Do not infer support from HSE06 Static or HSE06 Band Structure.
 
-### HSE06 + SOC
+### SOC Relaxation, PBE SOC DOS, PBE SOC Band Structure
 
 Status: deliberately unsupported.
 
-The current SOC policy is reviewed for PBE Static Energy stages, not hybrid-functional non-collinear calculations.
-
-### SOC Relaxation, SOC DOS, SOC Band Structure
-
-Status: deliberately unsupported.
-
-These require separate scientific review before being exposed.
+These require separate scientific review before being exposed. PBE DOS and Band Structure restart from a fixed charge density, and a SOC precursor cannot feed a non-SOC fixed-density stage.
 
 ### r2SCAN
 

@@ -41,11 +41,11 @@ Supported scientific controls include:
 - HSE06 for reviewed stages and stage-first workflows
 - Spin Polarised calculations where enabled by the stage registry
 - explicit DFT+U, only when the selected input set has reviewed U values
-- SOC for reviewed Static Energy stages, including PBE and HSE06, and compatible static-to-SOC workflows
+- SOC for PBE and HSE06 Static Energy stages and HSE06 DOS and Band Structure stages
 
 Validated or specifically reviewed examples include PBE Static + SOC on Si, PBE + DFT+U Static -> PBE + DFT+U + SOC Static on Fe2O3, and HSE06 Band Structure through the stage-first HSE static precursor path.
 
-Deliberately unavailable or unreviewed combinations remain blocked by validation. Examples include r2SCAN, Dielectric, GW, general SOC relaxation, and arbitrary free-form INCAR editing.
+Deliberately unavailable or unreviewed combinations remain blocked by validation. Examples include r2SCAN, Dielectric, GW, general SOC relaxation, PBE DOS/Band Structure + SOC, and arbitrary free-form INCAR editing.
 
 ## Scientific Policy Notes
 
@@ -58,7 +58,11 @@ Important current policies:
 - Static/final electronic stages use the Burton Lab final policy, including ENCUT 620 eV where applicable.
 - HSE06 policy is stage-specific: relax uses `PRECFOCK = Fast`, static uses `PRECFOCK = Accurate`, and HSE06 band structure uses the reviewed atomate2 HSE band path.
 - DFT+U is explicit. BMD Compute does not silently inherit Hubbard U into plain PBE calculations.
-- SOC/non-collinear stages route to `vasp_ncl`, suppress incompatible `LELF`, omit `ISPIN`, and preserve vector `MAGMOM` initialization.
+- SOC/non-collinear stages route to `vasp_ncl` (Custodian `auto_gamma` is disabled for them so the command cannot be swapped for `vasp_gam`), keep `ISYM = 0`, suppress incompatible `LELF`, and omit `ISPIN`.
+- SOC starting moments: vector `MAGMOM` keeps the pymatgen/Materials Project starting moments when the structure contains an element in the spin method-consideration screen, or when the stage is explicitly Spin Polarised; otherwise SOC starts from zero vector moments.
+- In the standard Desired Output workflows SOC is BMD methodology, not advice: when the heavy-element SOC policy triggers, SOC is applied to every non-relaxation stage (PBE Static for Static Energy; HSE06 Static and HSE06 DOS or Band Structure for DOS and Band Structure). Relaxations stay non-SOC. Custom workflows are never changed automatically.
+- HSE06 Band Structure + SOC keeps the atomate2 zero-weight high-symmetry path and `reciprocal_density = 64`, but replaces pymatgen's symmetry-reduced weighted SCF points with every point of the same mesh, because `ISYM = 0` makes VASP treat the listed points as the complete sampling. Non-SOC HSE06 Band Structure is unchanged.
+- Stages that restart from the previous stage's fixed charge density (`ICHARG = 11`: PBE DOS and PBE Band Structure) must match that stage's SOC setting.
 - NCORE is an execution-resource policy, not a theory policy. Automatic NCORE is stage-specific and currently applies to Relax, Static, and DOS stages; Band Structure omits automatic NCORE pending separate benchmarking.
 
 ## Operational Safety

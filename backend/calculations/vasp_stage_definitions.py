@@ -411,6 +411,32 @@ def apply_stage_restart_incar_settings(
     return settings
 
 
+def stage_restart_incar_amendments(
+    stage_type: StageType | str,
+    theory: Theory | str | None = None,
+) -> dict:
+    """Return the restart INCAR amendments for a stage type and theory."""
+
+    definition = stage_definition(stage_type)
+    normalized_theory = Theory.from_value(theory) if theory is not None else None
+    override = _theory_stage_override_for(definition.stage_type, normalized_theory)
+    policy = (
+        override.get("restart_policy", definition.restart_policy)
+        if override is not None
+        else definition.restart_policy
+    )
+    return _copy_mapping(policy["incar_amendments"])
+
+
+def stage_reads_previous_charge_density(
+    stage_type: StageType | str,
+    theory: Theory | str | None = None,
+) -> bool:
+    """Return whether the stage restarts from the previous stage's fixed CHGCAR."""
+
+    return stage_restart_incar_amendments(stage_type, theory).get("ICHARG") == 11
+
+
 def apply_hse_dos_base_incar_settings(
     user_incar: Mapping[str, Any] | None,
 ) -> dict:

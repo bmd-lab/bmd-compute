@@ -141,7 +141,6 @@ def test_dispersion_composes_with_spin_dft_u_and_gamma_only():
 def test_unsupported_dispersion_combinations_fail_explicitly():
     unsupported_workflows = [
         WorkflowSpec([StageSpec(StageType.STATIC, Theory.HSE06, {Modifier.DISPERSION})]),
-        WorkflowSpec([StageSpec(StageType.STATIC, Theory.PBE, {Modifier.DISPERSION, Modifier.SOC})]),
         WorkflowSpec([StageSpec(StageType.DOS, Theory.PBE, {Modifier.DISPERSION})]),
         WorkflowSpec([StageSpec(StageType.BAND_STRUCTURE, Theory.PBE, {Modifier.DISPERSION})]),
         WorkflowSpec([StageSpec(StageType.STATIC, Theory.PBE, options=dispersion_option_payload("dftd3"))]),
@@ -154,10 +153,6 @@ def test_unsupported_dispersion_combinations_fail_explicitly():
 
     with pytest.raises(CalculationValidationError) as excinfo:
         validate_calculation_spec(CalculationSpec(Purpose.STATIC, Theory.HSE06, {Modifier.DISPERSION}))
-    assert "van der Waals correction" in excinfo.value.message
-
-    with pytest.raises(CalculationValidationError) as excinfo:
-        validate_calculation_spec(CalculationSpec(Purpose.STATIC, Theory.PBE, {Modifier.DISPERSION, Modifier.SOC}))
     assert "van der Waals correction" in excinfo.value.message
 
     with pytest.raises(CalculationValidationError) as excinfo:
@@ -251,7 +246,7 @@ def test_dispersion_policy_is_exposed_in_capability_contract():
     assert policy["phase_1_support"] == {
         "theories": ["pbe"],
         "stage_types": ["relax", "static"],
-        "blocked_with_modifiers": ["soc"],
+        "blocked_with_modifiers": [],
         "blocked_terminal_stage_types": ["dos", "band_structure"],
     }
     assert policy["methods"] == [

@@ -15,6 +15,9 @@ from backend.calculations.dispersion import (
     DISPERSION_OPTION_KEY,
     dispersion_method_from_options,
 )
+from backend.calculations.vasp_stage_definitions import (
+    stage_reads_previous_charge_density,
+)
 from backend.calculations.theory_policy import (
     CalculationStage,
     theory_default_potcar_functional,
@@ -64,6 +67,13 @@ _HSE06_STATIC_MODIFIERS = (
     Modifier.GAMMA_ONLY,
 )
 
+_HSE06_DOS_MODIFIERS = _HSE06_STATIC_MODIFIERS
+
+_HSE06_BAND_STRUCTURE_MODIFIERS = (
+    Modifier.SPIN_POLARIZED,
+    Modifier.SOC,
+)
+
 
 def _modifier_subsets(
     modifiers: tuple[Modifier, ...],
@@ -82,8 +92,6 @@ def _build_supported_compatibility_workflows() -> dict[
     supported: dict[tuple[Purpose, Theory, frozenset[Modifier]], str] = {}
 
     for modifiers in _modifier_subsets(_PBE_STATIC_MODIFIERS):
-        if Modifier.SOC in modifiers and Modifier.DISPERSION in modifiers:
-            continue
         supported[(Purpose.STATIC, Theory.PBE, modifiers)] = "static"
 
     for modifiers in _modifier_subsets(_PBE_RELAX_STATIC_MODIFIERS):
@@ -216,7 +224,8 @@ _MODIFIER_DISPLAY_NAMES = {
 _UNIMPLEMENTED_TOOLTIP = "Coming soon"
 _MODIFIER_TOOLTIPS = {
     Modifier.SOC: (
-        "SOC is available for reviewed PBE Static Energy stages and runs with vasp_ncl."
+        "SOC is available for PBE and HSE06 Static Energy stages and HSE06 "
+        "Density of States and Band Structure stages, and runs with vasp_ncl."
     ),
     Modifier.DFT_U: "DFT+U is applied only when explicitly selected.",
     Modifier.DISPERSION: "van der Waals correction for PBE Geometry Optimisation and Static Energy stages.",
@@ -461,6 +470,7 @@ def validate_workflow_spec(workflow: WorkflowSpec) -> WorkflowSpec:
         )
 
     _validate_dispersion_workflow_consistency(normalized)
+    _validate_fixed_charge_density_soc_consistency(normalized)
 
     for index, stage in enumerate(normalized.stages):
         stage_number = index + 1
@@ -493,6 +503,40 @@ def validate_workflow_spec(workflow: WorkflowSpec) -> WorkflowSpec:
             )
 
     return normalized
+
+
+def _validate_fixed_charge_density_soc_consistency(workflow: WorkflowSpec) -> None:
+    # A stage that restarts from the previous stage's fixed charge density
+    # (ICHARG=11) reads that CHGCAR as-is. A collinear CHGCAR and a
+    # non-collinear (SOC) CHGCAR are different objects, so producer and
+    # consumer must agree on SOC. Stages that only inherit the structure are
+    # unaffected.
+    for index, (previous_stage, current_stage) in enumerate(
+        zip(workflow.stages, workflow.stages[1:]),
+        start=2,
+    ):
+        if not stage_reads_previous_charge_density(
+            current_stage.stage_type,
+            current_stage.theory,
+        ):
+            continue
+        previous_soc = Modifier.SOC in previous_stage.modifiers
+        current_soc = Modifier.SOC in current_stage.modifiers
+        if previous_soc == current_soc:
+            continue
+        producer = "uses" if previous_soc else "does not use"
+        consumer = "uses" if current_soc else "does not use"
+        raise CalculationValidationError(
+            (
+                f"{stage_display_name(current_stage)} (stage {index}) restarts from "
+                f"the fixed charge density of stage {index - 1}, which {producer} "
+                f"Spin-Orbit Coupling (SOC), but stage {index} {consumer} SOC."
+            ),
+            suggestion=(
+                "Use the same SOC setting on both stages, or add a Static Energy "
+                "stage with the matching SOC setting immediately before this stage."
+            ),
+        )
 
 
 def _analysis_stage_accepts_precursor(
@@ -794,11 +838,6 @@ def _validate_dispersion_stage_support(stage: StageSpec) -> None:
             "van der Waals correction is currently available for PBE Geometry Optimisation and Static Energy stages only.",
             suggestion="Use PBE for this van der Waals-corrected stage, or remove van der Waals correction.",
         )
-    if Modifier.SOC in stage.modifiers:
-        raise CalculationValidationError(
-            "van der Waals correction is not available together with Spin-Orbit Coupling (SOC) yet.",
-            suggestion="Remove either van der Waals correction or SOC for this stage.",
-        )
     if stage.stage_type not in {StageType.RELAX, StageType.STATIC}:
         raise CalculationValidationError(
             "van der Waals correction is applied only to PBE Geometry Optimisation and Static Energy stages in Phase 1.",
@@ -855,9 +894,11 @@ def _supported_modifiers_for_stage(
 
     if theory is Theory.HSE06:
         if stage_type is StageType.BAND_STRUCTURE:
-            return frozenset({Modifier.SPIN_POLARIZED})
+            return frozenset(_HSE06_BAND_STRUCTURE_MODIFIERS)
         if stage_type is StageType.STATIC:
             return frozenset(_HSE06_STATIC_MODIFIERS)
+        if stage_type is StageType.DOS:
+            return frozenset(_HSE06_DOS_MODIFIERS)
         return frozenset(_HSE06_SINGLE_STAGE_MODIFIERS)
 
     return frozenset()
@@ -1026,13 +1067,6 @@ def _unsupported_combination_error(
         return CalculationValidationError(
             f"{theory_label} is not available in BMD Compute yet. Combination: {combination}.",
             suggestion="Choose PBE for this calculation.",
-        )
-
-    if Modifier.DISPERSION in modifiers and Modifier.SOC in modifiers:
-        return CalculationValidationError(
-            f"{purpose_label} with {theory_label} is not available with van der Waals correction and Spin-Orbit Coupling (SOC). "
-            f"Combination: {combination}.",
-            suggestion="Remove either van der Waals correction or SOC for this calculation.",
         )
 
     if purpose not in supported_purposes:

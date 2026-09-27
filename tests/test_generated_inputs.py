@@ -46,10 +46,25 @@ def incar_values(incar_text, key):
     return None
 
 
-def magmom_component_count(incar_text):
+def magmom_components(incar_text):
     magmom = incar_values(incar_text, "MAGMOM")
     assert magmom is not None
-    return len(magmom.split())
+    components = []
+    for token in magmom.split():
+        if "*" in token:
+            count, value = token.split("*", 1)
+            components.extend([float(value)] * int(count))
+        else:
+            components.append(float(token))
+    return components
+
+
+def magmom_component_count(incar_text):
+    return len(magmom_components(incar_text))
+
+
+def without_incar_key(incar_text, key):
+    return [line for line in incar_text.splitlines() if not line.startswith(f"{key} = ")]
 
 
 def workflow_spec_json(stage_type, *, theory="pbe", modifiers=None, recipe=None):
@@ -187,7 +202,8 @@ assert "ISYM = 0" in soc_static_preview["incar"]
 assert "GGA_COMPAT = False" in soc_static_preview["incar"]
 assert "LELF =" not in soc_static_preview["incar"]
 assert "SAXIS = 0 0 1" in soc_static_preview["incar"]
-assert "MAGMOM = 0.0 0.0 0.6 0.0 0.0 0.6" in soc_static_preview["incar"]
+# Non-magnetic SOC (no Spin Polarised) starts from zero vector moments.
+assert magmom_components(soc_static_preview["incar"]) == [0.0] * (3 * len(structure))
 assert "NCORE = 8" in soc_static_preview["incar"]
 assert "LWAVE = False" in soc_static_preview["incar"]
 assert magmom_component_count(soc_static_preview["incar"]) == 3 * len(structure)
@@ -215,7 +231,7 @@ assert "LELF =" not in hse_soc_static_preview["incar"]
 assert "ISYM = 0" in hse_soc_static_preview["incar"]
 assert "GGA_COMPAT = False" in hse_soc_static_preview["incar"]
 assert "SAXIS = 0 0 1" in hse_soc_static_preview["incar"]
-assert "MAGMOM = 0.0 0.0 0.6 0.0 0.0 0.6" in hse_soc_static_preview["incar"]
+assert magmom_components(hse_soc_static_preview["incar"]) == [0.0] * (3 * len(structure))
 assert "NCORE = 8" in hse_soc_static_preview["incar"]
 assert "LWAVE = False" in hse_soc_static_preview["incar"]
 assert magmom_component_count(hse_soc_static_preview["incar"]) == 3 * len(structure)
@@ -230,7 +246,13 @@ hse_spin_soc_static_preview = preview_generated_inputs(
     potcar_functional="PBE_64",
 )
 assert hse_spin_soc_static_preview["vasp_executable"] == "vasp_ncl"
-assert hse_spin_soc_static_preview["incar"] == hse_soc_static_preview["incar"]
+# Spin Polarised + SOC keeps the magnetic defaults along SAXIS; nothing else changes.
+assert magmom_components(hse_spin_soc_static_preview["incar"]) == [0.0, 0.0, 0.6] * len(structure)
+assert "ISPIN =" not in hse_spin_soc_static_preview["incar"]
+assert without_incar_key(hse_spin_soc_static_preview["incar"], "MAGMOM") == without_incar_key(
+    hse_soc_static_preview["incar"],
+    "MAGMOM",
+)
 
 hse_soc_workflow = WorkflowSpec(
     [StageSpec(StageType.STATIC, Theory.HSE06, {Modifier.SOC})],
@@ -276,7 +298,7 @@ assert "# VASP executable - vasp_ncl" in static_soc_section
 assert "LWAVE = False" in static_soc_section
 assert "LSORBIT = True" in static_soc_section
 assert "ISPIN =" not in static_soc_section
-assert "MAGMOM = 0.0 0.0 0.6 0.0 0.0 0.6" in static_soc_section
+assert magmom_components(static_soc_section) == [0.0] * (3 * len(structure))
 assert workflow_stage_artifact_policies(static_to_soc_workflow) == (
     {"write_wavecar": False, "copy_from_previous": ()},
     {"write_wavecar": False, "copy_from_previous": ()},
@@ -672,7 +694,7 @@ assert "LSORBIT = True" in soc_response.context["generated_inputs"]["incar"]
 assert "ISPIN =" not in soc_response.context["generated_inputs"]["incar"]
 assert "GGA_COMPAT = False" in soc_response.context["generated_inputs"]["incar"]
 assert "LELF =" not in soc_response.context["generated_inputs"]["incar"]
-assert "MAGMOM = 0.0 0.0 0.6 0.0 0.0 0.6" in soc_response.context["generated_inputs"]["incar"]
+assert magmom_components(soc_response.context["generated_inputs"]["incar"]) == [0.0] * 6
 
 gamma_response = build_workflow(
     request,

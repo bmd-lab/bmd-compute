@@ -278,14 +278,14 @@ for invalid_workflow in (
     ),
     WorkflowSpec(
         [
-            StageSpec(StageType.STATIC, Theory.HSE06),
-            StageSpec(StageType.DOS, Theory.HSE06, {Modifier.SOC}),
+            StageSpec(StageType.STATIC, Theory.PBE, {Modifier.SOC}),
+            StageSpec(StageType.DOS, Theory.PBE),
         ]
     ),
     WorkflowSpec(
         [
-            StageSpec(StageType.STATIC, Theory.HSE06),
-            StageSpec(StageType.BAND_STRUCTURE, Theory.HSE06, {Modifier.SOC}),
+            StageSpec(StageType.STATIC, Theory.PBE, {Modifier.SOC}),
+            StageSpec(StageType.BAND_STRUCTURE, Theory.PBE),
         ]
     ),
     WorkflowSpec([StageSpec(StageType.DOS, Theory.PBE)]),

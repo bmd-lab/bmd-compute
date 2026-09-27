@@ -362,8 +362,20 @@ def test_heavy_element_detection_produces_single_conservative_soc_consideration(
     assert consideration.trigger_elements == ("Bi",)
     assert consideration.trigger_classes == ("heavy_p_block",)
     assert consideration.selection_state == WORKFLOW_NOT_PROVIDED
-    assert consideration.applicable_stage_types == ("static",)
+    assert consideration.applicable_stage_types == ("band_structure", "dos", "static")
     assert consideration.bmd_compute_support["supported_stage_capabilities"] == [
+        {
+            "stage_type": "band_structure",
+            "stage_label": "Band Structure",
+            "theory": "hse06",
+            "theory_label": "HSE06",
+        },
+        {
+            "stage_type": "dos",
+            "stage_label": "Density of States",
+            "theory": "hse06",
+            "theory_label": "HSE06",
+        },
         {
             "stage_type": "static",
             "stage_label": "Static Energy",
