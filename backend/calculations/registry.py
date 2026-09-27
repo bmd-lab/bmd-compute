@@ -16,6 +16,7 @@ from backend.calculations.dispersion import (
     dispersion_method_from_options,
 )
 from backend.calculations.vasp_stage_definitions import (
+    stage_inherits_previous_band_count,
     stage_reads_previous_charge_density,
 )
 from backend.calculations.theory_policy import (
@@ -470,7 +471,7 @@ def validate_workflow_spec(workflow: WorkflowSpec) -> WorkflowSpec:
         )
 
     _validate_dispersion_workflow_consistency(normalized)
-    _validate_fixed_charge_density_soc_consistency(normalized)
+    _validate_previous_stage_soc_consistency(normalized)
 
     for index, stage in enumerate(normalized.stages):
         stage_number = index + 1
@@ -505,20 +506,30 @@ def validate_workflow_spec(workflow: WorkflowSpec) -> WorkflowSpec:
     return normalized
 
 
-def _validate_fixed_charge_density_soc_consistency(workflow: WorkflowSpec) -> None:
-    # A stage that restarts from the previous stage's fixed charge density
-    # (ICHARG=11) reads that CHGCAR as-is. A collinear CHGCAR and a
-    # non-collinear (SOC) CHGCAR are different objects, so producer and
-    # consumer must agree on SOC. Stages that only inherit the structure are
-    # unaffected.
+def _validate_previous_stage_soc_consistency(workflow: WorkflowSpec) -> None:
+    # Two consumers of previous-stage electronic data must agree with their
+    # producer on SOC:
+    # - a stage that restarts from the previous fixed charge density
+    #   (ICHARG=11) reads that CHGCAR as-is, and a collinear and a
+    #   non-collinear (SOC) CHGCAR are different objects;
+    # - a stage whose atomate2 generator sizes NBANDS from the previous
+    #   vasprun.xml (NonSCF and HSE06 DOS/Band Structure) would get roughly
+    #   half the bands a non-collinear run needs, or twice what a collinear run
+    #   needs, when SOC differs.
+    # Stages that only inherit the structure are unaffected.
     for index, (previous_stage, current_stage) in enumerate(
         zip(workflow.stages, workflow.stages[1:]),
         start=2,
     ):
-        if not stage_reads_previous_charge_density(
+        reads_charge_density = stage_reads_previous_charge_density(
             current_stage.stage_type,
             current_stage.theory,
-        ):
+        )
+        inherits_band_count = stage_inherits_previous_band_count(
+            current_stage.stage_type,
+            current_stage.theory,
+        )
+        if not reads_charge_density and not inherits_band_count:
             continue
         previous_soc = Modifier.SOC in previous_stage.modifiers
         current_soc = Modifier.SOC in current_stage.modifiers
@@ -526,11 +537,16 @@ def _validate_fixed_charge_density_soc_consistency(workflow: WorkflowSpec) -> No
             continue
         producer = "uses" if previous_soc else "does not use"
         consumer = "uses" if current_soc else "does not use"
+        dependency = (
+            f"restarts from the fixed charge density of stage {index - 1}"
+            if reads_charge_density
+            else f"takes its band count (NBANDS) from stage {index - 1}"
+        )
         raise CalculationValidationError(
             (
-                f"{stage_display_name(current_stage)} (stage {index}) restarts from "
-                f"the fixed charge density of stage {index - 1}, which {producer} "
-                f"Spin-Orbit Coupling (SOC), but stage {index} {consumer} SOC."
+                f"{stage_display_name(current_stage)} (stage {index}) {dependency}, "
+                f"which {producer} Spin-Orbit Coupling (SOC), but stage {index} "
+                f"{consumer} SOC."
             ),
             suggestion=(
                 "Use the same SOC setting on both stages, or add a Static Energy "

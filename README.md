@@ -62,7 +62,7 @@ Important current policies:
 - SOC starting moments: vector `MAGMOM` keeps the pymatgen/Materials Project starting moments when the structure contains an element in the spin method-consideration screen, or when the stage is explicitly Spin Polarised; otherwise SOC starts from zero vector moments.
 - In the standard Desired Output workflows SOC is BMD methodology, not advice: when the heavy-element SOC policy triggers, SOC is applied to every non-relaxation stage (PBE Static for Static Energy; HSE06 Static and HSE06 DOS or Band Structure for DOS and Band Structure). Relaxations stay non-SOC. Custom workflows are never changed automatically.
 - HSE06 Band Structure + SOC keeps the atomate2 zero-weight high-symmetry path and `reciprocal_density = 64`, but replaces pymatgen's symmetry-reduced weighted SCF points with every point of the same mesh, because `ISYM = 0` makes VASP treat the listed points as the complete sampling. Non-SOC HSE06 Band Structure is unchanged.
-- Stages that restart from the previous stage's fixed charge density (`ICHARG = 11`: PBE DOS and PBE Band Structure) must match that stage's SOC setting.
+- Stages that consume the previous stage's electronic data must match its SOC setting: PBE DOS and Band Structure restart from the fixed charge density (`ICHARG = 11`), and PBE and HSE06 DOS/Band Structure size `NBANDS` from the previous run. HSE06 DOS/Band Structure do not read the copied static CHGCAR (no `ICHARG`/`ISTART`, no WAVECAR carried forward).
 - NCORE is an execution-resource policy, not a theory policy. Automatic NCORE is stage-specific and currently applies to Relax, Static, and DOS stages; Band Structure omits automatic NCORE pending separate benchmarking.
 
 ## Operational Safety

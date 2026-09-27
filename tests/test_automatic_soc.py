@@ -29,12 +29,17 @@ from backend.calculations.registry import (
     desired_output_workflow_spec,
     validate_workflow_spec,
 )
-from backend.calculations.vasp_stage_definitions import stage_reads_previous_charge_density
+from backend.calculations.vasp_stage_definitions import (
+    stage_inherits_previous_band_count,
+    stage_reads_previous_charge_density,
+)
 from backend.generated_inputs import preview_generated_inputs
 from backend.parser import parse_structure, structure_from_spec
 from backend.workflows import (
     build_atomate2_flow_from_spec,
     build_band_structure_input_set_generator,
+    build_dos_input_set_generator,
+    workflow_stage_artifact_policies,
     run_vasp_kwargs_for_modifiers,
     vasp_job_kwargs_for_modifiers,
 )
@@ -664,17 +669,109 @@ def test_soc_charge_density_cannot_feed_a_non_soc_icharg11_stage(terminal):
                 StageSpec(StageType.DOS, Theory.PBE),
             ]
         ),
-        # HSE06 analysis stages are self-consistent and only inherit the structure.
-        WorkflowSpec(
-            [StageSpec(StageType.STATIC, Theory.HSE06), StageSpec(StageType.DOS, Theory.HSE06, {Modifier.SOC})]
-        ),
+        # Matching SOC across HSE06 Static -> HSE06 DOS/Band is the standard chain.
         WorkflowSpec(
             [
                 StageSpec(StageType.STATIC, Theory.HSE06, {Modifier.SOC}),
-                StageSpec(StageType.BAND_STRUCTURE, Theory.HSE06),
+                StageSpec(StageType.DOS, Theory.HSE06, {Modifier.SOC}),
             ]
+        ),
+        WorkflowSpec(
+            [StageSpec(StageType.STATIC, Theory.HSE06), StageSpec(StageType.BAND_STRUCTURE, Theory.HSE06)]
         ),
     ],
 )
 def test_valid_custom_chains_remain_allowed(workflow):
     validate_workflow_spec(workflow)
+
+
+def test_only_analysis_generators_inherit_the_previous_band_count():
+    # NonSCFSetGenerator and HSEBSSetGenerator size NBANDS from the previous
+    # vasprun.xml (NBANDS * nbands_factor) when given a previous directory.
+    for theory in (Theory.PBE, Theory.HSE06):
+        assert stage_inherits_previous_band_count(StageType.DOS, theory)
+        assert stage_inherits_previous_band_count(StageType.BAND_STRUCTURE, theory)
+        assert not stage_inherits_previous_band_count(StageType.STATIC, theory)
+        assert not stage_inherits_previous_band_count(StageType.RELAX, theory)
+
+
+@pytest.mark.parametrize("terminal", [StageType.DOS, StageType.BAND_STRUCTURE])
+@pytest.mark.parametrize(("static_soc", "terminal_soc"), [(False, True), (True, False)])
+def test_hse_analysis_stage_cannot_inherit_nbands_across_a_soc_change(terminal, static_soc, terminal_soc):
+    workflow = WorkflowSpec(
+        [
+            StageSpec(StageType.STATIC, Theory.HSE06, {Modifier.SOC} if static_soc else ()),
+            StageSpec(terminal, Theory.HSE06, {Modifier.SOC} if terminal_soc else ()),
+        ],
+        recipe="custom",
+    )
+    with pytest.raises(CalculationValidationError) as excinfo:
+        validate_workflow_spec(workflow)
+    assert "band count (NBANDS)" in excinfo.value.message
+    assert "Spin-Orbit Coupling (SOC)" in excinfo.value.message
+
+
+# --- HSE06 DOS + SOC k-points (production-critical assumption) -------------------
+
+
+@pytest.mark.parametrize(("poscar", "expected_mesh"), [(SI_POSCAR, (8, 8, 8)), (BI2SE3_POSCAR, (7, 7, 1))])
+def test_hse_dos_soc_keeps_an_automatic_uniform_mesh(poscar, expected_mesh):
+    # On POWER (atomate2 0.1.5 / pymatgen 2026.5.4) the HSE06 DOS stage wrote an
+    # automatic Gamma mesh that VASP expanded itself (512 points for Si 8x8x8).
+    # With SOC (ISYM=0) VASP then samples the full zone, so no explicit
+    # symmetry-reduced list may appear here.
+    structure = parse_structure(poscar)
+    plain = build_dos_input_set_generator(structure, theory=Theory.HSE06).get_input_set(
+        structure,
+        potcar_spec=True,
+    )
+    soc = build_dos_input_set_generator(
+        structure,
+        theory=Theory.HSE06,
+        modifiers={Modifier.SOC},
+    ).get_input_set(structure, potcar_spec=True)
+
+    for kpoints in (plain.kpoints, soc.kpoints):
+        assert kpoints.num_kpts == 0
+        assert kpoints.style in (Kpoints.supported_modes.Gamma, Kpoints.supported_modes.Monkhorst)
+        assert len(kpoints.kpts) == 1
+        assert tuple(int(value) for value in kpoints.kpts[0]) == expected_mesh
+        assert not kpoints.kpts_weights
+        assert "BMD full-zone" not in kpoints.comment
+    assert str(soc.kpoints) == str(plain.kpoints)
+    assert soc.incar["ISYM"] == 0
+    assert soc.incar["LSORBIT"] is True
+
+
+def test_hse_dos_soc_runtime_kpoints_match_preview():
+    response = build_route(BI2SE3_POSCAR, workflow="electronic_dos")
+    submission_spec = response.context["submission_spec"]
+    runtime_kpoints = runtime_input_set(submission_spec, 2).kpoints
+    terminal_preview = stage_sections(response.context["generated_inputs"]["kpoints"])[2]
+
+    assert runtime_kpoints.num_kpts == 0
+    assert tuple(int(value) for value in runtime_kpoints.kpts[0]) == (7, 7, 1)
+    for line in str(runtime_kpoints).splitlines():
+        assert line in terminal_preview
+
+
+# --- HSE06 Static -> DOS/Band data flow -------------------------------------------
+
+
+@pytest.mark.parametrize("desired_output", ["electronic_dos", "electronic_band_structure"])
+def test_hse_analysis_stage_does_not_consume_the_static_charge_density(desired_output):
+    # atomate2 0.1.5 HSEBSMaker copies CHGCAR from the previous directory, but
+    # the generated INCAR neither sets ICHARG nor ISTART and no WAVECAR is
+    # carried forward, so VASP starts with ISTART=0 / ICHARG=2 and ignores it.
+    response = build_route(BI2SE3_POSCAR, workflow=desired_output)
+    submission_spec = response.context["submission_spec"]
+    runtime_incar = runtime_input_set(submission_spec, 2).incar
+
+    assert "ICHARG" not in runtime_incar
+    assert "ISTART" not in runtime_incar
+    assert runtime_incar["LCHARG"] is False
+    workflow = WorkflowSpec.from_dict(submission_spec["flow_spec"]["workflow_spec"])
+    assert all(
+        not policy["write_wavecar"] and not policy["copy_from_previous"]
+        for policy in workflow_stage_artifact_policies(workflow)
+    )

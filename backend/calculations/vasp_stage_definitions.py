@@ -437,6 +437,29 @@ def stage_reads_previous_charge_density(
     return stage_restart_incar_amendments(stage_type, theory).get("ICHARG") == 11
 
 
+# atomate2 generators that size NBANDS from the previous stage's vasprun.xml
+# (``prev_vasprun.parameters["NBANDS"] * nbands_factor``) when run with a
+# previous directory.
+_PREVIOUS_BAND_COUNT_GENERATORS = frozenset(
+    {
+        "atomate2.vasp.sets.core.NonSCFSetGenerator",
+        "atomate2.vasp.sets.core.HSEBSSetGenerator",
+    }
+)
+
+
+def stage_inherits_previous_band_count(
+    stage_type: StageType | str,
+    theory: Theory | str | None = None,
+) -> bool:
+    """Return whether the stage takes NBANDS from the previous stage's run."""
+
+    definition = stage_definition(stage_type)
+    normalized_theory = Theory.from_value(theory) if theory is not None else None
+    selection = _atomate2_selection_for(definition.stage_type, normalized_theory)
+    return selection.input_set_generator in _PREVIOUS_BAND_COUNT_GENERATORS
+
+
 def apply_hse_dos_base_incar_settings(
     user_incar: Mapping[str, Any] | None,
 ) -> dict:

@@ -94,7 +94,8 @@ Important rules:
 
 - SOC is available for PBE and HSE06 Static Energy stages and HSE06 DOS and Band Structure stages, and uses `vasp_ncl` with Custodian `auto_gamma` disabled.
 - SOC and van der Waals correction may be combined on PBE Static Energy.
-- A stage that restarts from the previous fixed charge density (`ICHARG = 11`) must use the same SOC setting as that stage.
+- A stage that restarts from the previous fixed charge density (`ICHARG = 11`), or whose generator sizes `NBANDS` from the previous run (PBE and HSE06 DOS/Band Structure), must use the same SOC setting as that stage.
+- HSE06 DOS + SOC keeps the automatic uniform Gamma mesh; with `ISYM = 0` VASP expands it over the full zone.
 - In BMD-managed Desired Output workflows SOC is applied automatically to every non-relaxation stage when the heavy-element SOC policy triggers; relaxations remain non-SOC.
 - DFT+U is explicit and is applied only when selected and when reviewed U values are available for the structure.
 - Spin polarization is supported where the stage registry allows it.
