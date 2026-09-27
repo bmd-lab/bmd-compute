@@ -50,6 +50,7 @@ The VASP section records:
 - global VASP command template
 - per-stage executable policy
 - per-stage command template
+- per-stage Custodian `VaspJob` options set by BMD (SOC stages record `auto_gamma: false`)
 - deferred VASP version/build information
 
 Per-stage executable provenance distinguishes ordinary `vasp_std` stages from SOC/non-collinear `vasp_ncl` stages.
@@ -61,6 +62,7 @@ The actual argv passed to Custodian is still determined at runtime from the sbat
 The execution section records:
 
 - serialized `WorkflowSpec`
+- for BMD-managed Desired Output workflows, the automatic treatment record (`automatic_treatments`): base recipe, resolved workflow, which treatments were applied to which stages, and any consideration with no applicable stage
 - stage order
 - selected resources
 - partition/account policy

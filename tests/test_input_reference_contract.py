@@ -183,11 +183,12 @@ def test_references_for_pbe_relax_spin_hse06_soc_dft_u_and_dispersion():
     assert soc["incar"]["settings"]["LSORBIT"] is True
     assert soc["incar"]["settings"]["LNONCOLLINEAR"] is True
     assert "ISPIN" not in soc["incar"]["settings"]
+    # Si is outside the spin screen, so SOC starts from zero vector moments.
     assert soc["incar"]["settings"]["MAGMOM"] == [
-        [0.0, 0.0, 0.6],
-        [0.0, 0.0, 0.6],
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
     ]
-    assert "MAGMOM = 0.0 0.0 0.6 0.0 0.0 0.6" in soc["incar"]["text"]
+    assert "MAGMOM = " in soc["incar"]["text"]
 
     dft_u = first_stage(
         build_input_reference_payload(

@@ -89,7 +89,7 @@ def dispersion_modifier_policy() -> dict[str, Any]:
         "phase_1_support": {
             "theories": ["pbe"],
             "stage_types": ["relax", "static"],
-            "blocked_with_modifiers": ["soc"],
+            "blocked_with_modifiers": [],
             "blocked_terminal_stage_types": ["dos", "band_structure"],
         },
     }

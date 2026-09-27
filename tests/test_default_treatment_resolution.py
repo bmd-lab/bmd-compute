@@ -324,7 +324,7 @@ def test_automatic_resolution_changes_the_actual_generated_vasp_inputs():
     assert "MAGMOM =" not in sns2_preview["incar"]
 
 
-def test_soc_remains_advisory_for_desired_output_when_spin_is_applied():
+def test_soc_is_applied_automatically_with_spin_for_desired_output():
     response = build_route(EU_POSCAR, workflow="energy_only")
     context = response.context
     considerations = context["method_considerations"]["considerations"]
@@ -335,12 +335,14 @@ def test_soc_remains_advisory_for_desired_output_when_spin_is_applied():
         for consideration in considerations
     ] == [SPIN_CONSIDERATION_ID, SOC_CONSIDERATION_ID]
     assert considerations[0]["automatic_application_state"] == AUTOMATIC_APPLICATION_APPLIED
-    assert considerations[1]["automatic_application_state"] == AUTOMATIC_APPLICATION_ADVISORY
-    assert context["selected_workflow"]["stages"][0]["modifiers"] == ["spin_polarized"]
-    assert "soc" not in context["selected_workflow"]["stages"][0]["modifiers"]
-    assert "LSORBIT" not in context["generated_inputs"]["incar"]
-    assert "Spin Polarisation applied" in response.template.render(context)
-    assert "Suggested to activate the Spin-Orbit Coupling (SOC)" in response.template.render(context)
+    assert considerations[1]["automatic_application_state"] == AUTOMATIC_APPLICATION_APPLIED
+    assert context["selected_workflow"]["stages"][0]["modifiers"] == ["soc", "spin_polarized"]
+    assert "LSORBIT = True" in context["generated_inputs"]["incar"]
+    assert context["generated_inputs"]["vasp_executable"] == "vasp_ncl"
+    rendered = response.template.render(context)
+    assert "Spin Polarisation applied" in rendered
+    assert "Spin-Orbit Coupling (SOC) applied" in rendered
+    assert "Suggested to activate the Spin-Orbit Coupling" not in rendered
 
 
 @pytest.mark.parametrize(
@@ -480,9 +482,14 @@ def test_automatic_default_treatment_policy_is_json_safe_and_contract_focused():
     assert [treatment["consideration_id"] for treatment in policy["treatments"]] == [
         SPIN_CONSIDERATION_ID,
         DISPERSION_CONSIDERATION_ID,
+        SOC_CONSIDERATION_ID,
     ]
     assert policy["treatments"][1]["method"] == "dftd3-bj"
     assert policy["treatments"][1]["incar_effect"] == {"IVDW": 12}
-    assert {entry["consideration_id"] for entry in policy["advisory_only"] if "consideration_id" in entry} == {
-        SOC_CONSIDERATION_ID,
-    }
+    assert policy["treatments"][2]["excluded_stage_types"] == ["relax"]
+    assert policy["treatments"][2]["executable"] == "vasp_ncl"
+    assert not [
+        entry
+        for entry in policy["advisory_only"]
+        if entry.get("consideration_id") == SOC_CONSIDERATION_ID
+    ]

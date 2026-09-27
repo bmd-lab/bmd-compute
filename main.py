@@ -17,6 +17,7 @@ from backend.calculations.models import (
 from backend.calculations.default_treatments import (
     AUTOMATIC_APPLICATION_ADVISORY,
     AUTOMATIC_APPLICATION_APPLIED,
+    AUTOMATIC_APPLICATION_NOT_APPLICABLE,
     ResolvedDefaultWorkflow,
     resolve_default_treatments,
 )
@@ -578,14 +579,27 @@ def method_considerations_context(
             else ()
         )
     }
+    not_applicable_by_id = {
+        str(item.get("consideration_id")): dict(item)
+        for item in (
+            default_treatment_resolution.not_applicable_considerations
+            if default_treatment_resolution is not None
+            else ()
+        )
+    }
     for consideration in rendered.get("considerations", []):
         automatic_application = applied_by_id.get(consideration.get("id"))
-        consideration["automatic_application_state"] = (
-            AUTOMATIC_APPLICATION_APPLIED
-            if automatic_application is not None
-            else AUTOMATIC_APPLICATION_ADVISORY
-        )
+        if automatic_application is not None:
+            application_state = AUTOMATIC_APPLICATION_APPLIED
+        elif consideration.get("id") in not_applicable_by_id:
+            application_state = AUTOMATIC_APPLICATION_NOT_APPLICABLE
+        else:
+            application_state = AUTOMATIC_APPLICATION_ADVISORY
+        consideration["automatic_application_state"] = application_state
         consideration["automatic_application"] = automatic_application
+        consideration["automatic_not_applicable"] = not_applicable_by_id.get(
+            consideration.get("id")
+        )
         support = consideration.get("bmd_compute_support") or {}
         consideration["display_name"] = (
             consideration.get("display_name")
@@ -642,6 +656,11 @@ def _method_consideration_browser_name(consideration: dict) -> str:
             return "van der Waals correction applied"
         if consideration.get("id") == SPIN_COMPOSITION_CONSIDERATION_ID:
             return "Spin Polarisation applied"
+        if consideration.get("id") == SOC_HEAVY_ELEMENTS_CONSIDERATION_ID:
+            return "Spin-Orbit Coupling (SOC) applied"
+    if consideration.get("automatic_application_state") == AUTOMATIC_APPLICATION_NOT_APPLICABLE:
+        if consideration.get("id") == SOC_HEAVY_ELEMENTS_CONSIDERATION_ID:
+            return "Spin-Orbit Coupling (SOC) not used in geometry optimisation"
 
     if consideration.get("id") == DISPERSION_TWO_DIMENSIONAL_CONNECTIVITY_CONSIDERATION_ID:
         return "van der Waals Correction"
@@ -656,10 +675,12 @@ def _method_consideration_browser_summary(consideration: dict) -> str:
     )
     if consideration_id == DISPERSION_TWO_DIMENSIONAL_CONNECTIVITY_CONSIDERATION_ID:
         if is_applied:
+            stage_phrase, _ = _automatic_application_stage_phrase(consideration)
+            stage_text = stage_phrase or "applicable PBE stages"
             return (
                 "Likely 2-dimensional structure detected. The van der Waals "
-                "correction has been included automatically in the applicable "
-                "PBE stages. Choose Custom workflow to configure this manually."
+                f"correction has been included automatically in the {stage_text}. "
+                "Choose Custom workflow to configure this manually."
             )
         support = _method_consideration_support_phrase(consideration)
         suffix = f" for {support}" if support else ""
@@ -683,6 +704,29 @@ def _method_consideration_browser_summary(consideration: dict) -> str:
         )
 
     if consideration_id == SOC_HEAVY_ELEMENTS_CONSIDERATION_ID:
+        if is_applied:
+            stage_phrase, stage_count = _automatic_application_stage_phrase(
+                consideration
+            )
+            if stage_phrase:
+                verb = "runs" if stage_count == 1 else "run"
+                stage_text = f" in the {stage_phrase}, which {verb} with vasp_ncl"
+            else:
+                stage_text = ""
+            return (
+                f"{subject}. Spin-orbit coupling (SOC) has been included "
+                f"automatically{stage_text}. Choose Custom workflow to configure "
+                "this manually."
+            )
+        if (
+            consideration.get("automatic_application_state")
+            == AUTOMATIC_APPLICATION_NOT_APPLICABLE
+        ):
+            return (
+                f"{subject}. BMD Compute keeps geometry optimisations non-SOC, "
+                "so SOC is not part of this workflow. Choose Custom workflow to "
+                "configure this manually."
+            )
         support = _method_consideration_support_phrase(consideration)
         suffix = f" for {support}" if support else ""
         return (
@@ -692,6 +736,19 @@ def _method_consideration_browser_summary(consideration: dict) -> str:
 
     reason = str(consideration.get("reason") or "").strip()
     return reason or f"{subject}."
+
+
+def _automatic_application_stage_phrase(consideration: dict) -> tuple[str, int]:
+    application = consideration.get("automatic_application") or {}
+    labels = [
+        f"{item.get('theory_label')} {item.get('stage_type_label')}"
+        for item in application.get("stage_applications") or ()
+        if item.get("theory_label") and item.get("stage_type_label")
+    ]
+    if not labels:
+        return "", 0
+    noun = "stage" if len(labels) == 1 else "stages"
+    return f"{_human_join(labels)} {noun}", len(labels)
 
 
 def _method_consideration_support_phrase(consideration: dict) -> str:
@@ -799,7 +856,17 @@ def build_submission_state_from_structure(
     execution_resources: ExecutionResources,
     timestamp: str | None = None,
     submission_attempt_id: str | None = None,
+    default_treatment_resolution: ResolvedDefaultWorkflow | None = None,
 ):
+    if (
+        default_treatment_resolution is not None
+        and default_treatment_resolution.resolved_workflow.to_dict()
+        != validate_workflow_spec(workflow_spec).to_dict()
+    ):
+        raise CalculationValidationError(
+            "The automatic treatment record does not match the workflow being prepared.",
+            suggestion="Rebuild the calculation, then try again.",
+        )
     calculation_spec = calculation_spec_from_workflow_spec(workflow_spec)
     summary = summarize_structure(structure_obj)
     potcar_functional = (
@@ -840,6 +907,8 @@ def build_submission_state_from_structure(
     }
     if calculation_spec is not None:
         flow_spec["calculation_spec"] = calculation_spec.to_dict()
+    if default_treatment_resolution is not None:
+        flow_spec["automatic_treatments"] = default_treatment_resolution.to_dict()
     submission_spec = create_submission_spec(
         flow_spec,
         structure=structure_obj,
@@ -1002,6 +1071,7 @@ def build_workflow(
             fmt=fmt,
             workflow_spec=workflow_spec,
             execution_resources=execution_resources,
+            default_treatment_resolution=default_treatment_resolution,
         )
     except StructureValidationError as exc:
         return structure_error_response(
@@ -1115,6 +1185,7 @@ def prepare_remote(
             execution_resources=execution_resources,
             timestamp=identity["run_timestamp"],
             submission_attempt_id=identity["attempt_id"],
+            default_treatment_resolution=default_treatment_resolution,
         )
     except StructureValidationError as exc:
         return structure_error_response(
@@ -1235,6 +1306,7 @@ def submit_workflow(
             execution_resources=execution_resources,
             timestamp=identity["run_timestamp"],
             submission_attempt_id=identity["attempt_id"],
+            default_treatment_resolution=default_treatment_resolution,
         )
     except StructureValidationError as exc:
         return structure_error_response(

@@ -152,7 +152,7 @@ def test_dispersion_modifier_policy_survives_contract():
     ]
     assert policy["phase_1_support"]["theories"] == ["pbe"]
     assert policy["phase_1_support"]["stage_types"] == ["relax", "static"]
-    assert policy["phase_1_support"]["blocked_with_modifiers"] == ["soc"]
+    assert policy["phase_1_support"]["blocked_with_modifiers"] == []
 
 
 def test_automatic_default_treatment_policy_survives_contract():
@@ -169,11 +169,14 @@ def test_automatic_default_treatment_policy_survives_contract():
     ] == [
         "spin.composition_screen",
         "dispersion.two_dimensional_connectivity",
+        "soc.heavy_elements",
     ]
     assert policy["treatments"][1]["method"] == "dftd3-bj"
     assert policy["treatments"][1]["incar_effect"] == {"IVDW": 12}
+    assert policy["treatments"][2]["modifier"] == "soc"
+    assert policy["treatments"][2]["excluded_stage_types"] == ["relax"]
+    assert policy["treatments"][2]["executable"] == "vasp_ncl"
     assert policy["advisory_only"] == [
-        {"consideration_id": "soc.heavy_elements", "modifier": "soc"},
         {"modifier": "dft_u"},
     ]
 

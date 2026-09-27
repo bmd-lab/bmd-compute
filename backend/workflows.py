@@ -236,10 +236,27 @@ def vasp_command_for_modifiers(modifiers, *, base_command: str | None = None) ->
     )
 
 
+def vasp_job_kwargs_for_modifiers(modifiers) -> dict:
+    """Return Custodian VaspJob options that BMD sets for a stage.
+
+    Custodian's ``auto_gamma`` replaces the configured command with a
+    gamma-only executable whenever KPOINTS holds a single unshifted 1x1x1
+    mesh point. That substitution does not check for non-collinear input, so
+    SOC stages disable it to keep ``vasp_ncl``.
+    """
+
+    if vasp_executable_for_modifiers(modifiers) == VASP_NCL_EXECUTABLE:
+        return {"auto_gamma": False}
+    return {}
+
+
 def run_vasp_kwargs_for_modifiers(modifiers) -> dict:
     kwargs = {"handlers": bmd_custodian_handlers()}
     if vasp_executable_for_modifiers(modifiers) == VASP_NCL_EXECUTABLE:
         kwargs["vasp_cmd"] = vasp_command_for_modifiers(modifiers)
+    vasp_job_kwargs = vasp_job_kwargs_for_modifiers(modifiers)
+    if vasp_job_kwargs:
+        kwargs["vasp_job_kwargs"] = vasp_job_kwargs
     return kwargs
 
 
@@ -444,7 +461,8 @@ def _soc_axis_from_settings(settings: dict) -> tuple[float, float, float]:
 
 def _soc_vector_from_scalar(value, axis: tuple[float, float, float]) -> list[float]:
     moment = float(value)
-    return [component * moment for component in axis]
+    # ``+ 0.0`` normalises negative zero so zero moments print as 0.0.
+    return [component * moment + 0.0 for component in axis]
 
 
 def _native_magmom_defaults() -> dict:
@@ -527,8 +545,36 @@ def _magmom_dict_from_site_values(structure, values, axis: tuple[float, float, f
     return vectors
 
 
-def _coerce_soc_magmom_setting(magmom, structure, axis: tuple[float, float, float]):
-    defaults = _native_magmom_defaults()
+def _site_explicit_scalar_magmom(site) -> float:
+    properties = getattr(site, "properties", {}) or {}
+    if "magmom" in properties:
+        value = properties["magmom"]
+        if _is_vector(value):
+            return float(value[2])
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            pass
+    return 0.0
+
+
+def _coerce_soc_magmom_setting(
+    magmom,
+    structure,
+    axis: tuple[float, float, float],
+    *,
+    magnetic: bool,
+):
+    if magnetic:
+        defaults = _native_magmom_defaults()
+
+        def default_scalar(site) -> float:
+            return _site_scalar_magmom(site, defaults)
+    else:
+        # Non-magnetic SOC: only moments given explicitly on the structure
+        # sites are kept; everything else starts from a zero vector.
+        def default_scalar(site) -> float:
+            return _site_explicit_scalar_magmom(site)
 
     if isinstance(magmom, dict):
         vectors = {}
@@ -538,7 +584,7 @@ def _coerce_soc_magmom_setting(magmom, structure, axis: tuple[float, float, floa
                 continue
             value = _magmom_value_for_site(magmom, site)
             if value is None:
-                value = _site_scalar_magmom(site, defaults)
+                value = default_scalar(site)
             vectors[key] = _coerce_soc_magmom_value(value, axis)
         return vectors
 
@@ -557,13 +603,60 @@ def _coerce_soc_magmom_setting(magmom, structure, axis: tuple[float, float, floa
         key = _soc_magmom_key_for_site(site)
         if key not in vectors:
             vectors[key] = _soc_vector_from_scalar(
-                _site_scalar_magmom(site, defaults),
+                default_scalar(site),
                 axis,
             )
     return vectors
 
 
-def apply_soc_magmom_settings(user_incar, *, structure) -> dict:
+def soc_initial_moments_are_magnetic(modifiers, *, structure=None) -> bool:
+    """Return whether an SOC stage starts from non-zero magnetic moments.
+
+    BMD policy: a non-collinear stage keeps the pymatgen/Materials Project
+    magnetic starting moments when the structure contains an element in the
+    existing spin method-consideration screen, or when the stage is explicitly
+    Spin Polarised (a student's choice in a Custom workflow). Every other SOC
+    stage starts from zero vector moments, so non-magnetic calculations keep
+    time-reversal symmetry from the first SCF step.
+    """
+
+    if Modifier.SPIN_POLARIZED in calculation_modifiers_from_options(modifiers=modifiers):
+        return True
+    return structure_triggers_spin_screen(structure)
+
+
+def structure_triggers_spin_screen(structure) -> bool:
+    from backend.calculations.method_considerations import SPIN_TRIGGER_ELEMENT_CLASSES
+
+    return any(
+        symbol in SPIN_TRIGGER_ELEMENT_CLASSES
+        for symbol in _structure_element_symbols(structure)
+    )
+
+
+def _structure_element_symbols(structure) -> set[str]:
+    symbols: set[str] = set()
+    try:
+        sites = list(structure)
+    except TypeError:
+        return symbols
+    for site in sites:
+        species = getattr(site, "species", None)
+        elements = getattr(species, "elements", None)
+        if elements:
+            for element in elements:
+                symbol = getattr(element, "symbol", None)
+                if symbol:
+                    symbols.add(str(symbol))
+            continue
+        specie = getattr(site, "specie", None)
+        symbol = getattr(specie, "symbol", None)
+        if symbol:
+            symbols.add(str(symbol))
+    return symbols
+
+
+def apply_soc_magmom_settings(user_incar, *, structure, magnetic: bool) -> dict:
     settings = dict(user_incar or {})
     try:
         site_count = len(structure)
@@ -586,6 +679,7 @@ def apply_soc_magmom_settings(user_incar, *, structure) -> dict:
         settings.get("MAGMOM"),
         sites,
         axis,
+        magnetic=magnetic,
     )
     return settings
 
@@ -628,7 +722,14 @@ def build_relax_input_set_generator(
         modifiers=calculation_modifiers,
     )
     if Modifier.SOC in calculation_modifiers:
-        user_incar = apply_soc_magmom_settings(user_incar, structure=structure)
+        user_incar = apply_soc_magmom_settings(
+            user_incar,
+            structure=structure,
+            magnetic=soc_initial_moments_are_magnetic(
+                calculation_modifiers,
+                structure=structure,
+            ),
+        )
     if isif is not None:
         user_incar["ISIF"] = isif
     policy_theory = Theory.from_value(theory)
@@ -873,6 +974,10 @@ def _static_user_incar_settings(
         user_incar = apply_soc_magmom_settings(
             user_incar,
             structure=magmom_structure or structure,
+            magnetic=soc_initial_moments_are_magnetic(
+                calculation_modifiers,
+                structure=magmom_structure or structure,
+            ),
         )
 
     policy_theory = Theory.HSE06 if hse else Theory.from_value(theory)
@@ -955,7 +1060,14 @@ def _hse_band_structure_incar_settings(
         modifiers=calculation_modifiers,
     )
     if Modifier.SOC in calculation_modifiers and structure is not None:
-        user_incar = apply_soc_magmom_settings(user_incar, structure=structure)
+        user_incar = apply_soc_magmom_settings(
+            user_incar,
+            structure=structure,
+            magnetic=soc_initial_moments_are_magnetic(
+                calculation_modifiers,
+                structure=structure,
+            ),
+        )
 
     user_incar = apply_hse_band_structure_base_incar_settings(user_incar)
 
@@ -990,7 +1102,14 @@ def _hse_dos_incar_settings(
         modifiers=calculation_modifiers,
     )
     if Modifier.SOC in calculation_modifiers and structure is not None:
-        user_incar = apply_soc_magmom_settings(user_incar, structure=structure)
+        user_incar = apply_soc_magmom_settings(
+            user_incar,
+            structure=structure,
+            magnetic=soc_initial_moments_are_magnetic(
+                calculation_modifiers,
+                structure=structure,
+            ),
+        )
 
     user_incar = apply_hse_dos_base_incar_settings(user_incar)
 
@@ -1115,6 +1234,7 @@ def build_dos_input_set_generator(
     incar=None,
     kpoints=None,
     potcar_functional="PBE_64",
+    magmom_structure=None,
 ):
     calculation_modifiers = calculation_modifiers_from_options(
         modifiers=modifiers,
@@ -1129,7 +1249,7 @@ def build_dos_input_set_generator(
             modifiers=calculation_modifiers,
             resources=resources,
             incar=incar,
-            structure=structure,
+            structure=magmom_structure or structure,
         )
         return HSEBSSetGenerator(
             mode="uniform",
@@ -1153,6 +1273,7 @@ def build_dos_input_set_generator(
         incar=incar,
         resource_stage_type=StageType.DOS,
         structure=structure,
+        magmom_structure=magmom_structure,
     )
 
     return NonSCFSetGenerator(
@@ -1263,6 +1384,7 @@ def build_band_structure_input_set_generator(
     incar=None,
     kpoints=None,
     potcar_functional="PBE_64",
+    magmom_structure=None,
 ):
     calculation_modifiers = calculation_modifiers_from_options(
         modifiers=modifiers,
@@ -1286,9 +1408,24 @@ def build_band_structure_input_set_generator(
             modifiers=calculation_modifiers,
             resources=resources,
             incar=incar,
-            structure=structure,
+            structure=magmom_structure or structure,
         )
-        return HSEBSSetGenerator(
+        from backend.calculations.hse_band_kpoints import (
+            full_zone_hse_band_structure_generator_class,
+            uses_full_zone_weighted_kpoints,
+        )
+
+        generator_class = HSEBSSetGenerator
+        if uses_full_zone_weighted_kpoints(
+            StageType.BAND_STRUCTURE,
+            policy_theory,
+            calculation_modifiers,
+        ):
+            # SOC keeps ISYM=0, so the weighted SCF mesh must span the full
+            # zone rather than pymatgen's symmetry-reduced set. Non-SOC HSE06
+            # band structures keep the unmodified atomate2 generator.
+            generator_class = full_zone_hse_band_structure_generator_class()
+        return generator_class(
             mode="line",
             line_density=line_mode_density(kpoints),
             reciprocal_density=HSE_BAND_STRUCTURE_RECIPROCAL_DENSITY_DEFAULT,
@@ -1306,6 +1443,7 @@ def build_band_structure_input_set_generator(
         incar=incar,
         resource_stage_type=StageType.BAND_STRUCTURE,
         structure=structure,
+        magmom_structure=magmom_structure,
     )
 
     return NonSCFSetGenerator(
@@ -1587,6 +1725,7 @@ def build_atomate2_flow_for_workflow_spec(
                 incar=user_incar,
                 kpoints=stage_kpoints,
                 potcar_functional=potcar_functional,
+                magmom_structure=structure,
             )
             if theory_uses_hybrid_functional(stage.theory):
                 from atomate2.vasp.jobs.core import HSEBSMaker
@@ -1623,6 +1762,7 @@ def build_atomate2_flow_for_workflow_spec(
                 incar=user_incar,
                 kpoints=stage_kpoints,
                 potcar_functional=potcar_functional,
+                magmom_structure=structure,
             )
             if theory_uses_hybrid_functional(stage.theory):
                 from atomate2.vasp.jobs.core import HSEBSMaker
@@ -1965,6 +2105,9 @@ __all__ = [
     "build_vasp_input_set_for_spec",
     "build_vasp_input_set_generator_for_spec",
     "apply_soc_magmom_settings",
+    "soc_initial_moments_are_magnetic",
+    "structure_triggers_spin_screen",
+    "vasp_job_kwargs_for_modifiers",
     "apply_stage_resource_incar_settings",
     "apply_spin_settings",
     "incar_relax",

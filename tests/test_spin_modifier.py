@@ -235,8 +235,10 @@ finally:
     else:
         os.environ["SLURM_NTASKS"] = saved_slurm_ntasks
 assert run_vasp_kwargs_for_modifiers({Modifier.SOC})["vasp_cmd"].endswith("vasp_ncl")
+assert run_vasp_kwargs_for_modifiers({Modifier.SOC})["vasp_job_kwargs"] == {"auto_gamma": False}
 spin_run_vasp_kwargs = run_vasp_kwargs_for_modifiers({Modifier.SPIN_POLARIZED})
 assert "vasp_cmd" not in spin_run_vasp_kwargs
+assert "vasp_job_kwargs" not in spin_run_vasp_kwargs
 assert spin_run_vasp_kwargs["handlers"]
 assert all(
     type(handler).__name__ != "FrozenJobErrorHandler"
@@ -259,7 +261,13 @@ direct
 assert apply_soc_magmom_settings(
     {"LSORBIT": True, "LNONCOLLINEAR": True, "SAXIS": [0, 0, 1]},
     structure=soc_si,
+    magnetic=True,
 )["MAGMOM"] == {"Si": [0.0, 0.0, 0.6]}
+assert apply_soc_magmom_settings(
+    {"LSORBIT": True, "LNONCOLLINEAR": True, "SAXIS": [0, 0, 1]},
+    structure=soc_si,
+    magnetic=False,
+)["MAGMOM"] == {"Si": [0.0, 0.0, 0.0]}
 assert ksettings_for_modifiers(
     "structure",
     {"mode": "grid_density", "value": 1000},

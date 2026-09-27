@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from backend.calculations.custodian_policy import resolved_custodian_policy
-from backend.workflows import vasp_command_for_modifiers, vasp_executable_for_modifiers
+from backend.workflows import (
+    vasp_command_for_modifiers,
+    vasp_executable_for_modifiers,
+    vasp_job_kwargs_for_modifiers,
+)
 from backend.runtime_package import runtime_package_manifest_metadata
 
 
@@ -74,6 +78,7 @@ def build_submission_provenance(submission_spec: dict) -> dict:
         },
         "execution": {
             "workflow_spec": _json_safe_value(workflow_spec),
+            "automatic_treatments": _automatic_treatments_dict(submission_spec),
             "stage_order": stage_order_provenance(workflow_spec),
             "custodian": stage_custodian_provenance(workflow_spec),
             "resources": _json_safe_value(resources),
@@ -170,6 +175,9 @@ def stage_vasp_provenance(workflow_spec: dict, environment: dict) -> list[dict]:
                 modifiers,
                 base_command=base_command,
             ),
+            "custodian_vasp_job_kwargs": _json_safe_value(
+                vasp_job_kwargs_for_modifiers(modifiers)
+            ),
         })
     return payload
 
@@ -209,6 +217,12 @@ def stage_custodian_provenance(workflow_spec: dict) -> dict:
             if isinstance(stage, dict)
         ]
     }
+
+
+def _automatic_treatments_dict(submission_spec: dict) -> dict | None:
+    flow_spec = submission_spec.get("flow_spec") or {}
+    treatments = flow_spec.get("automatic_treatments")
+    return _json_safe_value(treatments) if isinstance(treatments, dict) else None
 
 
 def _workflow_spec_dict(submission_spec: dict) -> dict:

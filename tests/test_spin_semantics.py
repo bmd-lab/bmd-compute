@@ -204,6 +204,24 @@ def test_dft_u_does_not_implicitly_enable_collinear_spin():
     assert "LDAU = True" in dft_u_on
 
 
+def _magmom_components(incar_text: str) -> list[float]:
+    for line in incar_text.splitlines():
+        if line.startswith("MAGMOM = "):
+            components = []
+            for token in line.removeprefix("MAGMOM = ").split():
+                if "*" in token:
+                    count, value = token.split("*", 1)
+                    components.extend([float(value)] * int(count))
+                else:
+                    components.append(float(token))
+            return components
+    raise AssertionError("MAGMOM is missing")
+
+
+def _without_magmom(incar_text: str) -> list[str]:
+    return [line for line in incar_text.splitlines() if not line.startswith("MAGMOM = ")]
+
+
 def test_soc_noncollinear_policy_is_not_changed_by_collinear_spin_semantics():
     soc = _preview_incar(SI_POSCAR, CalculationSpec(Purpose.STATIC, Theory.PBE, {Modifier.SOC}))
     soc_with_spin_modifier = _preview_incar(
@@ -214,8 +232,13 @@ def test_soc_noncollinear_policy_is_not_changed_by_collinear_spin_semantics():
     assert "ISPIN =" not in soc
     assert "LSORBIT = True" in soc
     assert "LNONCOLLINEAR = True" in soc
-    assert "MAGMOM = 0.0 0.0 0.6 0.0 0.0 0.6" in soc
-    assert soc_with_spin_modifier == soc
+    # Si is outside the spin screen: SOC starts from zero vector moments, and
+    # an explicit Spin Polarised choice restores magnetic starting moments
+    # without changing any other non-collinear setting.
+    assert _magmom_components(soc) == [0.0] * 6
+    assert _magmom_components(soc_with_spin_modifier) == [0.0, 0.0, 0.6] * 2
+    assert "ISPIN =" not in soc_with_spin_modifier
+    assert _without_magmom(soc_with_spin_modifier) == _without_magmom(soc)
 
     hse_soc = _preview_incar(
         SI_POSCAR,
@@ -232,5 +255,6 @@ def test_soc_noncollinear_policy_is_not_changed_by_collinear_spin_semantics():
     assert "LSORBIT = True" in hse_soc
     assert "LNONCOLLINEAR = True" in hse_soc
     assert "LELF =" not in hse_soc
-    assert "MAGMOM = 0.0 0.0 0.6 0.0 0.0 0.6" in hse_soc
-    assert hse_soc_with_spin_modifier == hse_soc
+    assert _magmom_components(hse_soc) == [0.0] * 6
+    assert _magmom_components(hse_soc_with_spin_modifier) == [0.0, 0.0, 0.6] * 2
+    assert _without_magmom(hse_soc_with_spin_modifier) == _without_magmom(hse_soc)

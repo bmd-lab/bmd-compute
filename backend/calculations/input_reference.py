@@ -32,6 +32,10 @@ from backend.calculations.resources import (
     normalize_execution_resources,
 )
 from backend.calculations.vasp_stage_definitions import describe_stage
+from backend.calculations.hse_band_kpoints import (
+    FULL_ZONE_KPOINTS_ADJUSTMENT,
+    uses_full_zone_weighted_kpoints,
+)
 from backend.generated_inputs import generated_input_stage_previews
 from backend.parser import StructureValidationError, structure_from_spec
 
@@ -284,6 +288,12 @@ def _stage_reference_payload(stage_preview: Mapping[str, Any]) -> dict[str, Any]
     stage_description = describe_stage(stage.stage_type, stage.theory)
     poscar_text = _input_text(input_set.poscar)
     kpoints = input_set.kpoints
+    generator = {
+        "source": "backend.generated_inputs.generated_input_stage_previews",
+        "selected_atomate2": stage_description["selected_atomate2"],
+    }
+    if uses_full_zone_weighted_kpoints(stage.stage_type, stage.theory, stage.modifiers):
+        generator["bmd_kpoints_adjustment"] = FULL_ZONE_KPOINTS_ADJUSTMENT
 
     return {
         "index": stage_preview["index"],
@@ -295,10 +305,7 @@ def _stage_reference_payload(stage_preview: Mapping[str, Any]) -> dict[str, Any]
         "modifiers": sorted(modifier.value for modifier in stage.modifiers),
         "options": _json_safe_value(stage.options),
         "vasp_executable": stage_preview["vasp_executable"],
-        "generator": {
-            "source": "backend.generated_inputs.generated_input_stage_previews",
-            "selected_atomate2": stage_description["selected_atomate2"],
-        },
+        "generator": generator,
         "incar": {
             "settings": _json_safe_value(dict(input_set.incar)),
             "text": _input_text(input_set.incar),

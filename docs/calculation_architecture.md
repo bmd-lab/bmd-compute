@@ -92,8 +92,11 @@ Modifiers are validated by stage and theory. They are not free-form INCAR fragme
 
 Important rules:
 
-- SOC is available for reviewed PBE Static Energy stages and uses `vasp_ncl`.
-- HSE06 + SOC remains unsupported.
+- SOC is available for PBE and HSE06 Static Energy stages and HSE06 DOS and Band Structure stages, and uses `vasp_ncl` with Custodian `auto_gamma` disabled.
+- SOC and van der Waals correction may be combined on PBE Static Energy.
+- A stage that restarts from the previous fixed charge density (`ICHARG = 11`), or whose generator sizes `NBANDS` from the previous run (PBE and HSE06 DOS/Band Structure), must use the same SOC setting as that stage.
+- HSE06 DOS + SOC keeps the automatic uniform Gamma mesh; with `ISYM = 0` VASP expands it over the full zone.
+- In BMD-managed Desired Output workflows SOC is applied automatically to every non-relaxation stage when the heavy-element SOC policy triggers; relaxations remain non-SOC.
 - DFT+U is explicit and is applied only when selected and when reviewed U values are available for the structure.
 - Spin polarization is supported where the stage registry allows it.
 - Ions-only is a PBE relax-stage compatibility modifier.
@@ -216,13 +219,12 @@ Supported now:
 - PBE relax/static/relax-static/double-relax/DOS/band-structure workflows
 - HSE06 relax/static/relax-static stages and workflows
 - HSE06 band structure with an HSE06 static electronic precursor
-- reviewed PBE static SOC workflows
+- SOC on PBE/HSE06 Static and HSE06 DOS/Band Structure stages, applied automatically in Desired Output workflows
 - explicit DFT+U when available from the input set
 
 Future or deliberately unsupported:
 
-- HSE06 DOS
-- HSE06 + SOC
+- SOC relaxation and PBE DOS/Band Structure + SOC
 - r2SCAN
 - Dielectric/optics
 - GW

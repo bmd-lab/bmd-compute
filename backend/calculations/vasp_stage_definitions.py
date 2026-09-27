@@ -411,6 +411,55 @@ def apply_stage_restart_incar_settings(
     return settings
 
 
+def stage_restart_incar_amendments(
+    stage_type: StageType | str,
+    theory: Theory | str | None = None,
+) -> dict:
+    """Return the restart INCAR amendments for a stage type and theory."""
+
+    definition = stage_definition(stage_type)
+    normalized_theory = Theory.from_value(theory) if theory is not None else None
+    override = _theory_stage_override_for(definition.stage_type, normalized_theory)
+    policy = (
+        override.get("restart_policy", definition.restart_policy)
+        if override is not None
+        else definition.restart_policy
+    )
+    return _copy_mapping(policy["incar_amendments"])
+
+
+def stage_reads_previous_charge_density(
+    stage_type: StageType | str,
+    theory: Theory | str | None = None,
+) -> bool:
+    """Return whether the stage restarts from the previous stage's fixed CHGCAR."""
+
+    return stage_restart_incar_amendments(stage_type, theory).get("ICHARG") == 11
+
+
+# atomate2 generators that size NBANDS from the previous stage's vasprun.xml
+# (``prev_vasprun.parameters["NBANDS"] * nbands_factor``) when run with a
+# previous directory.
+_PREVIOUS_BAND_COUNT_GENERATORS = frozenset(
+    {
+        "atomate2.vasp.sets.core.NonSCFSetGenerator",
+        "atomate2.vasp.sets.core.HSEBSSetGenerator",
+    }
+)
+
+
+def stage_inherits_previous_band_count(
+    stage_type: StageType | str,
+    theory: Theory | str | None = None,
+) -> bool:
+    """Return whether the stage takes NBANDS from the previous stage's run."""
+
+    definition = stage_definition(stage_type)
+    normalized_theory = Theory.from_value(theory) if theory is not None else None
+    selection = _atomate2_selection_for(definition.stage_type, normalized_theory)
+    return selection.input_set_generator in _PREVIOUS_BAND_COUNT_GENERATORS
+
+
 def apply_hse_dos_base_incar_settings(
     user_incar: Mapping[str, Any] | None,
 ) -> dict:
