@@ -111,6 +111,10 @@ class IdempotencyRunner(ParamikoRemoteRunner):
         with self.shared.lock:
             self.shared.files[remote_path] = text
 
+    def _replace_file(self, source, destination):
+        with self.shared.lock:
+            self.shared.files[destination] = self.shared.files.pop(source)
+
     def read_text(self, remote_path, *, max_bytes=None):
         with self.shared.lock:
             return self.shared.files[remote_path]
