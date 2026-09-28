@@ -172,10 +172,10 @@
       "bmd_compute": {
         "source": {
           "status": "available",
-          "git_commit": "c4f0775551939ac7de178c233bf5f4e4a718a03d",
-          "dirty": true,
-          "state": "dirty",
-          "dirty_paths_count": 6
+          "git_commit": "b0f946229b55d7551d87eba2740755c80ab5e7c2",
+          "dirty": false,
+          "state": "clean",
+          "dirty_paths_count": 0
         },
         "runtime_source": {
           "status": "available",
