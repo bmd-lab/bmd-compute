@@ -14,12 +14,23 @@ from backend.calculations.theory_policy import (
 
 
 """
-Internal executable-stage definitions for BMD Compute.
+Executable-stage definitions for BMD Compute.
 
-These definitions describe BMD Compute's current executable choices. They are
-not a methodology authority.
-BMDex remains the authority for methodology, evidence, and provenance policy.
+These definitions are BMD Compute's executable calculation methodology: the
+stage, theory, setting and treatment choices BMD Compute implements and runs.
+BMD Compute is the authority for that executable methodology.
+
+BMDex supplies curated supporting evidence, validation records, datasets and
+tools; it does not define these choices. Scientific validation and adoption of
+any choice remain human judgment, and describing a choice here does not claim
+either.
 """
+
+
+EXECUTABLE_METHODOLOGY_SCOPE = (
+    "BMD Compute executable calculation methodology: the stages, theories, "
+    "settings and treatments this BMD Compute checkout implements and can execute"
+)
 
 
 ENCUT_STATIC_PREP_DEFAULT = 520
@@ -338,7 +349,7 @@ def describe_stage(stage_type: StageType | str, theory: Theory | str | None = No
     )
 
     return {
-        "scope": "BMD Compute executable implementation, not a methodology authority",
+        "scope": EXECUTABLE_METHODOLOGY_SCOPE,
         "stage_type": definition.stage_type.value,
         "theory": normalized_theory.value if normalized_theory else None,
         "theory_supported_for_stage": theory_supported_for_stage,

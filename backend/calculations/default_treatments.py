@@ -199,7 +199,10 @@ def resolve_default_treatments(
 
 def automatic_default_treatment_policy() -> dict[str, Any]:
     return {
-        "scope": "BMD Compute executable default-workflow treatment resolution, not a methodology authority",
+        "scope": (
+            "BMD Compute executable methodology for BMD-managed Desired Output "
+            "workflows: the automatic treatments BMD Compute applies"
+        ),
         "source": IMPLEMENTATION_SOURCE,
         "applies_to": {
             "workflow_mode": "bmd_managed_desired_output",

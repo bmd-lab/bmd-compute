@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,13 +11,17 @@ from backend.calculations.default_treatments import automatic_default_treatment_
 from backend.calculations.dispersion import dispersion_modifier_policy
 from backend.calculations.models import Theory
 from backend.calculations.vasp_stage_definitions import (
+    EXECUTABLE_METHODOLOGY_SCOPE,
     describe_stage,
     list_stage_definitions,
 )
 
 
 SCHEMA_VERSION = 1
-SCOPE = "BMD Compute executable implementation, not a methodology authority"
+# ``SCOPE`` is a human-readable description. Consumers must establish
+# compatibility from ``schema_version`` and ``source.repository``, not from
+# this text, which may be reworded without a schema change.
+SCOPE = EXECUTABLE_METHODOLOGY_SCOPE
 REPOSITORY_ID = "bmd_compute"
 
 
@@ -111,14 +116,42 @@ def _git_executable() -> str:
     return "git"
 
 
+def _git_command(args: tuple[str, ...], repo_root: Path) -> tuple[str, ...]:
+    """Build a read-only git command for producer provenance.
+
+    ``--no-optional-locks`` stops commands such as ``git status`` from
+    opportunistically refreshing and rewriting ``.git/index`` (and creating
+    ``.git/index.lock``). Producers run against the live BMD Compute checkout,
+    including when invoked by read-only observers such as BMD Agent, so
+    provenance inspection must never write to that checkout.
+    """
+
+    return (
+        _git_executable(),
+        "--no-optional-locks",
+        "-c",
+        f"safe.directory={repo_root.as_posix()}",
+        "-C",
+        str(repo_root),
+        *args,
+    )
+
+
+def _git_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
+    return environment
+
+
 def _git_output(args: tuple[str, ...], repo_root: Path) -> str | None:
     try:
         completed = subprocess.run(
-            (_git_executable(), "-c", f"safe.directory={repo_root.as_posix()}", "-C", str(repo_root), *args),
+            _git_command(args, repo_root),
             capture_output=True,
             check=False,
             text=True,
             timeout=2,
+            env=_git_environment(),
         )
     except Exception:
         return None

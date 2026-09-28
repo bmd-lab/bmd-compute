@@ -240,4 +240,8 @@ python -m backend.calculations.capabilities
 
 The command serializes the existing stage introspection layer (`list_stage_definitions()` and `describe_stage()`) and does not create a second capability registry. The payload is versioned with `schema_version = 1`, includes producer provenance when Git information is available, and is intended for internal BMD ecosystem consumers such as BMD Agent.
 
-The contract describes what BMD Compute currently implements and can execute. It is not a scientific-methodology authority and does not claim that a capability is validated, adopted, or a BMD standard. Scientific validation status, evidence, and adopted methodology belong outside BMD Compute, currently intended for BMDex.
+The payload describes BMD Compute's executable calculation methodology: the stages, theories, settings and treatments this checkout implements and can execute. BMD Compute is the authority for that executable methodology. BMDex supplies curated supporting evidence, validation records, datasets and tools; it does not define BMD Compute methodology. The payload does not claim that any capability has been scientifically validated or adopted; that remains human judgment, recorded separately.
+
+Consumers establish compatibility from the machine-readable fields `schema_version` and `source.repository` (`"bmd_compute"`). The `scope` strings are human-readable descriptions and may be reworded without a schema change; consumers must not compare them for equality.
+
+Provenance inspection runs `git` with `--no-optional-locks` (and `GIT_OPTIONAL_LOCKS=0`), so invoking the producer never refreshes or rewrites the checkout's Git index.
