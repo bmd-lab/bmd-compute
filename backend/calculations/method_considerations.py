@@ -12,6 +12,15 @@ from backend.calculations.registry import (
     validate_stage_spec,
     validate_workflow_spec,
 )
+# Load the pinned pymatgen +U table with this module rather than lazily
+# inside a structure evaluation.
+import pymatgen.io.vasp.sets  # noqa: F401
+
+from backend.calculations.dft_u_policy import (
+    CONSIDERATION_ID as DFT_U_POLICY_CONSIDERATION_ID,
+    DECISION_SUPPRESS as DFT_U_DECISION_SUPPRESS,
+    evaluate_dft_u,
+)
 from backend.structure_dimensionality import (
     OBSERVED as DIMENSIONALITY_OBSERVED,
     StructureDimensionalityObservation,
@@ -28,7 +37,10 @@ not modify workflows, generated inputs, or execution state.
 """
 
 
-POLICY_VERSION = 4
+POLICY_VERSION = 5
+DFT_U_CONSIDERATION_ID = DFT_U_POLICY_CONSIDERATION_ID
+DFT_U_RECOMMENDED_STATUS = "recommended_for_consideration"
+DFT_U_SUPPRESSED_STATUS = "suppressed_by_d0_gate"
 SOC_HEAVY_ELEMENTS_CONSIDERATION_ID = "soc.heavy_elements"
 SPIN_COMPOSITION_CONSIDERATION_ID = "spin.composition_screen"
 DISPERSION_TWO_DIMENSIONAL_CONNECTIVITY_CONSIDERATION_ID = (
@@ -158,6 +170,17 @@ _DISPERSION_CORRECTION_REASON = (
     "This structure has two-dimensional bonded connectivity. Dispersion "
     "interactions may therefore be important for interactions between the "
     "low-dimensional components. Consider enabling a dispersion correction."
+)
+_DFT_U_REASON = (
+    "This oxide or fluoride contains an element for which the Materials Project "
+    "GGA+U methodology applies a Hubbard U correction."
+)
+_DFT_U_LIMITATIONS = (
+    "The U values are the Materials Project/pymatgen oxide and fluoride "
+    "parameterisation, fitted to formation enthalpies. They are not determined "
+    "for this material and are not uniquely required.",
+    "Oxidation states are pymatgen charge-balance guesses from the composition, "
+    "used only to recognise formally d0 compounds.",
 )
 _DISPERSION_CORRECTION_LIMITATIONS = (
     "This recommendation is based on bonded-connectivity dimensionality. It "
@@ -316,6 +339,7 @@ def method_considerations_for_structure(
     return _method_considerations_from_evidence(
         detections,
         dimensionality_observation=dimensionality_observation,
+        dft_u_evaluation=evaluate_dft_u(structure),
         workflow=workflow,
     )
 
@@ -332,6 +356,7 @@ def _method_considerations_from_evidence(
     detections: tuple[StructureDetection, ...] | list[StructureDetection],
     *,
     dimensionality_observation: StructureDimensionalityObservation | None = None,
+    dft_u_evaluation: Mapping[str, Any] | None = None,
     workflow: WorkflowSpec | Mapping[str, Any] | None = None,
 ) -> tuple[MethodConsideration, ...]:
     considerations: list[MethodConsideration] = []
@@ -360,6 +385,9 @@ def _method_considerations_from_evidence(
     )
     if soc_detections:
         considerations.append(_heavy_element_soc_consideration(soc_detections, workflow_spec))
+
+    if dft_u_evaluation is not None and dft_u_evaluation.get("mp_rule_triggered"):
+        considerations.append(_dft_u_consideration(dft_u_evaluation, workflow_spec))
     return tuple(considerations)
 
 
@@ -373,6 +401,7 @@ def method_consideration_payload(
     considerations = _method_considerations_from_evidence(
         detections,
         dimensionality_observation=dimensionality_observation,
+        dft_u_evaluation=evaluate_dft_u(structure),
         workflow=workflow,
     )
     return {
@@ -387,6 +416,49 @@ def method_consideration_payload(
             for consideration in considerations
         ],
     }
+
+
+def _dft_u_consideration(
+    evaluation: Mapping[str, Any],
+    workflow: WorkflowSpec | None,
+) -> MethodConsideration:
+    support = _modifier_support_payload(workflow, Modifier.DFT_U)
+    elements = tuple(evaluation.get("triggering_elements") or ())
+    anion = evaluation.get("deciding_anion")
+    suppressed = evaluation.get("decision") == DFT_U_DECISION_SUPPRESS
+    return MethodConsideration(
+        id=DFT_U_CONSIDERATION_ID,
+        method="dft_u",
+        modifier=Modifier.DFT_U.value,
+        display_name=modifier_display_name(Modifier.DFT_U),
+        status=DFT_U_SUPPRESSED_STATUS if suppressed else DFT_U_RECOMMENDED_STATUS,
+        trigger_detection_ids=tuple(_element_detection_id(element) for element in elements),
+        trigger_elements=elements,
+        trigger_classes=(f"mp_ggau_{str(anion).lower()}",) if anion else (),
+        observed_evidence={
+            "trigger_elements": list(elements),
+            "deciding_anion": anion,
+            "dft_u_evaluation": dict(evaluation),
+        },
+        reason=_DFT_U_REASON,
+        applicable_stage_types=tuple(
+            sorted(
+                {
+                    capability["stage_type"]
+                    for capability in support["supported_stage_capabilities"]
+                }
+            )
+        ),
+        bmd_compute_support=support,
+        selection_state=support["workflow"]["selection_state"],
+        policy_source={
+            **_POLICY_SOURCE,
+            "rule_id": DFT_U_CONSIDERATION_ID,
+            "dft_u_policy_id": evaluation.get("policy_id"),
+            "dft_u_policy_version": evaluation.get("policy_version"),
+        },
+        limitations=_DFT_U_LIMITATIONS,
+    )
 
 
 def _heavy_element_soc_consideration(
@@ -755,6 +827,9 @@ def _json_safe_value(value):
 
 __all__ = [
     "ALREADY_SELECTED",
+    "DFT_U_CONSIDERATION_ID",
+    "DFT_U_RECOMMENDED_STATUS",
+    "DFT_U_SUPPRESSED_STATUS",
     "DISPERSION_RECOMMENDED_STATUS",
     "DISPERSION_TWO_DIMENSIONAL_CONNECTIVITY_CONSIDERATION_ID",
     "INVALID_WORKFLOW",

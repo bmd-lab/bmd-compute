@@ -16,6 +16,7 @@ from backend.calculations.method_considerations import (
     DISPERSION_TWO_DIMENSIONAL_CONNECTIVITY_CONSIDERATION_ID,
     INVALID_WORKFLOW,
     NOT_SELECTED,
+    DFT_U_CONSIDERATION_ID,
     POLICY_VERSION,
     SOC_HEAVY_ELEMENTS_CONSIDERATION_ID,
     SOC_RECOMMENDED_STATUS,
@@ -184,8 +185,8 @@ def detection_id(symbol: str) -> str:
     return f"element.{symbol.lower()}.present"
 
 
-def test_policy_v4_membership_is_explicit_and_centralized():
-    assert POLICY_VERSION == 4
+def test_policy_v5_membership_is_explicit_and_centralized():
+    assert POLICY_VERSION == 5
     assert SOC_TRIGGER_CLASSES == {
         "4d_transition_metals": ("Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd"),
         "5d_transition_metals": ("Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg"),
@@ -401,13 +402,20 @@ def test_heavy_element_detection_produces_single_conservative_soc_consideration(
     assert "may be important" in reason
     for forbidden in ("required", "necessary", "mandatory", "invalid"):
         assert forbidden not in reason
-    assert consideration.policy_source["policy_version"] == 4
+    assert consideration.policy_source["policy_version"] == 5
     assert consideration.policy_source["rule_id"] == SOC_HEAVY_ELEMENTS_CONSIDERATION_ID
     assert "composition-based screening" in consideration.limitations[0]
 
 
 def test_spin_screen_detection_produces_single_conservative_spin_consideration():
-    consideration = only_consideration(structure_for_symbols(["Fe", "O"]))
+    # Fe-O also triggers the independent DFT+U consideration (policy v5); this
+    # test concerns the single spin consideration only.
+    considerations = method_considerations_for_structure(structure_for_symbols(["Fe", "O"]))
+    assert [item.id for item in considerations] == [
+        SPIN_COMPOSITION_CONSIDERATION_ID,
+        DFT_U_CONSIDERATION_ID,
+    ]
+    consideration = considerations[0]
 
     assert consideration.id == SPIN_COMPOSITION_CONSIDERATION_ID
     assert consideration.method == "spin_polarisation"
@@ -437,7 +445,7 @@ def test_spin_screen_detection_produces_single_conservative_spin_consideration()
     assert "consider enabling spin polarised" in reason
     for forbidden in ("is magnetic", "required", "necessary", "mandatory"):
         assert forbidden not in reason
-    assert consideration.policy_source["policy_version"] == 4
+    assert consideration.policy_source["policy_version"] == 5
     assert consideration.policy_source["rule_id"] == SPIN_COMPOSITION_CONSIDERATION_ID
     assert "does not establish that the material is magnetic" in consideration.limitations[0]
 
@@ -483,7 +491,7 @@ def test_sns2_dimensionality_observation_produces_dispersion_consideration():
     assert "Consider enabling a dispersion correction" in consideration.reason
     for forbidden in ("definitely", "required", "D3(BJ) is scientifically correct", "vdW material"):
         assert forbidden.lower() not in consideration.reason.lower()
-    assert consideration.policy_source["policy_version"] == 4
+    assert consideration.policy_source["policy_version"] == 5
     assert consideration.policy_source["rule_id"] == (
         DISPERSION_TWO_DIMENSIONAL_CONNECTIVITY_CONSIDERATION_ID
     )
@@ -659,9 +667,15 @@ def test_dispersion_consideration_does_not_select_modifier_or_change_generated_i
 def test_fe_mn_o_produces_one_spin_consideration_with_actual_spin_triggers_only():
     payload = method_consideration_payload(structure_for_symbols(["Fe", "Mn", "O"]))
 
+    # Policy v5: an Fe/Mn oxide also receives the independent DFT+U
+    # consideration; spin is still reported once, for Fe and Mn only.
     assert [consideration["id"] for consideration in payload["considerations"]] == [
-        SPIN_COMPOSITION_CONSIDERATION_ID
+        SPIN_COMPOSITION_CONSIDERATION_ID,
+        DFT_U_CONSIDERATION_ID,
     ]
+    dft_u = payload["considerations"][1]
+    assert dft_u["trigger_elements"] == ["Fe", "Mn"]
+    assert dft_u["observed_evidence"]["deciding_anion"] == "O"
     consideration = payload["considerations"][0]
     assert consideration["trigger_elements"] == ["Fe", "Mn"]
     assert consideration["trigger_detection_ids"] == [

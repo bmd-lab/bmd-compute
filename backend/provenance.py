@@ -17,7 +17,7 @@ from backend.runtime_package import runtime_package_manifest_metadata
 
 
 PROVENANCE_SCHEMA_VERSION = 1
-SCIENTIFIC_PACKAGE_NAMES = ("pymatgen", "atomate2", "jobflow", "custodian")
+SCIENTIFIC_PACKAGE_NAMES = ("pymatgen", "pymatgen-core", "atomate2", "jobflow", "custodian")
 
 
 def build_submission_provenance(submission_spec: dict) -> dict:

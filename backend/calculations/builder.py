@@ -17,6 +17,7 @@ def build_calculation_flow(
     kpoints: dict | None = None,
     resources=None,
     potcar_functional: str | None = None,
+    dft_u_expectations: dict | None = None,
 ):
     """
     Build a Jobflow Flow for a calculation intent.
@@ -37,6 +38,7 @@ def build_calculation_flow(
             kpoints=kpoints,
             resources=resources,
             potcar_functional=potcar_functional or "PBE_64",
+            dft_u_expectations=dft_u_expectations,
         )
 
     normalized = CalculationSpec(

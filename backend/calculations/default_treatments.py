@@ -7,6 +7,14 @@ from backend.calculations.dispersion import (
     DEFAULT_DISPERSION_METHOD,
     dispersion_option_payload,
 )
+from backend.calculations.dft_u_policy import (
+    CONSIDERATION_ID as DFT_U_CONSIDERATION_ID,
+    DECISION_APPLY as DFT_U_DECISION_APPLY,
+    FROZEN_OPTION_KEY as DFT_U_OPTION_KEY,
+    POLICY_ID as DFT_U_POLICY_ID,
+    POLICY_VERSION as DFT_U_POLICY_VERSION,
+    PARAMETER_SOURCE as DFT_U_PARAMETER_SOURCE,
+)
 from backend.calculations.models import Modifier, StageSpec, StageType, Theory, WorkflowSpec
 from backend.calculations.registry import (
     CalculationValidationError,
@@ -40,6 +48,11 @@ SOC_NOT_APPLICABLE_REASON = (
     "Output contains no stage that receives SOC."
 )
 IMPLEMENTATION_SOURCE = "backend.calculations.default_treatments"
+DFT_U_STAGE_TYPES = frozenset({StageType.RELAX, StageType.STATIC})
+DFT_U_NO_STAGE_REASON = (
+    "This Desired Output has no PBE Geometry Optimisation or Static Energy "
+    "stage, so automatic DFT+U has nowhere to apply."
+)
 
 
 @dataclass(frozen=True)
@@ -87,6 +100,7 @@ class ResolvedDefaultWorkflow:
     desired_output: str | None = None
     mode: str = "bmd_managed_desired_output"
     not_applicable_considerations: tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
+    dft_u: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "base_workflow", validate_workflow_spec(self.base_workflow))
@@ -106,6 +120,8 @@ class ResolvedDefaultWorkflow:
             "not_applicable_considerations",
             tuple(_json_safe_mapping(item) for item in self.not_applicable_considerations),
         )
+        if self.dft_u is not None:
+            object.__setattr__(self, "dft_u", _json_safe_mapping(self.dft_u))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -122,6 +138,7 @@ class ResolvedDefaultWorkflow:
                 dict(item)
                 for item in self.not_applicable_considerations
             ],
+            "dft_u": dict(self.dft_u) if self.dft_u is not None else None,
             "source": IMPLEMENTATION_SOURCE,
         }
 
@@ -172,6 +189,30 @@ def resolve_default_treatments(
                 }
             )
 
+    dft_u_evaluation = _dft_u_evaluation(payload)
+    if dft_u_evaluation is not None:
+        if dft_u_evaluation.get("decision") == DFT_U_DECISION_APPLY:
+            stages, treatment = _apply_dft_u(stages, dft_u_evaluation["parameters"])
+            if treatment is not None:
+                applied.append(treatment)
+            else:
+                not_applicable.append(
+                    {
+                        "consideration_id": DFT_U_CONSIDERATION_ID,
+                        "modifier": Modifier.DFT_U.value,
+                        "reason": DFT_U_NO_STAGE_REASON,
+                    }
+                )
+        else:
+            not_applicable.append(
+                {
+                    "consideration_id": DFT_U_CONSIDERATION_ID,
+                    "modifier": Modifier.DFT_U.value,
+                    "reason": str(dft_u_evaluation.get("gate_reason") or ""),
+                    "gate": dft_u_evaluation.get("gate"),
+                }
+            )
+
     resolved = validate_workflow_spec(
         WorkflowSpec(
             stages=stages,
@@ -194,6 +235,7 @@ def resolve_default_treatments(
         advisory_consideration_ids=advisory_ids,
         desired_output=desired_output,
         not_applicable_considerations=tuple(not_applicable),
+        dft_u=dft_u_evaluation,
     )
 
 
@@ -246,12 +288,34 @@ def automatic_default_treatment_policy() -> dict[str, Any]:
                 ),
                 "support_guard": "backend.calculations.registry.validate_stage_spec",
             },
-        ],
-        "advisory_only": [
             {
+                "consideration_id": DFT_U_CONSIDERATION_ID,
                 "modifier": Modifier.DFT_U.value,
+                "display_name": modifier_display_name(Modifier.DFT_U),
+                "policy_id": DFT_U_POLICY_ID,
+                "policy_version": DFT_U_POLICY_VERSION,
+                "trigger_source": "backend.calculations.dft_u_policy",
+                "trigger": (
+                    "pymatgen/Materials Project GGA+U rule: O or F is the most "
+                    "electronegative element and an element with a non-zero MP U "
+                    "value is present"
+                ),
+                "d0_gate": (
+                    "suppress only when every charge-balanced pymatgen "
+                    "oxidation-state guess places every triggering element at d0; "
+                    "no guess keeps the Materials Project rule"
+                ),
+                "parameters": DFT_U_PARAMETER_SOURCE + ", unchanged",
+                "application": [
+                    {"stage_type": StageType.RELAX.value, "theory": Theory.PBE.value},
+                    {"stage_type": StageType.STATIC.value, "theory": Theory.PBE.value},
+                ],
+                "excluded_theories": [Theory.HSE06.value],
+                "frozen_parameters": "stage option 'dft_u', verified against the generated INCAR at run time",
+                "support_guard": "backend.calculations.registry.validate_stage_spec",
             },
         ],
+        "advisory_only": [],
     }
 
 
@@ -336,6 +400,61 @@ def _apply_soc(
             consideration_id=SOC_CONSIDERATION_ID,
             modifier=Modifier.SOC,
             display_name=modifier_display_name(Modifier.SOC),
+            stage_indices=tuple(
+                application["stage_index"]
+                for application in stage_applications
+            ),
+            stage_applications=tuple(stage_applications),
+        )
+    return tuple(resolved_stages), treatment
+
+
+def _dft_u_evaluation(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    for consideration in payload.get("considerations", ()):
+        if consideration.get("id") == DFT_U_CONSIDERATION_ID:
+            evidence = consideration.get("observed_evidence") or {}
+            evaluation = evidence.get("dft_u_evaluation")
+            return dict(evaluation) if isinstance(evaluation, Mapping) else None
+    return None
+
+
+def _stage_receives_default_dft_u(stage: StageSpec) -> bool:
+    return stage.theory is Theory.PBE and stage.stage_type in DFT_U_STAGE_TYPES
+
+
+def _apply_dft_u(
+    stages: Iterable[StageSpec],
+    parameters: Mapping[str, Any],
+) -> tuple[tuple[StageSpec, ...], AppliedDefaultTreatment | None]:
+    resolved_stages: list[StageSpec] = []
+    stage_applications: list[dict[str, Any]] = []
+    for index, stage in enumerate(stages, start=1):
+        if not _stage_receives_default_dft_u(stage):
+            resolved_stages.append(stage)
+            continue
+        options = dict(stage.options or {})
+        options[DFT_U_OPTION_KEY] = _json_safe_mapping(parameters)
+        resolved = StageSpec(
+            stage_type=stage.stage_type,
+            theory=stage.theory,
+            modifiers=frozenset({*stage.modifiers, Modifier.DFT_U}),
+            label=stage.label,
+            options=options,
+        )
+        _validate_automatic_stage(
+            resolved,
+            modifier=Modifier.DFT_U,
+            consideration_id=DFT_U_CONSIDERATION_ID,
+        )
+        resolved_stages.append(resolved)
+        stage_applications.append(_stage_application(index, resolved))
+
+    treatment = None
+    if stage_applications:
+        treatment = AppliedDefaultTreatment(
+            consideration_id=DFT_U_CONSIDERATION_ID,
+            modifier=Modifier.DFT_U,
+            display_name=modifier_display_name(Modifier.DFT_U),
             stage_indices=tuple(
                 application["stage_index"]
                 for application in stage_applications
@@ -434,6 +553,9 @@ __all__ = [
     "AUTOMATIC_APPLICATION_APPLIED",
     "AUTOMATIC_APPLICATION_NOT_APPLICABLE",
     "AppliedDefaultTreatment",
+    "DFT_U_CONSIDERATION_ID",
+    "DFT_U_NO_STAGE_REASON",
+    "DFT_U_STAGE_TYPES",
     "DISPERSION_CONSIDERATION_ID",
     "ResolvedDefaultWorkflow",
     "SOC_CONSIDERATION_ID",

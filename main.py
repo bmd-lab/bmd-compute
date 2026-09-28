@@ -21,7 +21,13 @@ from backend.calculations.default_treatments import (
     ResolvedDefaultWorkflow,
     resolve_default_treatments,
 )
+from backend.calculations.dft_u_policy import (
+    GATE_UNAVAILABLE as DFT_U_GATE_UNAVAILABLE,
+    prepared_dft_u_record,
+)
 from backend.calculations.method_considerations import (
+    DFT_U_CONSIDERATION_ID,
+    DFT_U_SUPPRESSED_STATUS,
     DISPERSION_TWO_DIMENSIONAL_CONNECTIVITY_CONSIDERATION_ID,
     SOC_HEAVY_ELEMENTS_CONSIDERATION_ID,
     SPIN_COMPOSITION_CONSIDERATION_ID,
@@ -571,6 +577,11 @@ def method_considerations_context(
         return None
 
     rendered = deepcopy(payload)
+    workflow_theories = (
+        {stage.theory for stage in validate_workflow_spec(workflow).stages}
+        if workflow is not None
+        else set()
+    )
     applied_by_id = {
         treatment.consideration_id: treatment.to_dict()
         for treatment in (
@@ -600,6 +611,7 @@ def method_considerations_context(
         consideration["automatic_not_applicable"] = not_applicable_by_id.get(
             consideration.get("id")
         )
+        consideration["workflow_has_hse06_stages"] = Theory.HSE06 in workflow_theories
         support = consideration.get("bmd_compute_support") or {}
         consideration["display_name"] = (
             consideration.get("display_name")
@@ -658,9 +670,13 @@ def _method_consideration_browser_name(consideration: dict) -> str:
             return "Spin Polarisation applied"
         if consideration.get("id") == SOC_HEAVY_ELEMENTS_CONSIDERATION_ID:
             return "Spin-Orbit Coupling (SOC) applied"
+        if consideration.get("id") == DFT_U_CONSIDERATION_ID:
+            return "DFT+U applied"
     if consideration.get("automatic_application_state") == AUTOMATIC_APPLICATION_NOT_APPLICABLE:
         if consideration.get("id") == SOC_HEAVY_ELEMENTS_CONSIDERATION_ID:
             return "Spin-Orbit Coupling (SOC) not used in geometry optimisation"
+        if consideration.get("id") == DFT_U_CONSIDERATION_ID:
+            return "DFT+U not applied automatically"
 
     if consideration.get("id") == DISPERSION_TWO_DIMENSIONAL_CONNECTIVITY_CONSIDERATION_ID:
         return "van der Waals Correction"
@@ -734,8 +750,62 @@ def _method_consideration_browser_summary(consideration: dict) -> str:
             f"Advanced Option{suffix}."
         )
 
+    if consideration_id == DFT_U_CONSIDERATION_ID:
+        return _dft_u_browser_summary(consideration, is_applied=is_applied)
+
     reason = str(consideration.get("reason") or "").strip()
     return reason or f"{subject}."
+
+
+def _dft_u_browser_summary(consideration: dict, *, is_applied: bool) -> str:
+    evidence = consideration.get("observed_evidence") or {}
+    evaluation = evidence.get("dft_u_evaluation") or {}
+    anion = evaluation.get("deciding_anion")
+    compound = {"O": "oxide", "F": "fluoride"}.get(anion, "compound")
+    elements = _human_join(consideration.get("trigger_elements") or ())
+    subject = f"{elements} in an {compound} detected" if elements else "Relevant composition detected"
+
+    if consideration.get("status") == DFT_U_SUPPRESSED_STATUS:
+        return (
+            f"{subject}. Every charge-balanced oxidation state pymatgen finds puts "
+            f"{elements} at d0, so BMD Compute does not apply DFT+U automatically. "
+            "Choose Custom workflow to add it manually."
+        )
+
+    species = ((evaluation.get("parameters") or {}).get("species")) or {}
+    values = _human_join(
+        f"{symbol} U = {parameters.get('U'):g} eV, J = {parameters.get('J'):g} eV"
+        for symbol, parameters in sorted(species.items())
+        if float(parameters.get("U") or 0) > 0
+    )
+    value_text = f" ({values})" if values else ""
+    if is_applied:
+        stage_phrase, _ = _automatic_application_stage_phrase(consideration)
+        stage_text = f" in the {stage_phrase}" if stage_phrase else ""
+        hse_text = (
+            " DFT+U applies to the PBE geometry optimisation only; the HSE06 "
+            "electronic-structure stages do not use +U."
+            if consideration.get("workflow_has_hse06_stages")
+            else ""
+        )
+        gate_text = (
+            " pymatgen found no charge-balanced oxidation state, so the Materials "
+            "Project rule was applied without the d0 check."
+            if evaluation.get("gate") == DFT_U_GATE_UNAVAILABLE
+            else ""
+        )
+        return (
+            f"{subject}. DFT+U has been included automatically{stage_text}{value_text}, "
+            "following the Materials Project/pymatgen GGA+U oxide/fluoride "
+            "parameterisation. These are standard empirical values, not values "
+            f"determined for this material.{hse_text}{gate_text} Choose Custom "
+            "workflow to configure this manually."
+        )
+    return (
+        f"{subject}. Suggested to activate the DFT+U Advanced Option"
+        f"{value_text}, which uses the Materials Project/pymatgen oxide/fluoride "
+        "parameterisation."
+    )
 
 
 def _automatic_application_stage_phrase(consideration: dict) -> tuple[str, int]:
@@ -909,6 +979,14 @@ def build_submission_state_from_structure(
         flow_spec["calculation_spec"] = calculation_spec.to_dict()
     if default_treatment_resolution is not None:
         flow_spec["automatic_treatments"] = default_treatment_resolution.to_dict()
+        if default_treatment_resolution.dft_u is not None:
+            flow_spec["automatic_treatments"]["dft_u"] = prepared_dft_u_record(
+                default_treatment_resolution.dft_u,
+                structure_obj,
+                workflow_spec,
+                resources=execution_resources,
+                potcar_functional=potcar_functional,
+            )
     submission_spec = create_submission_spec(
         flow_spec,
         structure=structure_obj,

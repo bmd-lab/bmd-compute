@@ -325,6 +325,48 @@ def apply_modifier_incar_settings(user_incar, *, modifiers) -> dict:
     return settings
 
 
+def apply_frozen_dft_u_settings(user_incar, *, frozen_dft_u=None, modifiers=None) -> dict:
+    """Write frozen BMD +U parameters as explicit user INCAR settings.
+
+    ``frozen_dft_u`` is ``{"parameters": ..., "expected_generated": ...}``;
+    the parameters are the MP/pymatgen values frozen at preparation.
+    """
+
+    settings = dict(user_incar or {})
+    if not frozen_dft_u:
+        return settings
+    if Modifier.DFT_U not in calculation_modifiers_from_options(modifiers=modifiers):
+        raise CalculationValidationError(
+            "Frozen DFT+U parameters require the DFT+U modifier on the same stage.",
+            suggestion="Rebuild the calculation, then try again.",
+        )
+    from backend.calculations.dft_u_policy import frozen_user_incar
+
+    settings.update(frozen_user_incar(frozen_dft_u["parameters"]))
+    return settings
+
+
+def _generator_class_for_frozen_dft_u(base_class, frozen_dft_u):
+    if not frozen_dft_u:
+        return base_class
+    from backend.calculations.dft_u_policy import frozen_dft_u_generator_class
+
+    return frozen_dft_u_generator_class(base_class)
+
+
+def _frozen_dft_u_generator_kwargs(frozen_dft_u) -> dict:
+    return {"bmd_frozen_dft_u": dict(frozen_dft_u)} if frozen_dft_u else {}
+
+
+def frozen_dft_u_for_stage(stage: StageSpec, expected_generated=None) -> dict | None:
+    from backend.calculations.dft_u_policy import stage_frozen_dft_u
+
+    parameters = stage_frozen_dft_u(stage)
+    if parameters is None:
+        return None
+    return {"parameters": parameters, "expected_generated": expected_generated}
+
+
 def apply_dft_u_settings(user_incar, *, dft_u: bool) -> dict:
     settings = dict(user_incar or {})
     if dft_u:
@@ -709,6 +751,7 @@ def build_relax_input_set_generator(
     kpoints=None,
     potcar_functional="PBE_64",
     dispersion_method=None,
+    frozen_dft_u=None,
 ):
     from atomate2.vasp.sets.core import RelaxSetGenerator
 
@@ -719,6 +762,11 @@ def build_relax_input_set_generator(
     user_incar = dict(incar or {})
     user_incar = apply_modifier_incar_settings(
         user_incar,
+        modifiers=calculation_modifiers,
+    )
+    user_incar = apply_frozen_dft_u_settings(
+        user_incar,
+        frozen_dft_u=frozen_dft_u,
         modifiers=calculation_modifiers,
     )
     if Modifier.SOC in calculation_modifiers:
@@ -750,7 +798,7 @@ def build_relax_input_set_generator(
     )
     vdw = _dispersion_vdw_for_modifiers(calculation_modifiers, dispersion_method)
 
-    return RelaxSetGenerator(
+    return _generator_class_for_frozen_dft_u(RelaxSetGenerator, frozen_dft_u)(
         vdw=vdw,
         user_potcar_functional=potcar_functional,
         user_kpoints_settings=ksettings_for_modifiers(
@@ -759,6 +807,7 @@ def build_relax_input_set_generator(
             modifiers=calculation_modifiers,
         ),
         user_incar_settings=user_incar,
+        **_frozen_dft_u_generator_kwargs(frozen_dft_u),
     )
 
 
@@ -1141,6 +1190,7 @@ def build_static_input_set_generator(
     potcar_functional="PBE_64",
     magmom_structure=None,
     dispersion_method=None,
+    frozen_dft_u=None,
 ):
     from atomate2.vasp.sets.core import StaticSetGenerator
 
@@ -1159,10 +1209,15 @@ def build_static_input_set_generator(
         structure=structure,
         magmom_structure=magmom_structure,
     )
+    user_incar_settings = apply_frozen_dft_u_settings(
+        user_incar_settings,
+        frozen_dft_u=frozen_dft_u,
+        modifiers=calculation_modifiers,
+    )
 
     vdw = _dispersion_vdw_for_modifiers(calculation_modifiers, dispersion_method)
 
-    return StaticSetGenerator(
+    return _generator_class_for_frozen_dft_u(StaticSetGenerator, frozen_dft_u)(
         vdw=vdw,
         user_potcar_functional=potcar_functional,
         user_kpoints_settings=ksettings_for_modifiers(
@@ -1171,6 +1226,7 @@ def build_static_input_set_generator(
             modifiers=calculation_modifiers,
         ),
         user_incar_settings=user_incar_settings,
+        **_frozen_dft_u_generator_kwargs(frozen_dft_u),
     )
 
 
@@ -1638,6 +1694,7 @@ def build_atomate2_flow_for_workflow_spec(
     kpoints=None,
     resources=None,
     potcar_functional="PBE_64",
+    dft_u_expectations=None,
 ):
     from atomate2.vasp.jobs.core import NonSCFMaker, RelaxMaker, StaticMaker
 
@@ -1667,6 +1724,10 @@ def build_atomate2_flow_for_workflow_spec(
         spin_polarized = Modifier.SPIN_POLARIZED in stage.modifiers
         stage_dispersion_method = dispersion_method_for_stage(stage)
         run_vasp_kwargs = run_vasp_kwargs_for_modifiers(stage.modifiers)
+        frozen_dft_u = frozen_dft_u_for_stage(
+            stage,
+            expected_generated=(dft_u_expectations or {}).get(index + 1),
+        )
 
         if stage.stage_type is StageType.RELAX:
             generator = build_relax_input_set_generator(
@@ -1680,6 +1741,7 @@ def build_atomate2_flow_for_workflow_spec(
                 kpoints=stage_kpoints,
                 potcar_functional=potcar_functional,
                 dispersion_method=stage_dispersion_method,
+                frozen_dft_u=frozen_dft_u,
             )
             job = RelaxMaker(
                 input_set_generator=generator,
@@ -1701,6 +1763,7 @@ def build_atomate2_flow_for_workflow_spec(
                 potcar_functional=potcar_functional,
                 magmom_structure=structure,
                 dispersion_method=stage_dispersion_method,
+                frozen_dft_u=frozen_dft_u,
             )
             maker = StaticMaker(
                 input_set_generator=generator,
@@ -2045,6 +2108,18 @@ def build_atomate2_flow(
     )
 
 
+def frozen_dft_u_expectations_from_flow_spec(flow_spec: dict | None) -> dict[int, dict]:
+    """Per-stage +U settings recorded at preparation, keyed by 1-based stage index."""
+
+    treatments = dict((flow_spec or {}).get("automatic_treatments") or {})
+    record = dict(treatments.get("dft_u") or {})
+    expectations = {}
+    for stage in record.get("generated_stages") or ():
+        if isinstance(stage, dict) and isinstance(stage.get("stage_index"), int):
+            expectations[stage["stage_index"]] = dict(stage)
+    return expectations
+
+
 def build_atomate2_flow_from_spec(
     structure,
     flow_spec: dict,
@@ -2073,6 +2148,7 @@ def build_atomate2_flow_from_spec(
         kpoints=flow_spec.get("kpoints"),
         resources=execution_resources,
         potcar_functional=potcar_functional,
+        dft_u_expectations=frozen_dft_u_expectations_from_flow_spec(flow_spec),
     )
 
     if getattr(flow, "name", None) == run_name:

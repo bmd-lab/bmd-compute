@@ -483,13 +483,11 @@ def test_automatic_default_treatment_policy_is_json_safe_and_contract_focused():
         SPIN_CONSIDERATION_ID,
         DISPERSION_CONSIDERATION_ID,
         SOC_CONSIDERATION_ID,
+        "dftu.mp_oxide_fluoride",
     ]
     assert policy["treatments"][1]["method"] == "dftd3-bj"
     assert policy["treatments"][1]["incar_effect"] == {"IVDW": 12}
     assert policy["treatments"][2]["excluded_stage_types"] == ["relax"]
     assert policy["treatments"][2]["executable"] == "vasp_ncl"
-    assert not [
-        entry
-        for entry in policy["advisory_only"]
-        if entry.get("consideration_id") == SOC_CONSIDERATION_ID
-    ]
+    assert policy["treatments"][3]["excluded_theories"] == ["hse06"]
+    assert policy["advisory_only"] == []

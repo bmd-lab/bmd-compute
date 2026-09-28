@@ -41,7 +41,7 @@ The preparation environment records:
 
 - Python version
 - Python implementation
-- local scientific package versions for `pymatgen`, `atomate2`, `jobflow`, and `custodian`
+- local scientific package versions for `pymatgen`, `pymatgen-core`, `atomate2`, `jobflow`, and `custodian`
 
 Remote execution package versions are marked as deferred at submission time because the remote job environment is the source of truth when the calculation actually runs.
 
@@ -65,6 +65,7 @@ The execution section records:
 
 - serialized `WorkflowSpec`
 - for BMD-managed Desired Output workflows, the automatic treatment record (`automatic_treatments`): base recipe, resolved workflow, which treatments were applied to which stages, and any consideration with no applicable stage
+- when the automatic DFT+U rule triggers, `automatic_treatments.dft_u`: policy id/version, rule id, deciding anion, triggering elements, every pymatgen oxidation-state guess and the derived d counts, the d0 gate result and reason, the decision, the frozen L/U/J/LDAUTYPE parameters and their source, the `MPRelaxSet.yaml` SHA-256, the `atomate2`/`pymatgen`/`pymatgen-core` versions, and, per +U stage, the generated `LDAU`/`LDAUTYPE`/`LDAUL`/`LDAUU`/`LDAUJ`/`LMAXMIX` with POSCAR species order and POTCAR symbols. Runtime regenerates each +U stage from the frozen values and stops if any of these differ
 - stage order
 - selected resources
 - partition/account policy

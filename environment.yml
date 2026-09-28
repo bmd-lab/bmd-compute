@@ -9,9 +9,15 @@ dependencies:
   - uvicorn
   - jinja2
   - python-multipart
-  - pymatgen
-  - atomate2
   - jobflow
   - paramiko
   - pytest
   - pip
+  # Scientific stack pinned to the validated POWER production versions.
+  # pymatgen 2026.5.4 is a meta-package: the VASP input sets (including the
+  # Materials Project GGA+U table used by automatic DFT+U) live in
+  # pymatgen-core, so pymatgen-core is pinned explicitly as well.
+  - pip:
+      - atomate2==0.1.5
+      - pymatgen==2026.5.4
+      - pymatgen-core==2026.7.16
