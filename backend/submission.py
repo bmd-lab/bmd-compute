@@ -41,6 +41,7 @@ from backend.config import (
     SUBMISSION_ENV_KEYS,
     WORKFLOW_RESOURCE_OVERRIDES,
 )
+from backend.run_records import submission_record_header
 from backend.provenance import build_submission_provenance
 from backend.runtime_package import (
     RUNTIME_PACKAGE_DIR,
@@ -948,6 +949,8 @@ def remote_preparation_file_groups(submission_spec: dict) -> list[dict]:
                     "path": _submission_json_path(submission_spec),
                     "text": json_dumps_for_remote_file(submission_spec),
                     "mode": 0o640,
+                    # Readers must never observe a partially written record.
+                    "atomic": True,
                 },
             ],
         },
@@ -1352,6 +1355,8 @@ def create_submission_spec(
     directories_to_prepare.extend(stage_dirs.values())
 
     spec = {
+        # Contract header for bmd_compute.submission v1; see backend.run_records.
+        **submission_record_header(),
         "status": "pending",
         "label": sanitized_label,
         "run_name": run_name,

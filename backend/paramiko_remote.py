@@ -8,12 +8,14 @@ import re
 import shlex
 import subprocess
 import time
+import uuid
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping
 
 from backend.config import MODULES
+from backend.run_records import job_record_payload
 from backend.monitoring import (
     MonitoringStageError,
     remote_job_status_from_slurm_outputs,
@@ -780,6 +782,57 @@ class ParamikoRemoteRunner(RemoteRunner):
         finally:
             _close_quietly(sftp)
 
+    def put_text_atomic(
+        self,
+        remote_path: str,
+        text: str,
+        *,
+        mode: int = 0o640,
+    ) -> RemoteTransferResult:
+        """Write ``text`` so readers see either the old file or the complete new one.
+
+        The content is written to a hidden temporary sibling in the same
+        directory and then moved over ``remote_path`` with an SFTP POSIX
+        rename, which is an atomic replace on the same filesystem. On failure
+        the temporary file is removed and the destination is left unchanged.
+        """
+
+        temporary_path = _atomic_temporary_path(remote_path)
+        self.put_text(temporary_path, text, mode=mode)
+        try:
+            self._replace_file(temporary_path, remote_path)
+        except Exception:
+            self._discard_temporary_file(temporary_path)
+            raise
+        return RemoteTransferResult(
+            remote_path=remote_path,
+            mode=mode,
+            bytes_transferred=len(text.encode("utf-8")),
+        )
+
+    def _replace_file(self, source: str, destination: str) -> None:
+        if self._active_sftp is not None:
+            self._active_sftp.posix_rename(source, destination)
+            return
+        sftp = self._open_sftp()
+        try:
+            sftp.posix_rename(source, destination)
+        finally:
+            _close_quietly(sftp)
+
+    def _discard_temporary_file(self, remote_path: str) -> None:
+        try:
+            if self._active_sftp is not None:
+                self._active_sftp.remove(remote_path)
+                return
+            sftp = self._open_sftp()
+            try:
+                sftp.remove(remote_path)
+            finally:
+                _close_quietly(sftp)
+        except Exception:
+            return
+
     def _put_text_with_sftp(
         self,
         sftp,
@@ -1453,8 +1506,9 @@ class ParamikoRemoteRunner(RemoteRunner):
                 for item in group.get("files", []):
                     remote_path = str(item["path"])
                     text = str(item.get("text", ""))
+                    write = self.put_text_atomic if item.get("atomic") else self.put_text
                     try:
-                        self.put_text(
+                        write(
                             remote_path,
                             text,
                             mode=int(item.get("mode", 0o640)),
@@ -1690,11 +1744,16 @@ class ParamikoRemoteRunner(RemoteRunner):
             return
 
         try:
-            payload = json.dumps(record.to_dict(), indent=2)
-            self.put_text(record.remote_state_path, payload)
+            payload = json.dumps(job_record_payload(record.to_dict()), indent=2)
+            self.put_text_atomic(record.remote_state_path, payload)
         except Exception:
             # The notebook treated remote state persistence as best-effort.
             return
+
+
+def _atomic_temporary_path(remote_path: str) -> str:
+    directory, name = posixpath.split(remote_path)
+    return posixpath.join(directory, f".{name}.{uuid.uuid4().hex}.tmp")
 
 
 def _batch_request_from_submission_spec(submission_spec: dict) -> BatchSubmissionRequest:

@@ -182,6 +182,7 @@ class RecordingRunner(ParamikoRemoteRunner):
         self.remote_files = {}
         self.remote_reads = []
         self.symlinks = []
+        self.renames = []
 
     def ensure_available(self):
         return None
@@ -217,6 +218,13 @@ class RecordingRunner(ParamikoRemoteRunner):
     def put_text(self, remote_path, text, *, mode=0o640):
         self.remote_writes.append((remote_path, text, mode))
         self.remote_files[remote_path] = text
+
+    def _replace_file(self, source, destination):
+        # Atomic record writes land at the destination only through a rename.
+        text = self.remote_files.pop(source)
+        self.remote_files[destination] = text
+        self.renames.append((source, destination))
+        self.remote_writes.append((destination, text, None))
 
     def read_text(self, remote_path, *, max_bytes=None):
         self.remote_reads.append(remote_path)
@@ -265,6 +273,15 @@ class FakeSftp:
 
     def chmod(self, remote_path, mode):
         self.modes[remote_path] = mode
+
+    def posix_rename(self, source, destination):
+        self.files[destination] = self.files.pop(source)
+        if source in self.modes:
+            self.modes[destination] = self.modes.pop(source)
+
+    def remove(self, remote_path):
+        self.files.pop(remote_path, None)
+        self.modes.pop(remote_path, None)
 
     def close(self):
         self.close_count += 1

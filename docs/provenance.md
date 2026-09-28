@@ -2,6 +2,8 @@
 
 BMD Compute records a structured provenance block in `submission.json` when a calculation is prepared for remote execution.
 
+The file-level contract for `submission.json` and the job record is described in [run_records.md](run_records.md).
+
 The provenance block supplements the actual executed VASP files. It does not replace INCAR, KPOINTS, POSCAR, POTCAR, OUTCAR, `vasprun.xml`, Custodian logs, or SLURM accounting.
 
 ## Schema
