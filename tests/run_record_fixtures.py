@@ -10,12 +10,21 @@ exactly as written to POWER, with two normalizations for stable diffs:
 ``submitted_at`` is fixed, and the identity-token secret is a fixed,
 fixture-only value. Provenance fields (Git state, package versions, runtime
 file hashes) are whatever the generating environment reported. Only the
-contractual fields are compared by the drift test; consumers such as BMD Agent
-may vendor snapshots labelled with the generating BMD Compute commit.
+contractual fields are compared by the drift test.
+
+Fixture identity is the file content, recorded in ``v1/SHA256SUMS``. The
+BMD Compute commit named inside each record
+(``provenance.bmd_compute.source.git_commit``) is generation provenance only:
+it may name a branch commit that is not reachable from ``main`` (for example
+after a squash merge), and that alone is never a reason to regenerate.
+Regenerate only when the fixture content should change; the generator then
+rewrites ``SHA256SUMS``. Consumers such as BMD Agent vendor the files together
+with ``SHA256SUMS`` and verify them by hash.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -26,6 +35,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "run_records" / "v1"
+CHECKSUM_FILENAME = "SHA256SUMS"
 FIXTURE_SUBMITTED_AT = "2026-09-28T12:00:05+03:00"
 
 SI_POSCAR = """Si
@@ -120,6 +130,24 @@ def write_fixtures() -> None:
         job_record_path.write_text(json.dumps(job_record, indent=2) + "\n", encoding="utf-8")
 
 
+def fixture_files() -> list[Path]:
+    return sorted(path for path in FIXTURE_ROOT.glob("*/*.json"))
+
+
+def checksum_manifest() -> str:
+    """Return ``sha256sum``-format lines for every fixture, relative to ``v1/``."""
+
+    return "".join(
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(FIXTURE_ROOT).as_posix()}\n"
+        for path in fixture_files()
+    )
+
+
+def write_checksums() -> None:
+    (FIXTURE_ROOT / CHECKSUM_FILENAME).write_text(checksum_manifest(), encoding="utf-8")
+
+
 if __name__ == "__main__":
     os.environ.setdefault("BMD_SUBMISSION_IDENTITY_SECRET", "fixture-only")
     write_fixtures()
+    write_checksums()

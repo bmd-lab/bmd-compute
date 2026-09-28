@@ -106,6 +106,11 @@ temporary file is removed and the destination is left unchanged.
 
 `tests/fixtures/run_records/v1/` holds generated examples of both records for a
 single-stage static run, a PBE relax followed by HSE06 static with SOC, and a
-PBE double relaxation. Regenerate them with `python tests/run_record_fixtures.py`.
-Consumers may vendor copies labelled with the BMD Compute commit that generated
-them; there is no runtime dependency between repositories.
+PBE double relaxation. `v1/SHA256SUMS` records the SHA-256 of every fixture
+file and is the fixtures' identity. The BMD Compute commit recorded inside each
+fixture is generation provenance only; it may not be reachable from `main`
+(for example after a squash merge) and is never by itself a reason to
+regenerate. Regenerate with `python tests/run_record_fixtures.py` only when the
+fixture content should change; that also rewrites `SHA256SUMS`. Consumers may
+vendor the files with `SHA256SUMS` and verify them by hash; there is no runtime
+dependency between repositories.

@@ -476,3 +476,37 @@ def test_run_record_contract_documentation_states_authority_boundaries():
     assert "not scheduler lifecycle authority" in text
     assert "Prepare-time submission specification" in text
     assert "insertion order is not contractual" in text
+
+
+# --- fixture identity -----------------------------------------------------------------------
+
+
+def test_fixture_checksums_identify_the_committed_fixture_content():
+    manifest = (run_record_fixtures.FIXTURE_ROOT / run_record_fixtures.CHECKSUM_FILENAME).read_text(
+        encoding="utf-8"
+    )
+
+    assert manifest == run_record_fixtures.checksum_manifest()
+    listed = {line.split("  ", 1)[1] for line in manifest.splitlines()}
+    assert listed == {
+        f"{case}/{name}" for case in CASES for name in ("submission.json", "job_record.json")
+    }
+
+
+@pytest.mark.parametrize("case", CASES)
+def test_fixture_validity_does_not_depend_on_the_recorded_generating_commit(case, monkeypatch):
+    # The recorded commit is generation provenance. After a squash merge it
+    # may not be reachable from main; the fixtures stay valid and current.
+    monkeypatch.setenv("BMD_SUBMISSION_IDENTITY_SECRET", "fixture-only")
+    committed_submission, committed_job_record = load_fixture(case)
+    for document in (committed_submission, committed_job_record.get("submission_spec", {})):
+        document["provenance"]["bmd_compute"]["source"]["git_commit"] = "0" * 40
+    submission, job_record = run_record_fixtures.build_v1_records(case)
+
+    validate_submission_record_v1(committed_submission)
+    assert submission_contract_projection(submission) == submission_contract_projection(
+        committed_submission
+    )
+    assert job_record_contract_projection(job_record) == job_record_contract_projection(
+        committed_job_record
+    )
