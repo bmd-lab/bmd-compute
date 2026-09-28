@@ -22,7 +22,7 @@ The browser never talks directly to the cluster. FastAPI coordinates requests an
 
 ## Cross-Repository Authority
 
-BMD Compute is the authoritative implementation of the core BMD VASP generation pipeline: constructing, validating, executing, and provenancing BMD VASP calculations. BMDex owns supporting scientific data, reference evidence, and non-core scientific tools outside that pipeline. BMD Agent consumes exposed contracts, evidence, and infrastructure observations without duplicating their authority.
+BMD Compute is the authoritative implementation of the core BMD VASP generation pipeline: constructing, validating, executing, and provenancing BMD VASP calculations. It owns BMD's executable calculation methodology: the workflows, stages, settings and treatments it actually implements. BMDex supplies curated supporting scientific evidence, validation records, datasets, and non-core scientific tools outside that pipeline; it does not define BMD Compute methodology. BMD Agent observes exposed contracts, evidence, and infrastructure observations without duplicating their authority. Scientific validation and adoption of any methodology remain human judgment.
 
 If a capability determines how BMD generates a VASP calculation, its authoritative implementation belongs in BMD Compute. If it provides supporting scientific data or tooling but is not part of the core VASP data-generation pipeline, it belongs in BMDex.
 

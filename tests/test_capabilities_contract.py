@@ -39,7 +39,8 @@ def test_capability_payload_has_versioned_contract_and_provenance_shape():
     payload = build_capability_payload(include_provenance=False)
 
     assert payload["schema_version"] == 1
-    assert payload["scope"] == "BMD Compute executable implementation, not a methodology authority"
+    assert payload["source"]["repository"] == "bmd_compute"
+    assert payload["scope"] == SCOPE
     assert payload["contract"] == {
         "automatic_default_treatments": "Read-only policy describing BMD-managed Desired Output treatment resolution.",
         "base_stage_definitions": "Theory-neutral stage definitions from list_stage_definitions().",
@@ -241,3 +242,24 @@ def test_capability_payload_excludes_forbidden_boundary_information():
     )
     for fragment in forbidden_fragments:
         assert fragment not in text
+
+
+def test_machine_readable_contract_identifies_compute_methodology_payload():
+    payload = build_capability_payload(include_provenance=False)
+
+    # Consumers rely on these machine-readable fields for compatibility.
+    assert isinstance(payload["schema_version"], int)
+    assert payload["schema_version"] == SCHEMA_VERSION == 1
+    assert payload["source"]["repository"] == "bmd_compute"
+    assert isinstance(payload["scope"], str) and payload["scope"]
+
+
+def test_scope_text_states_compute_owns_executable_methodology():
+    payload = build_capability_payload(include_provenance=False)
+    scope_texts = [payload["scope"], payload["automatic_default_treatments"]["scope"]]
+    scope_texts.extend(entry["scope"] for entry in payload["capabilities"])
+
+    assert "executable calculation methodology" in payload["scope"]
+    for text in scope_texts:
+        assert "not a methodology authority" not in text
+        assert "BMDex" not in text
