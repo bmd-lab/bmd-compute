@@ -158,11 +158,13 @@ Status: implemented for supported PBE/HSE06 stages where the registry allows the
 
 BMD Compute preserves pymatgen/atomate2 magnetic initialization where appropriate. SOC stages convert initial moments into vector `MAGMOM`.
 
-### Explicit DFT+U
+### DFT+U
 
-Status: implemented for supported PBE stages when the selected input set provides reviewed active U values.
+Status: implemented for supported PBE stages when the selected input set provides active U values.
 
-BMD Compute does not silently inherit DFT+U into ordinary PBE. If DFT+U is requested and no reviewed U values are available, validation fails clearly.
+BMD Compute does not silently inherit DFT+U into ordinary PBE. If DFT+U is requested and no active U values are available, validation fails clearly.
+
+In BMD-managed Desired Output workflows, automatic DFT+U (policy `bmd_compute.dft_u` v1) adopts the pinned pymatgen `MPRelaxSet` GGA+U oxide/fluoride trigger and L/U/J/LDAUTYPE values unchanged (atomate2's generator table is the same table), adds a compound-level d0 gate over pymatgen oxidation-state guesses, and applies +U to PBE Relax/Static stages only. The values are passed to the atomate2 generator explicitly and the generated INCAR is checked against them, so upstream table changes cannot silently alter a prepared run. `LMAXMIX` is left to pymatgen's rule and recorded and verified rather than set.
 
 ### Spin-Orbit Coupling
 

@@ -19,13 +19,14 @@ _SHELL_VARIABLE_RE = re.compile(
 def print_runtime_info() -> None:
     print("[runner] python:", sys.version.replace("\n", " "))
 
-    for package in ("atomate2", "jobflow", "pymatgen", "custodian"):
+    from importlib import metadata
+
+    for package in ("atomate2", "jobflow", "pymatgen", "pymatgen-core", "custodian"):
         try:
-            module = __import__(package)
-            version = getattr(module, "__version__", "<no __version__>")
+            version = metadata.version(package)
             print(f"[runner] {package} version:", version)
         except Exception as exc:
-            print(f"[runner] {package} import failed:", exc)
+            print(f"[runner] {package} version unavailable:", exc)
 
 
 def print_vasp_launch_environment() -> None:

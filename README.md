@@ -57,7 +57,7 @@ Important current policies:
 - PBE relax stages use the Burton Lab relax policy, including ENCUT 580 eV.
 - Static/final electronic stages use the Burton Lab final policy, including ENCUT 620 eV where applicable.
 - HSE06 policy is stage-specific: relax uses `PRECFOCK = Fast`, static uses `PRECFOCK = Accurate`, and HSE06 band structure uses the reviewed atomate2 HSE band path.
-- DFT+U is explicit. BMD Compute does not silently inherit Hubbard U into plain PBE calculations.
+- DFT+U in the standard Desired Output workflows follows the pinned pymatgen/Materials Project GGA+U oxide/fluoride rule and values (Co, Cr, Fe, Mn, Mo, Ni, V, W with O or F as the most electronegative element), suppressed only when every charge-balanced pymatgen oxidation-state guess puts every triggering element at d0. It is applied to PBE Relax/Static stages only, never to HSE06 stages, and does not turn on spin polarisation. Values are frozen at preparation and verified at run time. These are standard empirical MP values, not values fitted to a given material. Custom workflows use DFT+U only when selected, and BMD Compute never silently inherits Hubbard U into plain PBE.
 - SOC/non-collinear stages route to `vasp_ncl` (Custodian `auto_gamma` is disabled for them so the command cannot be swapped for `vasp_gam`), keep `ISYM = 0`, suppress incompatible `LELF`, and omit `ISPIN`.
 - SOC starting moments: vector `MAGMOM` keeps the pymatgen/Materials Project starting moments when the structure contains an element in the spin method-consideration screen, or when the stage is explicitly Spin Polarised; otherwise SOC starts from zero vector moments.
 - In the standard Desired Output workflows SOC is BMD methodology, not advice: when the heavy-element SOC policy triggers, SOC is applied to every non-relaxation stage (PBE Static for Static Energy; HSE06 Static and HSE06 DOS or Band Structure for DOS and Band Structure). Relaxations stay non-SOC. Custom workflows are never changed automatically.
@@ -95,7 +95,7 @@ Open `http://127.0.0.1:8000`. Building and previewing calculations is local;
 POWER preparation and submission require deployment-local SSH, cluster, and
 licensed POTCAR configuration that is intentionally not stored here.
 
-The environment file is intentionally broad and currently not a lock file. It describes the main conda packages needed by the app, but exact production reproducibility still depends on the maintained `bmd-compute` environment.
+The environment file is not a lock file. It pins the scientific stack validated on POWER (`atomate2==0.1.5`, `pymatgen==2026.5.4`, `pymatgen-core==2026.7.16`); `pymatgen-core` is pinned explicitly because it carries the VASP input sets, including the Materials Project GGA+U table used by automatic DFT+U. Other packages are unpinned, so exact production reproducibility still depends on the maintained `bmd-compute` environment.
 
 Typical local checks:
 

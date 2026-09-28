@@ -15,6 +15,7 @@ from backend.calculations.dispersion import (
     DISPERSION_OPTION_KEY,
     dispersion_method_from_options,
 )
+from backend.calculations.dft_u_policy import FROZEN_OPTION_KEY as DFT_U_OPTION_KEY
 from backend.calculations.vasp_stage_definitions import (
     stage_inherits_previous_band_count,
     stage_reads_previous_charge_density,
@@ -531,6 +532,23 @@ def _validate_previous_stage_soc_consistency(workflow: WorkflowSpec) -> None:
         )
         if not reads_charge_density and not inherits_band_count:
             continue
+        if reads_charge_density and (
+            (Modifier.DFT_U in previous_stage.modifiers)
+            != (Modifier.DFT_U in current_stage.modifiers)
+        ):
+            producer_u = "uses" if Modifier.DFT_U in previous_stage.modifiers else "does not use"
+            consumer_u = "uses" if Modifier.DFT_U in current_stage.modifiers else "does not use"
+            raise CalculationValidationError(
+                (
+                    f"{stage_display_name(current_stage)} (stage {index}) restarts from "
+                    f"the fixed charge density of stage {index - 1}, which {producer_u} "
+                    f"DFT+U, but stage {index} {consumer_u} DFT+U."
+                ),
+                suggestion=(
+                    "Use the same DFT+U setting on both stages, or add a Static Energy "
+                    "stage with the matching DFT+U setting immediately before this stage."
+                ),
+            )
         previous_soc = Modifier.SOC in previous_stage.modifiers
         current_soc = Modifier.SOC in current_stage.modifiers
         if previous_soc == current_soc:
@@ -830,6 +848,39 @@ def _validate_stage_support(stage: StageSpec) -> None:
         )
 
     _validate_dispersion_stage_support(stage)
+    _validate_frozen_dft_u_option(stage)
+
+
+def _validate_frozen_dft_u_option(stage: StageSpec) -> None:
+    options = dict(stage.options or {})
+    if DFT_U_OPTION_KEY not in options:
+        return
+    frozen = options[DFT_U_OPTION_KEY]
+    if Modifier.DFT_U not in stage.modifiers:
+        raise CalculationValidationError(
+            "Frozen DFT+U parameters require the DFT+U advanced option on the same stage.",
+            suggestion="Rebuild the calculation, then try again.",
+        )
+    if stage.theory is not Theory.PBE or stage.stage_type not in {StageType.RELAX, StageType.STATIC}:
+        raise CalculationValidationError(
+            "Frozen DFT+U parameters are only used on PBE Geometry Optimisation and Static Energy stages.",
+            suggestion="Rebuild the calculation, then try again.",
+        )
+    species = frozen.get("species") if isinstance(frozen, dict) else None
+    if (
+        not isinstance(species, dict)
+        or not species
+        or not isinstance(frozen.get("LDAUTYPE"), int)
+        or any(
+            not isinstance(values, dict)
+            or any(not isinstance(values.get(key), (int, float)) for key in ("L", "U", "J"))
+            for values in species.values()
+        )
+    ):
+        raise CalculationValidationError(
+            "The frozen DFT+U parameters for this stage are malformed.",
+            suggestion="Rebuild the calculation, then try again.",
+        )
 
 
 def _stage_dispersion_method(stage: StageSpec) -> str | None:

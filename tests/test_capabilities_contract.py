@@ -171,15 +171,23 @@ def test_automatic_default_treatment_policy_survives_contract():
         "spin.composition_screen",
         "dispersion.two_dimensional_connectivity",
         "soc.heavy_elements",
+        "dftu.mp_oxide_fluoride",
     ]
     assert policy["treatments"][1]["method"] == "dftd3-bj"
     assert policy["treatments"][1]["incar_effect"] == {"IVDW": 12}
     assert policy["treatments"][2]["modifier"] == "soc"
     assert policy["treatments"][2]["excluded_stage_types"] == ["relax"]
     assert policy["treatments"][2]["executable"] == "vasp_ncl"
-    assert policy["advisory_only"] == [
-        {"modifier": "dft_u"},
+    dft_u = policy["treatments"][3]
+    assert dft_u["modifier"] == "dft_u"
+    assert dft_u["policy_id"] == "bmd_compute.dft_u"
+    assert dft_u["policy_version"] == 1
+    assert dft_u["application"] == [
+        {"stage_type": "relax", "theory": "pbe"},
+        {"stage_type": "static", "theory": "pbe"},
     ]
+    assert dft_u["excluded_theories"] == ["hse06"]
+    assert policy["advisory_only"] == []
 
 
 def test_capability_payload_is_json_safe_and_deterministic():

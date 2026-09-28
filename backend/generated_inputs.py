@@ -25,6 +25,7 @@ from backend.workflows import (
     build_relax_input_set_generator,
     build_static_input_set_generator,
     build_vasp_input_set_for_spec,
+    frozen_dft_u_for_stage,
     validate_input_set_for_modifiers,
     vasp_executable_for_modifiers,
     apply_stage_artifact_incar_settings,
@@ -219,6 +220,7 @@ def _input_set_for_stage(
             kpoints=stage_kpoints,
             potcar_functional=potcar_functional,
             dispersion_method=dispersion_method_for_stage(stage),
+            frozen_dft_u=frozen_dft_u_for_stage(stage),
         )
     elif stage.stage_type is StageType.STATIC:
         generator = build_static_input_set_generator(
@@ -232,6 +234,7 @@ def _input_set_for_stage(
             kpoints=stage_kpoints,
             potcar_functional=potcar_functional,
             dispersion_method=dispersion_method_for_stage(stage),
+            frozen_dft_u=frozen_dft_u_for_stage(stage),
         )
     elif stage.stage_type is StageType.DOS:
         generator = build_dos_input_set_generator(

@@ -97,7 +97,9 @@ Important rules:
 - A stage that restarts from the previous fixed charge density (`ICHARG = 11`), or whose generator sizes `NBANDS` from the previous run (PBE and HSE06 DOS/Band Structure), must use the same SOC setting as that stage.
 - HSE06 DOS + SOC keeps the automatic uniform Gamma mesh; with `ISYM = 0` VASP expands it over the full zone.
 - In BMD-managed Desired Output workflows SOC is applied automatically to every non-relaxation stage when the heavy-element SOC policy triggers; relaxations remain non-SOC.
-- DFT+U is explicit and is applied only when selected and when reviewed U values are available for the structure.
+- In BMD-managed Desired Output workflows DFT+U follows automatic policy `bmd_compute.dft_u` v1: the pinned pymatgen/Materials Project GGA+U oxide/fluoride rule (O or F is the most electronegative element and a Co, Cr, Fe, Mn, Mo, Ni, V or W is present) with the unchanged MP L/U/J/LDAUTYPE values. It is suppressed only when every charge-balanced pymatgen oxidation-state guess puts every triggering element at d0; with no guess the MP rule applies. It is placed on PBE Relax and PBE Static stages only (Static Energy: the PBE Static; Relaxed Structure: both PBE relaxations; DOS/Band Structure: the PBE relaxation, never the HSE06 stages). It does not change the spin decision and may coexist with SOC and D3 on PBE stages. Parameters are frozen at preparation and verified at run time.
+- A stage that restarts from the previous fixed charge density (`ICHARG = 11`) must use the same DFT+U setting as that stage.
+- In Custom workflows DFT+U is explicit and is applied only when selected; it is never added or removed automatically.
 - Spin polarization is supported where the stage registry allows it.
 - Ions-only is a PBE relax-stage compatibility modifier.
 
