@@ -1650,6 +1650,10 @@ ul {
                         {% for row in submission_spec.potcar.species %}
                         {{ row.species }} &rarr; {{ row.potcar_symbol }}{% if not loop.last %}<br>{% endif %}
                         {% endfor %}
+                        {% elif submission_spec.potcar.stages %}
+                        {% for stage in submission_spec.potcar.stages %}
+                        Stage {{ stage.stage_index }}: {% for row in stage.species %}{{ row.species }} &rarr; {{ row.potcar_symbol }}{% if not loop.last %}, {% endif %}{% endfor %}{% if not loop.last %}<br>{% endif %}
+                        {% endfor %}
                         {% else %}
                         {{ submission_spec.potcar.functional }}
                         {% endif %}
@@ -1713,6 +1717,10 @@ ul {
                                 {% if submission_spec.potcar.species %}
                                 {% for row in submission_spec.potcar.species %}
                                 {{ row.species }} &rarr; {{ row.potcar_symbol }}<br>
+                                {% endfor %}
+                                {% elif submission_spec.potcar.stages %}
+                                {% for stage in submission_spec.potcar.stages %}
+                                Stage {{ stage.stage_index }}: {% for row in stage.species %}{{ row.species }} &rarr; {{ row.potcar_symbol }}{% if not loop.last %}, {% endif %}{% endfor %}<br>
                                 {% endfor %}
                                 {% else %}
                                 No species mapping available
@@ -1840,7 +1848,11 @@ ul {
                     <input type="hidden" name="queue" value="{{ selected_resources.queue }}">
                     <input type="hidden" name="submission_attempt_id" value="{{ submission_spec.submission.attempt_id }}">
                     <input type="hidden" name="submission_identity_token" value="{{ submission_spec.submission.identity_token }}">
-                    <button type="submit" data-current-calculation-action data-prepare-remote-button>Prepare Remote</button>
+                    <button
+                        type="submit"
+                        data-current-calculation-action
+                        data-prepare-remote-button
+                        {% if submission_result and submission_result.status == 'success' %}disabled title="Already submitted. Build the calculation again to start a new submission attempt."{% endif %}>Prepare Remote</button>
                 </form>
 
                 <form action="/submit" method="post">

@@ -84,6 +84,21 @@ The POTCAR section records:
 - symbol source
 - repository/path policy where available
 
+Species and symbols are read from the executable stage generators, the same
+per-stage input sets used for generated-input previews and the input-reference
+producer, in POTCAR.spec mode (`symbol_source` is
+`bmd_compute.executable_stage_generators`). There is no separate BMD POTCAR table
+and no fallback to another input set. `stages` lists every stage's
+species-to-POTCAR mapping in POSCAR order. When all stages agree,
+`consistent_across_stages` is true and `species`/`symbols` repeat that mapping;
+when they differ, `species`/`symbols` are null and `stages` is the record. If the
+generators cannot be evaluated, `status` is `unavailable` with a `reason`.
+
+Records written before this change took `species`/`symbols` from pymatgen's
+`MPRelaxSet` (`symbol_source` `pymatgen`) and can disagree with the POTCARs that
+actually ran (for example `Ni_pv` recorded where `Ni` executed). For those runs,
+the executed `POTCAR` in the run directory is authoritative.
+
 POTCAR hashes are not currently recorded. Raw POTCAR contents are not stored in provenance.
 
 If the lab later requires POTCAR hash provenance, add it deliberately and document how hashes are computed from the remote/shared POTCAR repository.

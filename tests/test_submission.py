@@ -24,7 +24,6 @@ from backend.submission import (
     build_submission_script_artifact,
     create_submission_spec,
     default_resources_for_workflow,
-    summarize_potcar_species,
 )
 
 
@@ -39,6 +38,17 @@ flow_spec = {
 
 class FakeStructure:
     types_of_species = ["Ti", "O"]
+
+
+def _rutile_tio2():
+    from pymatgen.core import Lattice, Structure
+
+    return Structure.from_spacegroup(
+        "P4_2/mnm",
+        Lattice.tetragonal(4.594, 2.959),
+        ["Ti", "O"],
+        [[0, 0, 0], [0.305, 0.305, 0]],
+    )
 
 
 spec = create_submission_spec(
@@ -367,20 +377,36 @@ assert default_resources_for_workflow("gw_static")["ntasks"] == 12
 assert default_resources_for_workflow("gw_static")["mem_gb"] == 240
 assert default_resources_for_workflow("relax_static_bands")["mem_gb"] == 160
 
-potcar_summary = summarize_potcar_species(FakeStructure(), "PBE_64")
-assert potcar_summary["species"] == [
-    {"species": "Ti", "potcar_symbol": "Ti_pv"},
-    {"species": "O", "potcar_symbol": "O"},
-]
-
-structure_spec = create_submission_spec(
+# The POTCAR record comes from the executable stage generators, never from a
+# parallel table: an object that is not a real structure yields an explicit
+# "unavailable" record rather than a guessed mapping.
+fake_structure_spec = create_submission_spec(
     flow_spec,
     structure=FakeStructure(),
     timestamp="20260629-120000",
     env={},
 )
-assert structure_spec["potcar"]["species"] == potcar_summary["species"]
-assert structure_spec["potcar"]["symbols"] == ["Ti_pv", "O"]
+assert fake_structure_spec["potcar"]["status"] == "unavailable"
+assert fake_structure_spec["potcar"]["species"] == []
+assert fake_structure_spec["potcar"]["symbols"] == []
+
+# Rutile TiO2: pymatgen's MPRelaxSet would say Ti_pv; the atomate2 stage
+# generator that executes the run uses Ti_sv, and that is what is recorded.
+structure_spec = create_submission_spec(
+    flow_spec,
+    structure=_rutile_tio2(),
+    timestamp="20260629-120000",
+    env={},
+)
+assert structure_spec["potcar"]["status"] == "resolved"
+assert structure_spec["potcar"]["symbol_source"] == "bmd_compute.executable_stage_generators"
+assert structure_spec["potcar"]["species"] == [
+    {"species": "Ti", "potcar_symbol": "Ti_sv"},
+    {"species": "O", "potcar_symbol": "O"},
+]
+assert structure_spec["potcar"]["symbols"] == ["Ti_sv", "O"]
+assert structure_spec["potcar"]["consistent_across_stages"] is True
+assert [stage["symbols"] for stage in structure_spec["potcar"]["stages"]] == [["Ti_sv", "O"]]
 
 run_job_script = build_run_job_script(spec)
 assert "__SPEC_JSON__" not in run_job_script

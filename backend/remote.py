@@ -130,6 +130,24 @@ class SubmissionAttemptInProgress(SubmissionAttemptError):
     )
 
 
+class SubmissionAttemptAlreadySubmitted(SubmissionAttemptError):
+    """Raised when Prepare is requested for an attempt that was already submitted.
+
+    A submitted attempt's run directory (``submission.json``, the uploaded
+    runtime package, ``run_job.py`` and the sbatch script) is immutable.
+    """
+
+    suggestion = (
+        "This calculation was already submitted, so its prepared files are kept "
+        "unchanged. Monitor it with its job ID, or build the calculation again to "
+        "start a new submission attempt."
+    )
+
+    def __init__(self, message: str, *, job_id: str | None = None):
+        super().__init__(message)
+        self.job_id = job_id
+
+
 @dataclass(frozen=True)
 class RemoteConnectionProfile:
     """Connection settings for the cluster, without embedding SSH secrets."""

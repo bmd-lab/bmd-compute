@@ -146,11 +146,16 @@ class IdempotencyRunner(ParamikoRemoteRunner):
         )
 
 
-def _submission_spec(*, attempt_id: str | None = None, ntasks: int = 24) -> dict:
+def _submission_spec(
+    *,
+    attempt_id: str | None = None,
+    ntasks: int = 24,
+    timestamp: str = "20260629-120000",
+) -> dict:
     return create_submission_spec(
         FLOW_SPEC,
         label="Si static",
-        timestamp="20260629-120000",
+        timestamp=timestamp,
         ntasks=ntasks,
         env={},
         submission_attempt_id=attempt_id,
@@ -203,8 +208,10 @@ def test_concurrent_duplicate_submit_calls_sbatch_once():
 def test_identical_science_with_new_attempts_submits_separately():
     shared = SharedRemoteState()
     first_spec = _submission_spec()
-    second_spec = _submission_spec()
+    # A new attempt gets a new run timestamp and therefore its own run directory.
+    second_spec = _submission_spec(timestamp="20260629-120001")
     assert first_spec["submission"]["attempt_id"] != second_spec["submission"]["attempt_id"]
+    assert first_spec["paths"]["run_dir"] != second_spec["paths"]["run_dir"]
 
     _prepare(shared, first_spec)
     _prepare(shared, second_spec)
