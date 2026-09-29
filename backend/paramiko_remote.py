@@ -29,6 +29,7 @@ from backend.remote import (
     RemoteConnectionProfile,
     RemoteExecutionError,
     RemoteJobStatus,
+    SubmissionAttemptAlreadySubmitted,
     SubmissionAttemptInProgress,
     SubmissionAttemptMismatch,
     SubmissionAttemptNotPrepared,
@@ -42,6 +43,7 @@ from backend.submission import (
     REMOTE_RUNTIME_PREFLIGHT_STEP,
     REMOTE_RUNTIME_PREFLIGHT_TIMEOUT_S,
     SUBMISSION_ATTEMPT_STATE_VERSION,
+    SUBMISSION_SPEC_FILENAME,
     build_remote_runtime_preflight_source,
     parse_sbatch_job_id,
     remote_preparation_file_groups,
@@ -61,6 +63,7 @@ DEFAULT_SFTP_TIMEOUT_S = 120
 SUBMISSION_ATTEMPT_STATE_WAIT_S = 5.0
 SUBMISSION_ATTEMPT_STATE_POLL_S = 0.1
 SUBMISSION_ATTEMPT_STATE_MAX_BYTES = 1024 * 1024
+RUN_DIRECTORY_SUBMISSION_MAX_BYTES = 64 * 1024 * 1024
 PREPARATION_VERIFY_BATCH_SIZE = 10
 SSH_KNOWN_HOSTS_ENV = "BMD_SSH_KNOWN_HOSTS_FILE"
 
@@ -1007,33 +1010,43 @@ class ParamikoRemoteRunner(RemoteRunner):
             preparation_started = time.perf_counter()
             try:
                 self._preflight(submission_spec)
-                package_started = time.perf_counter()
-                file_groups = remote_preparation_file_groups(submission_spec)
-                self.preparation_metrics["runtime_package_build_s"] = (
-                    time.perf_counter() - package_started
-                )
+                # Decide whether this attempt may be (re)prepared before any
+                # run artifact is written: a submitted, submitting, mismatched
+                # or otherwise non-preparable attempt is rejected here, and the
+                # attempt claim keeps Prepare and Submit from interleaving.
+                self._require_preparable_submission_attempt(submission_spec)
+                self._claim_submission_attempt_for_preparation(submission_spec)
+                try:
+                    self._require_preparable_submission_attempt(submission_spec)
+                    package_started = time.perf_counter()
+                    file_groups = remote_preparation_file_groups(submission_spec)
+                    self.preparation_metrics["runtime_package_build_s"] = (
+                        time.perf_counter() - package_started
+                    )
 
-                with self._preparation_sftp_session():
-                    output = self._prepare_submission_files(
-                        submission_spec,
-                        file_groups=file_groups,
-                    )
-                    record = self._job_record(
-                        submission_spec,
-                        None,
-                        output + "DRY RUN\n",
-                        status="dry_run",
-                    )
-                    attempt_started = time.perf_counter()
-                    try:
-                        self._write_prepared_submission_attempt_state(
+                    with self._preparation_sftp_session():
+                        output = self._prepare_submission_files(
                             submission_spec,
-                            record,
+                            file_groups=file_groups,
                         )
-                    finally:
-                        self.preparation_metrics["attempt_state_s"] = (
-                            time.perf_counter() - attempt_started
+                        record = self._job_record(
+                            submission_spec,
+                            None,
+                            output + "DRY RUN\n",
+                            status="dry_run",
                         )
+                        attempt_started = time.perf_counter()
+                        try:
+                            self._write_prepared_submission_attempt_state(
+                                submission_spec,
+                                record,
+                            )
+                        finally:
+                            self.preparation_metrics["attempt_state_s"] = (
+                                time.perf_counter() - attempt_started
+                            )
+                finally:
+                    self._release_submission_attempt_claim(submission_spec)
                 return record
             finally:
                 self.preparation_metrics["remote_preparation_s"] = (
@@ -1176,6 +1189,78 @@ class ParamikoRemoteRunner(RemoteRunner):
             "PREPARED",
             output=record.raw_output,
         )
+
+    def _require_preparable_submission_attempt(self, submission_spec: dict) -> None:
+        """Reject Prepare unless the attempt is new or PREPARED with identical metadata.
+
+        Read-only: this never writes to the remote host.
+        """
+
+        self._require_run_directory_owned_by_attempt(submission_spec)
+        state = self._read_submission_attempt_state(submission_spec)
+        if not state:
+            return
+        self._ensure_submission_attempt_matches(submission_spec, state)
+        current = state.get("state")
+        attempt = submission_attempt_id(submission_spec)
+        if current == "PREPARED":
+            return
+        if current == "SUBMITTED":
+            job_id = str(state.get("job_id") or "") or None
+            raise SubmissionAttemptAlreadySubmitted(
+                f"Submission attempt {attempt} was already submitted"
+                + (f" as job {job_id}" if job_id else "")
+                + "; its prepared files cannot be changed.",
+                job_id=job_id,
+            )
+        if current == "SUBMITTING":
+            raise SubmissionAttemptInProgress(
+                f"Submission attempt {attempt} is being submitted or its submission "
+                "status is ambiguous; it cannot be prepared again."
+            )
+        raise SubmissionAttemptInProgress(
+            f"Submission attempt {attempt} is in state {current!r} and cannot be "
+            "prepared again."
+        )
+
+    def _require_run_directory_owned_by_attempt(self, submission_spec: dict) -> None:
+        """Refuse to prepare into a run directory that another attempt already wrote."""
+
+        paths = submission_spec.get("paths") or {}
+        runner = submission_spec.get("runner") or {}
+        run_dir = str(paths.get("run_dir") or "")
+        if not run_dir:
+            return
+        existing_path = posixpath.join(
+            run_dir,
+            str(runner.get("submission_spec_name") or SUBMISSION_SPEC_FILENAME),
+        )
+        if not self.is_file(existing_path):
+            return
+        attempt = submission_attempt_id(submission_spec)
+        try:
+            existing = json.loads(
+                self.read_text(existing_path, max_bytes=RUN_DIRECTORY_SUBMISSION_MAX_BYTES)
+            )
+            owner = str(((existing or {}).get("submission") or {}).get("attempt_id") or "")
+        except (ValueError, AttributeError, TypeError):
+            owner = ""
+        if owner != attempt:
+            raise SubmissionAttemptMismatch(
+                f"Run directory {run_dir} already holds a submission written by "
+                f"{('attempt ' + owner) if owner else 'another or an unidentified attempt'}, "
+                f"not {attempt}; it will not be overwritten."
+            )
+
+    def _claim_submission_attempt_for_preparation(self, submission_spec: dict) -> None:
+        attempts_dir = (submission_spec.get("paths") or {}).get("submission_attempts_dir")
+        if attempts_dir:
+            self.ensure_directory(attempts_dir)
+        if not self._claim_submission_attempt(submission_spec):
+            raise SubmissionAttemptInProgress(
+                f"Submission attempt {submission_attempt_id(submission_spec)} is "
+                "being prepared or submitted by another request."
+            )
 
     def _require_existing_submission_attempt(self, submission_spec: dict) -> dict:
         state = self._read_submission_attempt_state(submission_spec)

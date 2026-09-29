@@ -11,6 +11,7 @@ from backend.remote import (
     RemoteExecutionError,
     RemoteOperationBusy,
     RemoteRunner,
+    SubmissionAttemptError,
 )
 from backend.remote_runtime import (
     connected_remote_runner,
@@ -262,7 +263,7 @@ def _failure_steps(failed_stage: str, submission_spec: dict) -> list[dict]:
 def _display_step_for_stage(stage: str) -> str:
     if stage in {"SSH Client Setup", "SSH Connection", "SSH Authentication"}:
         return "Remote connection established"
-    if stage == "Remote Preflight":
+    if stage in {"Remote Preflight", "Submission Attempt"}:
         return "Remote preflight checks completed"
     if stage == "Remote Preparation":
         return "Remote directories prepared"
@@ -283,6 +284,13 @@ def _classify_failure(
             "Remote Capacity",
             REMOTE_OPERATION_BUSY_MESSAGE,
             "Please try again in a few seconds.",
+        )
+
+    if isinstance(exc, SubmissionAttemptError):
+        return (
+            "Submission Attempt",
+            _clean_message(exc),
+            exc.suggestion,
         )
 
     if isinstance(exc, ModuleNotFoundError) and getattr(exc, "name", None) == "paramiko":

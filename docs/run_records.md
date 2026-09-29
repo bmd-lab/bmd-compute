@@ -18,8 +18,13 @@ inside `submission.json` versions the provenance block separately (see
 
 - `submission.json` is the **Prepare-time submission specification**: what BMD
   Compute prepared and asked the cluster to run. It is written during Prepare,
-  before `sbatch`. A later Prepare of the same run can currently rewrite it, so
-  it is not yet immutable historical evidence.
+  before `sbatch`. A prepared-but-not-submitted attempt may be prepared again
+  (only with identical calculation metadata), which rewrites the file. Once the
+  attempt is `SUBMITTING` or `SUBMITTED`, Prepare is rejected before anything is
+  written, so `submission.json` and the rest of the run's execution package
+  (uploaded `backend/` runtime, `run_job.py`, sbatch script) are immutable.
+  Running the calculation again means a new submission attempt with its own
+  run directory.
 - `job_<JOB_ID>.json` is a run-resolution record. It is written once, after
   `sbatch` returns a job ID, and links that job ID to the run directory and
   submission attempt. Writing it is best-effort: a run may have no job record.

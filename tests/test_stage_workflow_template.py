@@ -89,7 +89,10 @@ assert "Preparation Time" in source
 assert "Files Uploaded" in source
 assert "Data Transferred" in source
 assert "remote_preparation.diagnostics.total_preparation_s" in source
-assert "disabled" not in prepare_form_only
+# Prepare Remote stays available for unsubmitted runs and is disabled only once
+# the run has been submitted (its execution package is then immutable).
+assert prepare_form_only.count("disabled") == 1
+assert "{% if submission_result and submission_result.status == 'success' %}disabled" in prepare_form_only
 monitor_form = source[source.index('<form action="/monitor"'):]
 assert "workflow_spec_json" in monitor_form
 assert "monitor_state_json" in monitor_form

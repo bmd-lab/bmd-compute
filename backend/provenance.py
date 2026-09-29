@@ -64,9 +64,21 @@ def build_submission_provenance(submission_spec: dict) -> dict:
         },
         "potcar": {
             "functional": _json_safe_scalar(potcar.get("functional")),
-            "species": _json_safe_value(potcar.get("species") or []),
-            "symbols": _json_safe_value(potcar.get("symbols") or []),
+            # Taken from the executable stage generators; ``species``/``symbols``
+            # are null when stages differ, in which case ``stages`` is the record.
+            "status": _json_safe_scalar(potcar.get("status")),
+            "species": _json_safe_value(potcar.get("species")),
+            "symbols": _json_safe_value(potcar.get("symbols")),
             "symbol_source": _json_safe_scalar(potcar.get("symbol_source")),
+            "consistent_across_stages": _json_safe_scalar(
+                potcar.get("consistent_across_stages")
+            ),
+            "stages": _json_safe_value(potcar.get("stages") or []),
+            **(
+                {"reason": _json_safe_scalar(potcar.get("reason"))}
+                if potcar.get("reason")
+                else {}
+            ),
             "repository": _json_safe_scalar(potcar.get("repository")),
             "hashes": {
                 "status": "not_recorded",
