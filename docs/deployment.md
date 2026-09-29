@@ -106,10 +106,13 @@ scientific stack for both environments:
 
 - the web/preparation environment (`environment.yml`, whose pip section installs
   the constraints file), and
-- the POWER execution environment `/bmd/bmdguest/envs/atomate2_remote`
-  (install or verify with `conda install --file constraints/scientific-runtime.txt`
-  or `pip install -r constraints/scientific-runtime.txt`, whichever manages that
-  environment; the installer does not matter, the versions do).
+- the POWER execution environment `/bmd/bmdguest/envs/atomate2_remote`, which
+  must hold exactly these versions.
+
+The supported repository deployment path is `environment.yml` -> pip ->
+`-r constraints/scientific-runtime.txt`. The constraints file defines the
+package/version contract; which installer put a package in place is
+deliberately not part of runtime parity, only the installed versions are.
 
 It lists two tiers:
 

@@ -3,9 +3,10 @@
 # (/bmd/bmdguest/envs/atomate2_remote). Derived from the POWER environment on
 # 2026-09-29 (pip check clean); the preparation VM held the same versions.
 #
-# Every entry is "name==version" on its own line, usable by
-# `pip install -r` and `conda install --file`. Install with whichever tool
-# already manages the environment; the installer is not part of the contract.
+# Every entry is "name==version" on its own line. The supported repository
+# deployment path is environment.yml -> pip -> -r constraints/scientific-runtime.txt.
+# This file defines the package/version contract; the installer that put a
+# package in place is deliberately not part of runtime parity.
 # Web-only, SSH, scheduler and test tooling do not belong here
 # (see environment.yml).
 #
