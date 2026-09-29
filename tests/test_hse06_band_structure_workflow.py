@@ -262,18 +262,26 @@ hse_band_workflow = WorkflowSpec(
     ],
     recipe="custom",
 )
-hse_band_explicit_ncore_workflow = WorkflowSpec(
-    [
-        StageSpec(StageType.RELAX, Theory.PBE),
-        StageSpec(StageType.STATIC, Theory.HSE06),
-        StageSpec(
-            StageType.BAND_STRUCTURE,
-            Theory.HSE06,
-            options={"incar": {"NCORE": 4}},
-        ),
-    ],
-    recipe="custom",
-)
+# Free-form INCAR in stage options is not an accepted workflow input.
+try:
+    validate_workflow_spec(
+        WorkflowSpec(
+            [
+                StageSpec(StageType.RELAX, Theory.PBE),
+                StageSpec(StageType.STATIC, Theory.HSE06),
+                StageSpec(
+                    StageType.BAND_STRUCTURE,
+                    Theory.HSE06,
+                    options={"incar": {"NCORE": 4}},
+                ),
+            ],
+            recipe="custom",
+        )
+    )
+except CalculationValidationError as exc:
+    assert "'incar'" in exc.message
+else:
+    raise AssertionError("Stage options must not carry INCAR settings.")
 validated_workflow = validate_workflow_spec(hse_band_workflow)
 assert calculation_spec_from_workflow_spec(validated_workflow) is None
 assert workflow_stage_directories(validated_workflow) == (
@@ -324,11 +332,14 @@ with fake_atomate2_and_jobflow():
         resources={"ntasks": 24},
         kpoints={"mode": "line_density", "value": 32},
     )
+    # Internal builder-level INCAR input (not a workflow-spec field) still
+    # keeps an explicit NCORE on the band stage.
     explicit_ncore_flow = build_atomate2_flow_for_workflow_spec(
         "initial_structure",
-        hse_band_explicit_ncore_workflow,
+        hse_band_workflow,
         label="Si-hse-bands-explicit-ncore",
         resources={"ntasks": 24},
+        incar={"NCORE": 4},
     )
     generated_inputs = preview_generated_inputs(
         "initial_structure",

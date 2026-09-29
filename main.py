@@ -53,6 +53,7 @@ from backend.calculations.registry import (
     modifier_display_name,
     stage_display_name,
     theory_display_name,
+    validate_user_workflow_spec,
     validate_workflow_spec,
     workflow_display_name,
     workflow_spec_from_calculation_spec,
@@ -484,7 +485,10 @@ def workflow_spec_from_form(
                 "The workflow stage configuration could not be read.",
                 suggestion="Rebuild the calculation, then try again.",
             ) from exc
-        return validate_workflow_spec(WorkflowSpec.from_dict(data))
+        # Client-supplied (Custom) workflow: only user-selectable stage
+        # options are accepted; free-form INCAR/KPOINTS and BMD-generated
+        # options are rejected here, before any preview or preparation.
+        return validate_user_workflow_spec(WorkflowSpec.from_dict(data))
 
     return workflow_spec_from_calculation_spec(
         calculation_spec_from_form(

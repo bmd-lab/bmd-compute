@@ -810,7 +810,45 @@ def workflow_stage_directories(workflow: WorkflowSpec) -> tuple[str, ...]:
     )
 
 
+# Stage options carry only BMD-supported treatment settings, never raw VASP
+# input. ``dispersion`` is the user-selectable van der Waals method;
+# ``dft_u`` holds the frozen +U parameters that automatic Desired Output
+# resolution writes. Anything else - including ``incar`` and ``kpoints`` - is
+# rejected, so a workflow spec cannot inject INCAR or KPOINTS values.
+SUPPORTED_STAGE_OPTION_KEYS = frozenset({DISPERSION_OPTION_KEY, DFT_U_OPTION_KEY})
+# Keys a client may supply in a Custom workflow. Frozen +U parameters are only
+# produced by BMD Compute's automatic treatment resolution.
+USER_STAGE_OPTION_KEYS = frozenset({DISPERSION_OPTION_KEY})
+
+
+def _validate_stage_option_keys(stage: StageSpec, allowed=SUPPORTED_STAGE_OPTION_KEYS) -> None:
+    unsupported = sorted(str(key) for key in dict(stage.options or {}) if key not in allowed)
+    if not unsupported:
+        return
+    names = ", ".join(repr(key) for key in unsupported)
+    raise CalculationValidationError(
+        f"{stage_display_name(stage)} has unsupported stage option(s) {names}. "
+        "BMD Compute does not accept INCAR, KPOINTS or other free-form settings "
+        "in a workflow; stages may only use the supported Advanced Options.",
+        suggestion="Remove the unsupported options and choose supported Advanced Options instead.",
+    )
+
+
+def validate_user_workflow_spec(workflow: WorkflowSpec) -> WorkflowSpec:
+    """Validate a workflow supplied by a client (a Custom workflow).
+
+    In addition to :func:`validate_workflow_spec`, stage options are limited to
+    those a user may choose; BMD-generated options such as frozen +U parameters
+    cannot be supplied from outside.
+    """
+
+    for stage in WorkflowSpec(stages=workflow.stages, label=workflow.label, recipe=workflow.recipe).stages:
+        _validate_stage_option_keys(stage, USER_STAGE_OPTION_KEYS)
+    return validate_workflow_spec(workflow)
+
+
 def _validate_stage_support(stage: StageSpec) -> None:
+    _validate_stage_option_keys(stage)
     calculation_stage = CalculationStage(stage.stage_type.value)
     theory_label = theory_display_name(stage.theory)
     stage_label = stage_display_name(stage)
@@ -1188,6 +1226,9 @@ def _format_combination(
 
 __all__ = [
     "CalculationValidationError",
+    "SUPPORTED_STAGE_OPTION_KEYS",
+    "USER_STAGE_OPTION_KEYS",
+    "validate_user_workflow_spec",
     "calculation_display_name",
     "calculation_form_options",
     "calculation_result_stage_directory",
