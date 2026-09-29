@@ -14,6 +14,25 @@ BMD_CUSTODIAN_POLICY_RATIONALE = (
 FROZEN_JOB_HANDLER = "custodian.vasp.handlers.FrozenJobErrorHandler"
 HSE_BAND_STRUCTURE_CUSTODIAN_ERROR_EXCLUSIONS = ("auto_nbands",)
 
+# BMD Compute v1 unsuccessful-stage policy. atomate2 decides, from its task
+# document, whether a VASP stage succeeded (electronically and, for
+# relaxations, ionically converged). BMD owns what happens next: an
+# unsuccessful stage raises, so the flow fails and no dependent stage runs.
+# This is passed explicitly to every maker as ``stop_children_kwargs`` rather
+# than inherited from atomate2's mutable ``VASP_HANDLE_UNSUCCESSFUL`` setting
+# (environment variable or ~/.atomate2.yaml). It does not change any
+# convergence criterion.
+UNSUCCESSFUL_STAGE_HANDLING = "error"
+UNSUCCESSFUL_STAGE_POLICY_SOURCE = (
+    "backend.calculations.custodian_policy.unsuccessful_stage_stop_children_kwargs"
+)
+
+
+def unsuccessful_stage_stop_children_kwargs() -> dict:
+    """``stop_children_kwargs`` for every BMD-constructed atomate2 VASP maker."""
+
+    return {"handle_unsuccessful": UNSUCCESSFUL_STAGE_HANDLING}
+
 
 def bmd_custodian_handlers(*, excluded_vasp_errors=()) -> tuple:
     """Return independent atomate2 default handlers with BMD exclusions applied."""
@@ -88,6 +107,10 @@ def resolved_custodian_policy(stage_type, theory) -> dict:
             "source": "atomate2.vasp.run._DEFAULT_VALIDATORS",
             "explicit_override": None,
             "resolved": _default_validator_descriptions(),
+        },
+        "unsuccessful_stage": {
+            "stop_children_kwargs": unsuccessful_stage_stop_children_kwargs(),
+            "source": UNSUCCESSFUL_STAGE_POLICY_SOURCE,
         },
         "walltime_authority": "slurm",
         "walltime_handler": None,

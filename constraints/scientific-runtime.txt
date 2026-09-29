@@ -1,0 +1,45 @@
+# BMD Compute v1 scientific runtime: the single authoritative version set for
+# BOTH the web/preparation environment and the POWER execution environment
+# (/bmd/bmdguest/envs/atomate2_remote). Derived from the POWER environment on
+# 2026-09-29 (pip check clean); the preparation VM held the same versions.
+#
+# Every entry is "name==version" on its own line. The supported repository
+# deployment path is environment.yml -> pip -> -r constraints/scientific-runtime.txt.
+# This file defines the package/version contract; the installer that put a
+# package in place is deliberately not part of runtime parity.
+# Web-only, SSH, scheduler and test tooling do not belong here
+# (see environment.yml).
+#
+# Tier 1 - parity-critical. Must be identical at preparation and execution;
+# the POWER runner stops before VASP if any differs from the versions recorded
+# in submission.json (backend/runtime_environment.py PARITY_CRITICAL_PACKAGES).
+#
+# makers, input-set generators, run_vasp, default Custodian handlers
+atomate2==0.1.5
+# meta-package; pins the pymatgen distribution
+pymatgen==2026.5.4
+# input sets, MP +U table, POTCAR choice, k-points, structure parsing
+pymatgen-core==2026.7.16
+# VASP error handlers that rewrite INCAR and retry
+custodian==2025.12.14
+# task document: decides whether a stage converged
+emmet-core==0.87.1
+# flow execution, output references, stop/error propagation
+jobflow==0.1.19
+# symmetry: band-structure k-paths, irreducible meshes
+spglib==2.7.0
+#
+# Tier 2 - supporting. Pinned for reproducible installs and recorded in each
+# run's runtime_environment.json; a difference does not stop a run.
+#
+# pymatgen-core 2026.7.16 requires monty>=2026.7.16; pinned exactly
+monty==2026.7.16
+numpy==2.5.1
+scipy==1.18.0
+# atomate2/emmet settings and document models
+pydantic==2.13.4
+pydantic-settings==2.14.2
+# jobflow's job store on POWER (MongoStore/GridFSStore)
+maggma==0.74.0
+# loads the pymatgen/atomate2 YAML input-set configurations
+ruamel.yaml==0.19.1
