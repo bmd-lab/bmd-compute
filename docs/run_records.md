@@ -79,6 +79,32 @@ infer stage order from key order.
 | `attempt_id` | submission attempt UUID; equals `submission.attempt_id` in `submission.json` |
 | `submitted_at` | optional; BMD Compute's clock when the record was created, not a scheduler time |
 
+## `bmd_compute.runtime_environment` v1
+
+`<run_dir>/runtime_environment.json` is written by the POWER runner at the start
+of execution, before the workflow is built or VASP starts, whether the check
+passes or fails. It is written to a temporary file in the run directory and
+renamed into place. Fields:
+
+| Field | Meaning |
+| --- | --- |
+| `schema`, `schema_version` | `"bmd_compute.runtime_environment"`, `1` |
+| `status` | `passed`, or `failed` (execution was stopped) |
+| `problems` | human-readable reasons for `failed`; empty when passed |
+| `run_name`, `attempt_id`, `slurm_job_id`, `host`, `recorded_at` | which execution this describes |
+| `python` | runtime Python version and implementation |
+| `parity_policy` | policy id/version and the parity-critical package names |
+| `prepared_packages` | versions recorded at preparation (`submission.json` `runtime_parity.packages`) |
+| `runtime_packages` | the same packages as installed on POWER (`null` if missing) |
+| `supporting_packages` | recorded supporting-package versions |
+| `atomate2_settings` | effective atomate2 settings relevant to execution |
+
+`submission.json` gains an optional `runtime_parity` block (`policy_id`,
+`policy_version`, `packages`) and `paths.runtime_environment`; both are additive
+and keep `schema_version` 1. Runs prepared before this change have neither and no
+runtime record; their only runtime evidence is the version lines printed to the
+runner log, and they are not rewritten.
+
 ## Non-contractual fields
 
 Both files contain more than the contract. Those fields are BMD Compute

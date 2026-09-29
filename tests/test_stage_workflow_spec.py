@@ -105,10 +105,11 @@ class FakeRelaxSetGenerator(FakeGenerator):
 
 
 class FakeMaker:
-    def __init__(self, *, input_set_generator, name, run_vasp_kwargs=None):
+    def __init__(self, *, input_set_generator, name, run_vasp_kwargs=None, stop_children_kwargs=None):
         self.input_set_generator = input_set_generator
         self.name = name
         self.run_vasp_kwargs = run_vasp_kwargs or {}
+        self.stop_children_kwargs = stop_children_kwargs
 
     def make(self, structure, prev_dir=None, mode=None):
         return FakeJob(

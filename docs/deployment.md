@@ -99,6 +99,41 @@ account = power-leeburton-users_v2
 
 CPU counts, memory values, and queue are allow-listed in the backend. The account is fixed backend policy and is not user-editable.
 
+## Scientific Runtime Environment
+
+`constraints/scientific-runtime.txt` is the single specification of the
+scientific stack for both environments:
+
+- the web/preparation environment (`environment.yml`, whose pip section installs
+  the constraints file), and
+- the POWER execution environment `/bmd/bmdguest/envs/atomate2_remote`
+  (install or verify with `conda install --file constraints/scientific-runtime.txt`
+  or `pip install -r constraints/scientific-runtime.txt`, whichever manages that
+  environment; the installer does not matter, the versions do).
+
+It lists two tiers:
+
+- **Parity-critical** (atomate2, pymatgen, pymatgen-core, custodian, emmet-core,
+  jobflow, spglib): they generate the inputs, symmetry and k-points, run the
+  workflow, correct VASP errors, or decide whether a stage converged. Preparation
+  records their exact versions in `submission.json` (`runtime_parity`); the POWER
+  runner reads its own before building the workflow and stops, without starting
+  VASP, on any missing or different version.
+- **Supporting** (monty, numpy, scipy, pydantic, pydantic-settings, maggma,
+  ruamel.yaml): pinned for reproducible installs and recorded at run time, but a
+  difference does not stop a run.
+
+Web-only, SSH, scheduler and test packages stay out of the constraints file.
+Upgrading any pinned package is a deliberate change: update the constraints file,
+install it in both environments, and re-run the test suite.
+
+The runner also stops if atomate2's `VASP_INCAR_UPDATES` is non-empty or
+`VASP_INHERIT_INCAR` is enabled (environment variable or `~/.atomate2.yaml`),
+because either would change BMD's generated INCARs at run time. An atomate2
+stage that is unsuccessful (not converged) always fails the workflow: BMD passes
+`stop_children_kwargs={"handle_unsuccessful": "error"}` to every maker instead of
+relying on atomate2's `VASP_HANDLE_UNSUCCESSFUL` setting.
+
 ## Future Production Work
 
 Before broader production exposure, decide and document:

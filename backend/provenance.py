@@ -13,11 +13,27 @@ from backend.workflows import (
     vasp_executable_for_modifiers,
     vasp_job_kwargs_for_modifiers,
 )
+from backend.runtime_environment import PARITY_CRITICAL_PACKAGES, RUNTIME_ENVIRONMENT_SCHEMA
 from backend.runtime_package import runtime_package_manifest_metadata
 
 
 PROVENANCE_SCHEMA_VERSION = 1
-SCIENTIFIC_PACKAGE_NAMES = ("pymatgen", "pymatgen-core", "atomate2", "jobflow", "custodian")
+SCIENTIFIC_PACKAGE_NAMES = (
+    "pymatgen",
+    "pymatgen-core",
+    "atomate2",
+    "jobflow",
+    "custodian",
+    "emmet-core",
+    "spglib",
+    "monty",
+    "numpy",
+    "scipy",
+    "pydantic",
+    "pydantic-settings",
+    "maggma",
+    "ruamel.yaml",
+)
 
 
 def build_submission_provenance(submission_spec: dict) -> dict:
@@ -52,6 +68,13 @@ def build_submission_provenance(submission_spec: dict) -> dict:
                     name: "captured by the remote runner at execution time"
                     for name in SCIENTIFIC_PACKAGE_NAMES
                 },
+                # Written by the runner before any VASP work; execution stops if
+                # a parity-critical package differs from `runtime_parity`.
+                "record": _json_safe_scalar(
+                    (submission_spec.get("paths") or {}).get("runtime_environment")
+                ),
+                "record_schema": RUNTIME_ENVIRONMENT_SCHEMA,
+                "parity_critical_packages": list(PARITY_CRITICAL_PACKAGES),
             },
         },
         "vasp": {

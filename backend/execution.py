@@ -21,7 +21,15 @@ def print_runtime_info() -> None:
 
     from importlib import metadata
 
-    for package in ("atomate2", "jobflow", "pymatgen", "pymatgen-core", "custodian"):
+    for package in (
+        "atomate2",
+        "jobflow",
+        "pymatgen",
+        "pymatgen-core",
+        "custodian",
+        "emmet-core",
+        "spglib",
+    ):
         try:
             version = metadata.version(package)
             print(f"[runner] {package} version:", version)
@@ -112,6 +120,16 @@ def _expand_shell_variables(command: str, environ: dict) -> str:
 
 def run_submission(spec: dict) -> None:
     print_runtime_info()
+
+    # Runtime-stack parity is checked, and runtime_environment.json written,
+    # before the workflow is built or any VASP stage can start.
+    from backend.runtime_environment import RuntimeParityError, enforce_runtime_environment
+
+    try:
+        enforce_runtime_environment(spec)
+    except RuntimeParityError as exc:
+        print(str(exc), file=sys.stderr, flush=True)
+        raise
 
     from backend.parser import structure_from_spec
     from backend.workflows import build_atomate2_flow_from_spec

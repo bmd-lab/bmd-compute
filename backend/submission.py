@@ -43,6 +43,11 @@ from backend.config import (
     WORKFLOW_RESOURCE_OVERRIDES,
 )
 from backend.run_records import submission_record_header
+from backend.runtime_environment import (
+    RUNTIME_ENVIRONMENT_FILENAME,
+    RuntimeParityError,
+    prepared_runtime_parity,
+)
 from backend.provenance import build_submission_provenance
 from backend.runtime_package import (
     RUNTIME_PACKAGE_DIR,
@@ -232,7 +237,21 @@ def submission_attempt_metadata(submission_spec: dict) -> dict:
         "modules": deepcopy(submission_spec.get("modules")),
         "runner": deepcopy(submission_spec.get("runner")),
         "potcar": deepcopy(submission_spec.get("potcar")),
+        "runtime_parity": deepcopy(submission_spec.get("runtime_parity")),
     }
+
+
+def _prepared_runtime_parity_or_error() -> dict:
+    try:
+        return prepared_runtime_parity()
+    except RuntimeParityError as exc:
+        raise CalculationValidationError(
+            "; ".join(exc.problems),
+            suggestion=(
+                "Install the scientific runtime from constraints/scientific-runtime.txt "
+                "in the preparation environment, then prepare the calculation again."
+            ),
+        ) from exc
 
 
 def submission_attempt_fingerprint(submission_spec: dict) -> str:
@@ -1243,6 +1262,7 @@ def create_submission_spec(
                 else run_dir
             ),
             "directories_to_prepare": directories_to_prepare,
+            "runtime_environment": posixpath.join(run_dir, RUNTIME_ENVIRONMENT_FILENAME),
         },
         "cluster": {
             "ssh_config_host": NOTEBOOK_DEFAULTS["ssh_config_host"],
@@ -1289,6 +1309,9 @@ def create_submission_spec(
             "target": potcar_target,
             "symlink_targets": potcar_links,
         },
+        # Exact parity-critical package versions of the preparation
+        # environment; the POWER runner refuses to start if its own differ.
+        "runtime_parity": _prepared_runtime_parity_or_error(),
         "preflight": {
             "requires_remote_structure_check": flow_spec_copy.get("structure", {}).get("type") == "path",
             "mp_api_key_provided": bool((mp_api_key or "").strip()),

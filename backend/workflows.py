@@ -39,6 +39,7 @@ from backend.calculations.dispersion import dispersion_method_from_options
 from backend.calculations.custodian_policy import (
     bmd_custodian_handlers,
     hse_band_structure_run_vasp_kwargs,
+    unsuccessful_stage_stop_children_kwargs,
 )
 from backend.calculations.vasp_stage_definitions import (
     BAND_STRUCTURE_LINE_DENSITY_DEFAULT,
@@ -842,6 +843,7 @@ def build_relax_flow(
         dispersion_method=dispersion_method,
     )
     maker = RelaxMaker(
+        stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
         input_set_generator=generator,
         name=("relax_ions" if isif == 2 else "relax"),
         run_vasp_kwargs=run_vasp_kwargs_for_modifiers(modifiers),
@@ -884,6 +886,7 @@ def build_double_relax_flow(
         dispersion_method=dispersion_method,
     )
     first_maker = RelaxMaker(
+        stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
         input_set_generator=first_generator,
         name=first_stage_dir,
         run_vasp_kwargs=run_vasp_kwargs_for_modifiers(modifiers),
@@ -901,6 +904,7 @@ def build_double_relax_flow(
         dispersion_method=dispersion_method,
     )
     second_maker = RelaxMaker(
+        stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
         input_set_generator=second_generator,
         name=second_stage_dir,
         run_vasp_kwargs=run_vasp_kwargs_for_modifiers(modifiers),
@@ -957,6 +961,7 @@ def build_relax_static_flow(
         dispersion_method=dispersion_method,
     )
     relax_job = RelaxMaker(
+        stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
         input_set_generator=relax_generator,
         name=relax_stage_dir,
         run_vasp_kwargs=run_vasp_kwargs_for_modifiers(modifiers),
@@ -976,6 +981,7 @@ def build_relax_static_flow(
         dispersion_method=dispersion_method,
     )
     static_job = StaticMaker(
+        stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
         input_set_generator=static_generator,
         name=static_stage_dir,
         run_vasp_kwargs=run_vasp_kwargs_for_modifiers(modifiers),
@@ -1269,6 +1275,7 @@ def build_static_flow(
         dispersion_method=dispersion_method,
     )
     maker = StaticMaker(
+        stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
         input_set_generator=generator,
         name=("hse_static" if hybrid_static else "static"),
         run_vasp_kwargs=run_vasp_kwargs_for_modifiers(modifiers),
@@ -1373,6 +1380,7 @@ def build_dos_flow(
         potcar_functional=potcar_functional,
     )
     relax_job = RelaxMaker(
+        stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
         input_set_generator=relax_generator,
         name=relax_stage_dir,
         run_vasp_kwargs=run_vasp_kwargs_for_modifiers(modifiers),
@@ -1390,6 +1398,7 @@ def build_dos_flow(
         potcar_functional=potcar_functional,
     )
     static_job = StaticMaker(
+        stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
         input_set_generator=static_generator,
         name=static_stage_dir,
         run_vasp_kwargs=run_vasp_kwargs_for_modifiers(modifiers),
@@ -1409,6 +1418,7 @@ def build_dos_flow(
         potcar_functional=potcar_functional,
     )
     dos_job = NonSCFMaker(
+        stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
         input_set_generator=dos_generator,
         name=dos_stage_dir,
         run_vasp_kwargs=run_vasp_kwargs_for_modifiers(modifiers),
@@ -1539,6 +1549,7 @@ def build_band_structure_flow(
         potcar_functional=potcar_functional,
     )
     relax_job = RelaxMaker(
+        stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
         input_set_generator=relax_generator,
         name=relax_stage_dir,
         run_vasp_kwargs=run_vasp_kwargs_for_modifiers(modifiers),
@@ -1556,6 +1567,7 @@ def build_band_structure_flow(
         potcar_functional=potcar_functional,
     )
     static_job = StaticMaker(
+        stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
         input_set_generator=static_generator,
         name=static_stage_dir,
         run_vasp_kwargs=run_vasp_kwargs_for_modifiers(modifiers),
@@ -1575,6 +1587,7 @@ def build_band_structure_flow(
         potcar_functional=potcar_functional,
     )
     band_job = NonSCFMaker(
+        stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
         input_set_generator=band_generator,
         name=band_stage_dir,
         run_vasp_kwargs=run_vasp_kwargs_for_modifiers(modifiers),
@@ -1744,6 +1757,7 @@ def build_atomate2_flow_for_workflow_spec(
                 frozen_dft_u=frozen_dft_u,
             )
             job = RelaxMaker(
+                stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
                 input_set_generator=generator,
                 name=stage_name,
                 run_vasp_kwargs=run_vasp_kwargs,
@@ -1766,6 +1780,7 @@ def build_atomate2_flow_for_workflow_spec(
                 frozen_dft_u=frozen_dft_u,
             )
             maker = StaticMaker(
+                stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
                 input_set_generator=generator,
                 name=stage_name,
                 run_vasp_kwargs=run_vasp_kwargs,
@@ -1796,6 +1811,7 @@ def build_atomate2_flow_for_workflow_spec(
                 hse_run_vasp_kwargs = dict(run_vasp_kwargs)
                 hse_run_vasp_kwargs.update(hse_band_structure_run_vasp_kwargs())
                 job = HSEBSMaker(
+                    stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
                     input_set_generator=generator,
                     name=stage_name,
                     run_vasp_kwargs=hse_run_vasp_kwargs,
@@ -1806,6 +1822,7 @@ def build_atomate2_flow_for_workflow_spec(
                 )
             else:
                 job = NonSCFMaker(
+                    stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
                     input_set_generator=generator,
                     name=stage_name,
                     run_vasp_kwargs=run_vasp_kwargs,
@@ -1833,6 +1850,7 @@ def build_atomate2_flow_for_workflow_spec(
                 hse_run_vasp_kwargs = dict(run_vasp_kwargs)
                 hse_run_vasp_kwargs.update(hse_band_structure_run_vasp_kwargs())
                 job = HSEBSMaker(
+                    stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
                     input_set_generator=generator,
                     name=stage_name,
                     run_vasp_kwargs=hse_run_vasp_kwargs,
@@ -1843,6 +1861,7 @@ def build_atomate2_flow_for_workflow_spec(
                 )
             else:
                 job = NonSCFMaker(
+                    stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
                     input_set_generator=generator,
                     name=stage_name,
                     run_vasp_kwargs=run_vasp_kwargs,

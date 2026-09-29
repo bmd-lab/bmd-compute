@@ -95,7 +95,7 @@ Open `http://127.0.0.1:8000`. Building and previewing calculations is local;
 POWER preparation and submission require deployment-local SSH, cluster, and
 licensed POTCAR configuration that is intentionally not stored here.
 
-The environment file is not a lock file. It pins the scientific stack validated on POWER (`atomate2==0.1.5`, `pymatgen==2026.5.4`, `pymatgen-core==2026.7.16`); `pymatgen-core` is pinned explicitly because it carries the VASP input sets, including the Materials Project GGA+U table used by automatic DFT+U. Other packages are unpinned, so exact production reproducibility still depends on the maintained `bmd-compute` environment.
+`environment.yml` covers the web application and development tooling. The scientific stack for both this environment and the POWER runtime is defined once, in `constraints/scientific-runtime.txt` (exact versions taken from POWER). The POWER runner compares its parity-critical packages with the versions recorded at preparation and refuses to start VASP on any difference; see `docs/deployment.md`.
 
 Typical local checks:
 

@@ -775,7 +775,7 @@ def test_runtime_info_reports_pymatgen_core():
 
 
 def test_environment_pins_the_production_stack():
-    text = (REPO_ROOT / "environment.yml").read_text(encoding="utf-8")
+    text = (REPO_ROOT / "constraints" / "scientific-runtime.txt").read_text(encoding="utf-8")
     assert "atomate2==0.1.5" in text
     assert "pymatgen==2026.5.4" in text
     assert "pymatgen-core==2026.7.16" in text
