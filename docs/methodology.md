@@ -157,8 +157,20 @@ of section 2 or the stage is Spin Polarised, otherwise zero.
   (`ICHARG = 11`) and must match its SOC and DFT+U settings.
 - PBE and HSE06 DOS and Band Structure take `NBANDS` from the previous stage
   (1.2 x its `NBANDS`) and must match its SOC setting.
-- DOS and Band Structure must directly follow a Static Energy stage of the
-  same level of theory.
+- DOS and Band Structure must directly follow a Static Energy stage:
+
+  | Analysis stage | after PBE Static Energy | after HSE06 Static Energy |
+  | --- | --- | --- |
+  | PBE DOS / PBE Band Structure | yes | no |
+  | HSE06 DOS | yes | yes |
+  | HSE06 Band Structure | no | yes |
+
+  PBE DOS and Band Structure need a PBE Static Energy because they read its
+  charge density; that is the only electronic hand-off between stages. HSE06
+  DOS and Band Structure are self-consistent on their own meshes and take only
+  the structure, `NBANDS` and starting moments from the Static Energy stage.
+  The Electronic density of states Desired Output uses HSE06 Static Energy;
+  PBE Static Energy -> HSE06 DOS is a supported Custom option.
 - No WAVECAR is carried between stages.
 
 ### What differs from the pre-execution reference

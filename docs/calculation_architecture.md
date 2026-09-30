@@ -78,7 +78,7 @@ HSE06 support is stage-specific:
 - Geometry Optimisation: supported, with `PRECFOCK = Fast`
 - Static Energy: supported, with `PRECFOCK = Accurate` and hybrid-compatible smearing
 - Band Structure: supported through atomate2 HSE band primitives when preceded by HSE06 Static Energy
-- DOS: supported through atomate2 HSE uniform-mode primitives when preceded by HSE06 Static Energy
+- DOS: supported through atomate2 HSE uniform-mode primitives when preceded by HSE06 Static Energy (the Desired Output) or PBE Static Energy (Custom)
 
 ## Modifiers
 
@@ -228,7 +228,7 @@ Supported now:
 - the four Desired Outputs: Energy only, Relaxed structure, Electronic density of states and Electronic band structure (see `methodology.md`)
 - Custom PBE relax/static/relax-static/double-relax/DOS/band-structure workflows
 - HSE06 relax/static/relax-static stages and workflows
-- HSE06 DOS and band structure with an HSE06 static electronic precursor
+- HSE06 DOS after PBE or HSE06 Static Energy, and HSE06 band structure after HSE06 Static Energy
 - Spin Polarised, DFT-D3/DFT-D3(BJ), SOC and DFT+U, applied automatically in Desired Output workflows and by selection in Custom workflows
 
 Not part of v1 (deliberately unsupported, or post-v1 candidates rather than commitments):
