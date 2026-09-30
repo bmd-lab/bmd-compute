@@ -38,7 +38,7 @@ Primary primitives:
 - `atomate2.vasp.sets.core.StaticSetGenerator`
 - `atomate2.vasp.jobs.core.StaticMaker`
 
-BMD policy applies the final/static settings, including the 620 eV ENCUT policy, charge-density output, ELF for ordinary collinear PBE static calculations, and resource-derived NCORE where eligible.
+BMD policy applies the final/static settings, including the 620 eV ENCUT policy, charge-density output, ELF for ordinary collinear PBE static calculations, and automatic `NCORE = 8` where the stage is eligible and resources have passed validation.
 
 ### Double Geometry Optimisation
 
@@ -123,7 +123,7 @@ PRECFOCK = Accurate
 ISMEAR = 0
 ```
 
-Resource-derived NCORE remains independent of theory. A 24-rank HSE06 static benchmark showed strong benefit from the existing `NCORE = 8` policy.
+Automatic NCORE remains independent of theory. Eligible stages receive the current fixed `NCORE = 8` policy after resource validation; a 24-rank HSE06 static benchmark showed strong benefit from that value.
 
 ### HSE06 Relax -> Static
 
@@ -143,7 +143,7 @@ Static Energy         - HSE06
 Band Structure        - HSE06
 ```
 
-The PBE relax supplies geometry. BMD Compute requires HSE06 Static Energy before HSE06 Band Structure. The band stage takes its structure, `NBANDS` and starting moments from that stage and recomputes the HSE06 ground state self-consistently; no charge density or wavefunction is carried over.
+The PBE relax supplies geometry. BMD Compute requires HSE06 Static Energy before HSE06 Band Structure. The band stage takes its structure, `NBANDS` and starting moments from that stage and recomputes the HSE06 ground state self-consistently. Atomate2 0.1.5 may physically copy `CHGCAR` from the previous directory, but the generated INCAR requests neither a fixed-charge-density nor a WAVECAR restart (`ICHARG` and `ISTART` are absent).
 
 Primary primitives:
 
@@ -176,7 +176,7 @@ Primary primitives:
 - `HSEBSSetGenerator(mode="uniform")` with `reciprocal_density = 100`
 - `HSEBSMaker`
 
-The DOS stage is self-consistent on its uniform mesh (`ISMEAR = -5`, `NEDOS = 4001`); like HSE06 Band Structure it takes the structure, `NBANDS` and starting moments from the preceding Static Energy stage and neither copies nor reads its charge density or wavefunction.
+The DOS stage is self-consistent on its uniform mesh (`ISMEAR = -5`, `NEDOS = 4001`); like HSE06 Band Structure it takes the structure, `NBANDS` and starting moments from the preceding Static Energy stage. Atomate2 0.1.5 may physically copy `CHGCAR`, but the generated INCAR requests neither a fixed-charge-density nor a WAVECAR restart (`ICHARG` and `ISTART` are absent).
 
 ### Spin Polarised Calculations
 

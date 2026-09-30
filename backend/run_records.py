@@ -6,8 +6,9 @@ and BMD Compute's own Resume path, use to locate and describe a run:
 ``bmd_compute.submission`` v1 -- ``<run_dir>/submission.json``
     The Prepare-time submission specification: what BMD Compute prepared and
     asked the cluster to execute. It is written during Prepare, before sbatch.
-    A later Prepare of the same run can currently rewrite it, so it is not yet
-    immutable historical evidence.
+    An identical PREPARED, unsubmitted attempt may be prepared again, which
+    rewrites it. Once an attempt is SUBMITTING or SUBMITTED, Prepare is rejected
+    before any run artifact is written and the execution package is immutable.
 
 ``bmd_compute.job_record`` v1 -- ``<logs_dir>/job_<JOB_ID>.json``
     A run-resolution record written once, after sbatch returns a job ID. It

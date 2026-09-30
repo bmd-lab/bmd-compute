@@ -34,7 +34,7 @@ Students choose a Desired Output, or build a Custom workflow:
 - Electronic band structure: PBE Geometry Optimisation -> HSE06 Static Energy -> HSE06 Band Structure
 - Custom: an ordered list of supported PBE/HSE06 stages and Advanced Options, never changed automatically
 
-Desired Outputs add spin polarisation, DFT-D3(BJ), SOC and DFT+U automatically when their rules trigger. Custom workflows use Spin Polarised, van der Waals correction, SOC and DFT+U only when selected.
+Desired Outputs add spin polarisation, DFT-D3(BJ), SOC and DFT+U automatically when their rules trigger. If structure dimensionality analysis fails, a Desired Output fails closed before preview or remote work because BMD cannot safely decide whether DFT-D3(BJ) is required. Custom workflows use Spin Polarised, van der Waals correction, SOC and DFT+U only when selected.
 
 The authoritative declaration of BMD Compute's v1 executable methodology (workflows, automatic treatments, stage settings, k-points, POTCARs, starting moments, stage chaining and the execution model) is [`docs/methodology.md`](docs/methodology.md).
 
@@ -58,10 +58,10 @@ Important current policies:
 - SOC starting moments: vector `MAGMOM` keeps the pymatgen/Materials Project starting moments when the structure contains an element in the spin method-consideration screen, or when the stage is explicitly Spin Polarised; otherwise SOC starts from zero vector moments.
 - In the standard Desired Output workflows SOC is BMD methodology, not advice: when the heavy-element SOC policy triggers, SOC is applied to every non-relaxation stage (PBE Static for Static Energy; HSE06 Static and HSE06 DOS or Band Structure for DOS and Band Structure). Relaxations stay non-SOC. Custom workflows are never changed automatically.
 - HSE06 Band Structure + SOC keeps the atomate2 zero-weight high-symmetry path and `reciprocal_density = 64`, but replaces pymatgen's symmetry-reduced weighted SCF points with every point of the same mesh, because `ISYM = 0` makes VASP treat the listed points as the complete sampling. Non-SOC HSE06 Band Structure is unchanged.
-- Stages that consume the previous stage's electronic data must match its SOC setting: PBE DOS and Band Structure restart from the fixed charge density (`ICHARG = 11`), and PBE and HSE06 DOS/Band Structure size `NBANDS` from the previous run. HSE06 DOS/Band Structure neither copy nor read the static CHGCAR or WAVECAR (no `ICHARG`/`ISTART`).
+- Stages that consume the previous stage's electronic data must match its SOC setting: PBE DOS and Band Structure restart from the fixed charge density (`ICHARG = 11`), and PBE and HSE06 DOS/Band Structure size `NBANDS` from the previous run. Atomate2 may physically copy `CHGCAR` into an HSE06 DOS/Band Structure stage, but BMD requests neither a fixed-charge-density nor a WAVECAR restart (`ICHARG` and `ISTART` are absent), so the HSE06 calculation remains self-consistent.
 - An unsuccessful (unconverged) stage fails the workflow; BMD sets this on every stage instead of relying on atomate2's configurable default. A workflow runs in one SLURM allocation: reaching the walltime is a failure, results are loaded only from the final stage of a completed run, and running again starts a new attempt without reusing completed stages. Continuation across allocations is not part of v1.
 - The POWER runner checks its scientific package versions against those recorded at preparation and stops before any VASP work on a mismatch (`constraints/scientific-runtime.txt`, `runtime_environment.json`).
-- NCORE is an execution-resource policy, not a theory policy. Automatic NCORE is stage-specific and currently applies to Relax, Static, and DOS stages; Band Structure omits automatic NCORE pending separate benchmarking.
+- NCORE is an execution-resource policy, not a theory policy. For validated resource selections, eligible Relax, Static, and DOS stages automatically receive the current fixed `NCORE = 8` policy; Band Structure omits automatic NCORE pending separate benchmarking.
 
 ## Operational Safety
 

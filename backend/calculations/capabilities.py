@@ -10,6 +10,7 @@ from typing import Any
 from backend.calculations.default_treatments import automatic_default_treatment_policy
 from backend.calculations.dispersion import dispersion_modifier_policy
 from backend.calculations.models import Theory
+from backend.calculations.registry import supported_stage_modifier_combinations
 from backend.calculations.vasp_stage_definitions import (
     EXECUTABLE_METHODOLOGY_SCOPE,
     describe_stage,
@@ -31,6 +32,7 @@ def build_capability_payload(
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     base_stage_definitions = list(list_stage_definitions())
+    capabilities = _supported_stage_theory_capabilities(base_stage_definitions)
     return {
         "schema_version": SCHEMA_VERSION,
         "scope": SCOPE,
@@ -42,11 +44,13 @@ def build_capability_payload(
         "contract": {
             "base_stage_definitions": "Theory-neutral stage definitions from list_stage_definitions().",
             "capabilities": "Supported stage/theory descriptions from describe_stage(); unsupported combinations are not invented.",
+            "stage_modifier_support": "Complete stage-local explicit modifier sets accepted by the BMD Compute registry for each supported stage/theory pair.",
             "modifier_policies": "Stage-local executable modifiers with controlled options; unsupported pairings are not invented.",
             "automatic_default_treatments": "Read-only policy describing BMD-managed Desired Output treatment resolution.",
         },
         "base_stage_definitions": base_stage_definitions,
-        "capabilities": _supported_stage_theory_capabilities(base_stage_definitions),
+        "capabilities": capabilities,
+        "stage_modifier_support": _stage_modifier_support(capabilities),
         "modifier_policies": [dispersion_modifier_policy()],
         "automatic_default_treatments": automatic_default_treatment_policy(),
     }
@@ -106,6 +110,29 @@ def _supported_stage_theory_capabilities(
             if description["theory_supported_for_stage"] is True:
                 capabilities.append(description)
     return capabilities
+
+
+def _stage_modifier_support(capabilities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    support: list[dict[str, Any]] = []
+    for capability in capabilities:
+        stage_type = capability["stage_type"]
+        theory = capability["theory"]
+        combinations = supported_stage_modifier_combinations(stage_type, theory)
+        support.append(
+            {
+                "stage_type": stage_type,
+                "theory": theory,
+                "supported_modifier_combinations": [
+                    sorted(modifier.value for modifier in modifiers)
+                    for modifiers in combinations
+                ],
+                "source": (
+                    "backend.calculations.registry."
+                    "supported_stage_modifier_combinations"
+                ),
+            }
+        )
+    return support
 
 
 def _repository_root() -> Path:

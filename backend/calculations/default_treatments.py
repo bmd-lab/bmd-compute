@@ -48,6 +48,10 @@ SOC_NOT_APPLICABLE_REASON = (
     "Output contains no stage that receives SOC."
 )
 IMPLEMENTATION_SOURCE = "backend.calculations.default_treatments"
+DIMENSIONALITY_ANALYSIS_FAILED = "analysis_failed"
+DIMENSIONALITY_FAILURE_DIAGNOSTIC_CODE = (
+    "automatic_dispersion_dimensionality_analysis_failed"
+)
 DFT_U_STAGE_TYPES = frozenset({StageType.RELAX, StageType.STATIC})
 DFT_U_NO_STAGE_REASON = (
     "This Desired Output has no PBE Geometry Optimisation or Static Energy "
@@ -158,6 +162,26 @@ def resolve_default_treatments(
 
     normalized_base = validate_workflow_spec(base_workflow)
     payload = _method_consideration_payload(structure, workflow=normalized_base)
+    dimensionality = dict(
+        ((payload.get("structure_observations") or {}).get("dimensionality") or {})
+    )
+    if dimensionality.get("status") == DIMENSIONALITY_ANALYSIS_FAILED:
+        raise CalculationValidationError(
+            (
+                "BMD Compute could not determine whether automatic van der Waals "
+                "correction is required because structure dimensionality analysis failed."
+            ),
+            suggestion=(
+                "Review the structure and try again, or use Custom workflow to choose "
+                "van der Waals correction explicitly."
+            ),
+            diagnostic={
+                "code": DIMENSIONALITY_FAILURE_DIAGNOSTIC_CODE,
+                "policy": "fail_closed",
+                "desired_output": desired_output,
+                "observation": _json_safe_mapping(dimensionality),
+            },
+        )
     consideration_ids = tuple(
         str(consideration.get("id"))
         for consideration in payload.get("considerations", ())
@@ -249,6 +273,13 @@ def automatic_default_treatment_policy() -> dict[str, Any]:
         "applies_to": {
             "workflow_mode": "bmd_managed_desired_output",
             "custom_workflow": "preserved_without_automatic_changes",
+        },
+        "failure_policy": {
+            "dimensionality_analysis": {
+                "status": DIMENSIONALITY_ANALYSIS_FAILED,
+                "action": "reject_before_preview_preparation_or_submission",
+                "diagnostic_code": DIMENSIONALITY_FAILURE_DIAGNOSTIC_CODE,
+            }
         },
         "treatments": [
             {
@@ -556,6 +587,7 @@ __all__ = [
     "DFT_U_CONSIDERATION_ID",
     "DFT_U_NO_STAGE_REASON",
     "DFT_U_STAGE_TYPES",
+    "DIMENSIONALITY_FAILURE_DIAGNOSTIC_CODE",
     "DISPERSION_CONSIDERATION_ID",
     "ResolvedDefaultWorkflow",
     "SOC_CONSIDERATION_ID",

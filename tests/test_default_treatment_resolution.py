@@ -14,6 +14,7 @@ import main
 from backend.calculations.default_treatments import (
     AUTOMATIC_APPLICATION_ADVISORY,
     AUTOMATIC_APPLICATION_APPLIED,
+    DIMENSIONALITY_FAILURE_DIAGNOSTIC_CODE,
     DISPERSION_CONSIDERATION_ID,
     SOC_CONSIDERATION_ID,
     SPIN_CONSIDERATION_ID,
@@ -21,7 +22,10 @@ from backend.calculations.default_treatments import (
     resolve_default_treatments,
 )
 from backend.calculations.models import Modifier, StageSpec, StageType, Theory, WorkflowSpec
-from backend.calculations.registry import desired_output_workflow_spec
+from backend.calculations.registry import (
+    CalculationValidationError,
+    desired_output_workflow_spec,
+)
 from backend.generated_inputs import preview_generated_inputs
 from backend.parser import parse_structure
 from backend.structure_dimensionality import ANALYSIS_FAILED, StructureDimensionalityObservation
@@ -447,7 +451,19 @@ def test_changing_desired_output_recomputes_stage_applicability_from_base_recipe
     assert [treatment.stage_indices for treatment in band.applied_treatments] == [(1,)]
 
 
-def test_resolution_is_pure_with_respect_to_io_network_execution(monkeypatch):
+def dimensionality_failure(_structure):
+    return StructureDimensionalityObservation(
+        status=ANALYSIS_FAILED,
+        dimensionality=None,
+        reason="test failure",
+    )
+
+
+def unreachable(*args, **kwargs):
+    raise AssertionError("dimensionality failure must stop before preview or remote work")
+
+
+def test_managed_resolution_fails_closed_without_io_network_execution(monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("automatic treatment resolution must stay local and pure")
 
@@ -458,19 +474,121 @@ def test_resolution_is_pure_with_respect_to_io_network_execution(monkeypatch):
     monkeypatch.setattr(Path, "write_bytes", forbidden)
     monkeypatch.setattr(
         "backend.calculations.method_considerations.observe_structure_dimensionality",
-        lambda structure: StructureDimensionalityObservation(
-            status=ANALYSIS_FAILED,
-            dimensionality=None,
-            reason="test failure",
-        ),
+        dimensionality_failure,
     )
 
-    result = resolve_default_treatments(
-        structure_for_symbols(["Fe"]),
-        desired_output_workflow_spec("energy_only"),
+    with pytest.raises(CalculationValidationError) as excinfo:
+        resolve_default_treatments(
+            structure_for_symbols(["Fe"]),
+            desired_output_workflow_spec("energy_only"),
+            desired_output="energy_only",
+        )
+
+    diagnostic = excinfo.value.diagnostic
+    assert diagnostic["code"] == DIMENSIONALITY_FAILURE_DIAGNOSTIC_CODE
+    assert diagnostic["policy"] == "fail_closed"
+    assert diagnostic["desired_output"] == "energy_only"
+    assert diagnostic["observation"]["status"] == ANALYSIS_FAILED
+    assert diagnostic["observation"]["dimensionality"] is None
+    assert diagnostic["observation"]["reason"] == "test failure"
+    assert diagnostic["observation"]["method"]["id"] == (
+        "pymatgen.crystalnn_larsen_dimensionality"
+    )
+    assert "could not determine" in excinfo.value.message
+    assert "Custom workflow" in excinfo.value.suggestion
+
+
+def test_custom_workflow_remains_advisory_when_dimensionality_analysis_fails(monkeypatch):
+    monkeypatch.setattr(
+        "backend.calculations.method_considerations.observe_structure_dimensionality",
+        dimensionality_failure,
+    )
+    workflow = WorkflowSpec([StageSpec(StageType.STATIC, Theory.PBE)], recipe="custom")
+
+    response = build_route(SI_POSCAR, workflow="custom", workflow_spec=workflow)
+
+    assert response.status_code == 200
+    assert response.context["selected_workflow"]["stages"][0]["modifiers"] == []
+    assert response.context["method_considerations"] is None
+    assert not response.context.get("calculation_error")
+    assert "IVDW" not in response.context["generated_inputs"]["incar"]
+
+
+def _managed_identity() -> tuple[dict, str]:
+    context = build_route(SI_POSCAR, workflow="energy_only").context
+    return context["submission_spec"]["submission"], context["selected_workflow"]["json"]
+
+
+def _prepare_managed(identity: dict, workflow_spec_json: str):
+    return main.prepare_remote(
+        request("/prepare-remote"),
+        structure=SI_POSCAR,
+        fmt="poscar",
+        purpose=None,
+        theory=None,
+        modifiers=None,
+        cpus=None,
+        memory_gb=None,
+        walltime=None,
+        queue=None,
+        created_at=None,
+        submission_attempt_id=identity["attempt_id"],
+        submission_identity_token=identity["identity_token"],
+        workflow_spec_json=workflow_spec_json,
+        workflow="energy_only",
+        method=None,
     )
 
-    assert signature(result.resolved_workflow) == [("static", "pbe", ("spin_polarized",))]
+
+def _submit_managed(identity: dict, workflow_spec_json: str):
+    return main.submit_workflow(
+        request("/submit"),
+        structure=SI_POSCAR,
+        fmt="poscar",
+        purpose=None,
+        theory=None,
+        modifiers=None,
+        cpus=None,
+        memory_gb=None,
+        walltime=None,
+        queue=None,
+        created_at=None,
+        submission_attempt_id=identity["attempt_id"],
+        submission_identity_token=identity["identity_token"],
+        remote_prepared="true",
+        workflow_spec_json=workflow_spec_json,
+        workflow="energy_only",
+        method=None,
+    )
+
+
+def test_managed_routes_stop_before_preview_preparation_or_submission(monkeypatch):
+    identity, workflow_spec_json = _managed_identity()
+    monkeypatch.setattr(
+        "backend.calculations.method_considerations.observe_structure_dimensionality",
+        dimensionality_failure,
+    )
+    monkeypatch.setattr(main, "build_submission_state_from_structure", unreachable)
+    monkeypatch.setattr(main, "prepare_remote_submission", unreachable)
+    monkeypatch.setattr(main, "submit_remote_workflow", unreachable)
+
+    responses = (
+        build_route(SI_POSCAR, workflow="energy_only"),
+        _prepare_managed(identity, workflow_spec_json),
+        _submit_managed(identity, workflow_spec_json),
+    )
+
+    for response in responses:
+        assert response.status_code == 400
+        error = response.context["calculation_error"]
+        assert "dimensionality analysis failed" in error["message"]
+        assert error["diagnostic"]["code"] == DIMENSIONALITY_FAILURE_DIAGNOSTIC_CODE
+        assert error["diagnostic"]["observation"]["status"] == ANALYSIS_FAILED
+        assert error["diagnostic"]["observation"]["reason"] == "test failure"
+        assert "not_applicable" not in json.dumps(error, sort_keys=True)
+        assert not response.context.get("generated_inputs")
+        assert not response.context.get("submission_spec")
+        assert "could not determine" in response.template.render(response.context)
 
 
 def test_automatic_default_treatment_policy_is_json_safe_and_contract_focused():
@@ -479,6 +597,11 @@ def test_automatic_default_treatment_policy_is_json_safe_and_contract_focused():
     assert json.loads(json.dumps(policy, sort_keys=True)) == policy
     assert policy["applies_to"]["workflow_mode"] == "bmd_managed_desired_output"
     assert policy["applies_to"]["custom_workflow"] == "preserved_without_automatic_changes"
+    assert policy["failure_policy"]["dimensionality_analysis"] == {
+        "status": ANALYSIS_FAILED,
+        "action": "reject_before_preview_preparation_or_submission",
+        "diagnostic_code": DIMENSIONALITY_FAILURE_DIAGNOSTIC_CODE,
+    }
     assert [treatment["consideration_id"] for treatment in policy["treatments"]] == [
         SPIN_CONSIDERATION_ID,
         DISPERSION_CONSIDERATION_ID,

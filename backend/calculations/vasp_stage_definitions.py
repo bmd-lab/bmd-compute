@@ -291,7 +291,7 @@ _THEORY_STAGE_OVERRIDES = {
         "bmd_incar_defaults": _HSE_DOS_STAGE_DEFAULTS,
         "encut_floor": ENCUT_STATIC_FINAL_DEFAULT,
         "restart_policy": _restart(
-            "HSE06 DOS stages run a self-consistent hybrid calculation on a uniform weighted k-point mesh. A preceding Static Energy stage supplies the structure and optional starting charge density.",
+            "HSE06 DOS stages run a self-consistent hybrid calculation on a uniform weighted k-point mesh. The preceding Static Energy stage supplies the structure and previous vasprun.xml context used to size NBANDS. Atomate2 may copy CHGCAR when prev_dir is supplied, but the generated INCAR does not request a fixed-charge-density or WAVECAR restart (no ICHARG or ISTART).",
             requires_previous_stage=True,
         ),
         "source": _HSE_DOS_BASE_SOURCE,
@@ -307,7 +307,7 @@ _THEORY_STAGE_OVERRIDES = {
         "bmd_incar_defaults": _HSE_BAND_STRUCTURE_STAGE_DEFAULTS,
         "encut_floor": ENCUT_STATIC_FINAL_DEFAULT,
         "restart_policy": _restart(
-            "HSE06 Band Structure stages run a self-consistent hybrid calculation with a weighted uniform mesh plus zero-weight high-symmetry line path. A preceding HSE06 Static Energy stage supplies the structure and optional starting charge density.",
+            "HSE06 Band Structure stages run a self-consistent hybrid calculation with a weighted uniform mesh plus zero-weight high-symmetry line path. The preceding HSE06 Static Energy stage supplies the structure and previous vasprun.xml context used to size NBANDS. Atomate2 may copy CHGCAR when prev_dir is supplied, but the generated INCAR does not request a fixed-charge-density or WAVECAR restart (no ICHARG or ISTART).",
             requires_previous_stage=True,
         ),
         "source": _HSE_BAND_BASE_SOURCE,
