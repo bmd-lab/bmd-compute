@@ -11,6 +11,11 @@ from backend.calculations.capabilities import (
     build_capability_payload,
     emit_json,
 )
+from backend.calculations.models import Modifier, StageSpec
+from backend.calculations.registry import (
+    supported_stage_modifier_combinations,
+    validate_stage_spec,
+)
 from backend.calculations.vasp_stage_definitions import (
     describe_stage,
     list_stage_definitions,
@@ -45,6 +50,7 @@ def test_capability_payload_has_versioned_contract_and_provenance_shape():
         "automatic_default_treatments": "Read-only policy describing BMD-managed Desired Output treatment resolution.",
         "base_stage_definitions": "Theory-neutral stage definitions from list_stage_definitions().",
         "capabilities": "Supported stage/theory descriptions from describe_stage(); unsupported combinations are not invented.",
+        "stage_modifier_support": "Complete stage-local explicit modifier sets accepted by the BMD Compute registry for each supported stage/theory pair.",
         "modifier_policies": "Stage-local executable modifiers with controlled options; unsupported pairings are not invented.",
     }
     assert payload["source"] == {
@@ -99,6 +105,49 @@ def test_supported_capabilities_are_stage_theory_descriptions_only():
         entry["theory_supported_for_stage"] is True
         for entry in payload["capabilities"]
     )
+
+
+def test_stage_modifier_support_is_derived_from_registry_and_validates():
+    payload = build_capability_payload(include_provenance=False)
+    support = {
+        (entry["stage_type"], entry["theory"]): entry
+        for entry in payload["stage_modifier_support"]
+    }
+    capability_keys = {
+        (entry["stage_type"], entry["theory"])
+        for entry in payload["capabilities"]
+    }
+
+    assert set(support) == capability_keys
+    for (stage_type, theory), entry in support.items():
+        expected = [
+            sorted(modifier.value for modifier in modifiers)
+            for modifiers in supported_stage_modifier_combinations(stage_type, theory)
+        ]
+        assert entry["supported_modifier_combinations"] == expected
+        assert entry["source"].endswith("supported_stage_modifier_combinations")
+        for modifiers in entry["supported_modifier_combinations"]:
+            validate_stage_spec(StageSpec(stage_type, theory, set(modifiers)))
+
+
+def test_stage_modifier_support_reports_representative_allowed_and_forbidden_sets():
+    payload = build_capability_payload(include_provenance=False)
+    support = {
+        (entry["stage_type"], entry["theory"]): {
+            tuple(combination)
+            for combination in entry["supported_modifier_combinations"]
+        }
+        for entry in payload["stage_modifier_support"]
+    }
+    pbe_dos = support[("dos", "pbe")]
+    pbe_static = support[("static", "pbe")]
+    hse_static = support[("static", "hse06")]
+
+    assert ("dft_u", "spin_polarized") in pbe_dos
+    assert all(Modifier.SOC.value not in combination for combination in pbe_dos)
+    assert ("soc",) in pbe_static
+    assert ("soc",) in hse_static
+    assert ("dispersion",) not in hse_static
 
 
 def test_hse_band_structure_description_survives_contract():
@@ -163,6 +212,11 @@ def test_automatic_default_treatment_policy_survives_contract():
     assert policy["applies_to"] == {
         "workflow_mode": "bmd_managed_desired_output",
         "custom_workflow": "preserved_without_automatic_changes",
+    }
+    assert policy["failure_policy"]["dimensionality_analysis"] == {
+        "status": "analysis_failed",
+        "action": "reject_before_preview_preparation_or_submission",
+        "diagnostic_code": "automatic_dispersion_dimensionality_analysis_failed",
     }
     assert [
         treatment["consideration_id"]

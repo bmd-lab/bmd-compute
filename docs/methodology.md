@@ -54,6 +54,14 @@ Treatments are decided independently: +U never switches on spin, and SOC, D3
 and +U may share a PBE stage. The triggers are composition or connectivity
 screens, not proof that a treatment is required.
 
+If the dimensionality observation returns `analysis_failed`, a managed Desired
+Output fails closed before generated-input preview, preparation or submission.
+BMD Compute cannot safely decide whether automatic DFT-D3(BJ) is required in
+that state. The structured calculation error retains the failed observation and
+reason. Structure analysis remains observational and non-blocking, and Custom
+workflows remain user-managed and are not rejected by this automatic-treatment
+policy.
+
 SOC stages run `vasp_ncl` with `LSORBIT = True`, `LNONCOLLINEAR = True`,
 `ISYM = 0`, `SAXIS = 0 0 1`, `GGA_COMPAT = False` and no `ISPIN`; Custodian's
 `auto_gamma` is disabled so the executable cannot switch to `vasp_gam`.
@@ -112,8 +120,12 @@ All HSE06 stages use `LHFCALC = True`, `AEXX = 0.25`, `HFSCREEN = 0.2` and
 | Density of States | self-consistent on a uniform mesh, `ENCUT = 620` eV, `ALGO = Normal`, `PRECFOCK = Fast`, `ISMEAR = -5`, `NEDOS = 4001`, `NELMIN = 5` (adopted) |
 | Band Structure | self-consistent on a uniform mesh plus a zero-weight path, `ENCUT = 620` eV, `ALGO = Normal`, `PRECFOCK = Fast`, `ISMEAR = 0`, `SIGMA = 0.01`, `NELMIN = 5` (adopted) |
 
-HSE06 DOS and Band Structure follow an HSE06 Static Energy stage but do not
-read its charge density or wavefunctions.
+HSE06 DOS may follow PBE or HSE06 Static Energy; HSE06 Band Structure requires
+HSE06 Static Energy. Both are self-consistent. Atomate2 0.1.5's `HSEBSMaker`
+may physically copy `CHGCAR` when given a previous-stage directory, but BMD's
+generated HSE06 INCAR requests neither a fixed-charge-density nor a WAVECAR
+restart (`ICHARG` and `ISTART` are absent). The preceding run still supplies the
+structure, starting moments and `NBANDS` context described in section 7.
 
 ## 4. K-points
 
@@ -214,8 +226,9 @@ separately by Custodian.
 These affect generated inputs but are fixed by the pinned stack and recorded
 rather than declared individually: pymatgen's band-gap-dependent smearing
 mechanics, symmetry precision, `LMAXMIX` (set by pymatgen's rule and verified
-for +U stages), the Custodian handler set (recorded per stage), resource-derived
-`NCORE`, and the runtime parity check that stops a run whose parity-critical
+for +U stages), the Custodian handler set (recorded per stage), the fixed
+automatic `NCORE = 8` policy on eligible stages for validated resource
+selections, and the runtime parity check that stops a run whose parity-critical
 packages or input-altering atomate2 settings differ from preparation.
 
 Output-writing flags (for example `LCHARG`, `LWAVE`, `LVTOT`, `LAECHG`, `LELF`)

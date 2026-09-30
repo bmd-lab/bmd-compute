@@ -137,6 +137,8 @@ def test_hse_descriptions_compose_stage_base_and_theory_policy_separately():
     )
     assert hse_dos_description["restart_policy"]["requires_previous_stage"] is True
     assert hse_dos_description["restart_policy"]["incar_amendments"] == {}
+    assert "may copy CHGCAR" in hse_dos_description["restart_policy"]["description"]
+    assert "no ICHARG or ISTART" in hse_dos_description["restart_policy"]["description"]
     hse_dos_stage_amendments = hse_dos_description[
         "theory_stage_bmd_incar_amendments"
     ]
@@ -178,6 +180,8 @@ def test_hse_descriptions_compose_stage_base_and_theory_policy_separately():
     assert hse_band_description["applicable_theory_amendments"]["LHFCALC"] is True
     assert hse_band_description["applicable_theory_amendments"]["PRECFOCK"] == "Fast"
     assert hse_band_description["restart_policy"]["incar_amendments"] == {}
+    assert "may copy CHGCAR" in hse_band_description["restart_policy"]["description"]
+    assert "no ICHARG or ISTART" in hse_band_description["restart_policy"]["description"]
 
 
 def test_hse_dos_base_helper_does_not_duplicate_hse_functional_settings():

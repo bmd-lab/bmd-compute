@@ -98,6 +98,7 @@ Important rules:
 - SOC is available for PBE and HSE06 Static Energy stages and HSE06 DOS and Band Structure stages, and uses `vasp_ncl` with Custodian `auto_gamma` disabled.
 - SOC and van der Waals correction may be combined on PBE Static Energy.
 - In BMD-managed Desired Output workflows Spin Polarised is applied automatically to every stage when the spin composition screen triggers, and DFT-D3(BJ) to PBE Relax/Static stages when two-dimensional bonded connectivity is detected (see `methodology.md`).
+- A failed dimensionality observation makes managed Desired Output resolution fail closed before preview, preparation or submission because automatic DFT-D3(BJ) applicability is then unknown. Custom workflows remain user-managed and unaffected.
 - A stage that restarts from the previous fixed charge density (`ICHARG = 11`), or whose generator sizes `NBANDS` from the previous run (PBE and HSE06 DOS/Band Structure), must use the same SOC setting as that stage.
 - HSE06 DOS + SOC keeps the automatic uniform Gamma mesh; with `ISYM = 0` VASP expands it over the full zone.
 - In BMD-managed Desired Output workflows SOC is applied automatically to every non-relaxation stage when the heavy-element SOC policy triggers; relaxations remain non-SOC.
@@ -169,7 +170,7 @@ account = power-leeburton-users_v2
 
 The account is fixed backend policy and is not user-editable.
 
-Automatic NCORE is resource-derived and stage-specific. It currently applies to Relax, Static, and DOS stages. Band Structure stages omit automatic NCORE until parallel band-structure performance is separately benchmarked.
+Automatic NCORE is stage-specific. For validated resource selections, eligible Relax, Static, and DOS stages receive the current fixed `NCORE = 8` policy. Band Structure stages omit automatic NCORE until parallel band-structure performance is separately benchmarked.
 
 ## Generated Input Previews
 
@@ -249,10 +250,10 @@ BMD Compute exposes its executable stage capability description through a small 
 python -m backend.calculations.capabilities
 ```
 
-The command serializes the existing stage introspection layer (`list_stage_definitions()` and `describe_stage()`) and does not create a second capability registry. The payload is versioned with `schema_version = 1`, includes producer provenance when Git information is available, and is intended for internal BMD ecosystem consumers such as BMD Agent.
+The command serializes the existing stage introspection layer (`list_stage_definitions()` and `describe_stage()`) and does not create a second capability registry. The payload is versioned with `schema_version = 1`, includes producer provenance when Git information is available, and is intended for internal BMD ecosystem consumers such as BMD Agent. Its additive `stage_modifier_support` field enumerates the complete modifier sets accepted by stage validation for each supported stage/theory pair; it is derived from the registry rather than maintained as a second support table. These are stage-local combinations, so workflow chaining, material-dependent settings and option validation still apply separately.
 
 The payload describes BMD Compute's executable calculation methodology: the stages, theories, settings and treatments this checkout implements and can execute. BMD Compute is the authority for that executable methodology. BMDex supplies curated supporting evidence, validation records, datasets and tools; it does not define BMD Compute methodology. The payload does not claim that any capability has been scientifically validated or adopted; that remains human judgment, recorded separately.
 
-Consumers establish compatibility from the machine-readable fields `schema_version` and `source.repository` (`"bmd_compute"`). The `scope` strings are human-readable descriptions and may be reworded without a schema change; consumers must not compare them for equality.
+Consumers establish compatibility from the machine-readable fields `schema_version` and `source.repository` (`"bmd_compute"`). The `scope` strings are human-readable descriptions and may be reworded without a schema change; consumers must not compare them for equality. Schema-v1 consumers must ignore unknown additive object fields, which keeps the new modifier-support description compatible with existing consumers.
 
 Provenance inspection runs `git` with `--no-optional-locks` (and `GIT_OPTIONAL_LOCKS=0`), so invoking the producer never refreshes or rewrites the checkout's Git index.

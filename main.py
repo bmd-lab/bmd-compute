@@ -18,6 +18,7 @@ from backend.calculations.default_treatments import (
     AUTOMATIC_APPLICATION_ADVISORY,
     AUTOMATIC_APPLICATION_APPLIED,
     AUTOMATIC_APPLICATION_NOT_APPLICABLE,
+    DIMENSIONALITY_FAILURE_DIAGNOSTIC_CODE,
     ResolvedDefaultWorkflow,
     resolve_default_treatments,
 )
@@ -291,10 +292,13 @@ def structure_error_response(
 
 
 def calculation_error_context(exc: CalculationValidationError) -> dict:
-    return {
+    context = {
         "message": exc.message,
         "suggestion": exc.suggestion,
     }
+    if exc.diagnostic is not None:
+        context["diagnostic"] = deepcopy(exc.diagnostic)
+    return context
 
 
 def calculation_error_response(
@@ -1041,11 +1045,18 @@ def analyze(
         )
 
     summary = summarize_structure(structure_obj)
-    workflow_spec, default_treatment_resolution = resolve_workflow_for_structure(
-        structure_obj,
-        default_workflow_spec(),
-        workflow="energy_only",
-    )
+    workflow_spec = default_workflow_spec()
+    default_treatment_resolution = None
+    try:
+        workflow_spec, default_treatment_resolution = resolve_workflow_for_structure(
+            structure_obj,
+            workflow_spec,
+            workflow="energy_only",
+        )
+    except CalculationValidationError as exc:
+        diagnostic = exc.diagnostic or {}
+        if diagnostic.get("code") != DIMENSIONALITY_FAILURE_DIAGNOSTIC_CODE:
+            raise
     method_considerations = method_considerations_for_workflow_state(
         structure_obj,
         workflow=workflow_spec,

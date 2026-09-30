@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from itertools import combinations
 
 from backend.calculations.models import (
@@ -29,10 +30,17 @@ from backend.calculations.theory_policy import (
 
 
 class CalculationValidationError(ValueError):
-    def __init__(self, message: str, *, suggestion: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        suggestion: str | None = None,
+        diagnostic: Mapping[str, object] | None = None,
+    ):
         super().__init__(message)
         self.message = message
         self.suggestion = suggestion
+        self.diagnostic = dict(diagnostic) if diagnostic is not None else None
 
 
 _ACTIVE_UI_MODIFIERS = (
@@ -1023,6 +1031,36 @@ def supported_combinations() -> tuple[CalculationSpec, ...]:
     )
 
 
+def supported_stage_modifier_combinations(
+    stage_type: StageType | str,
+    theory: Theory | str,
+) -> tuple[frozenset[Modifier], ...]:
+    """Return every complete stage-local modifier set accepted by the registry."""
+
+    normalized_stage = StageType.from_value(stage_type)
+    normalized_theory = Theory.from_value(theory)
+    candidates = tuple(
+        sorted(
+            _supported_modifiers_for_stage(normalized_stage, normalized_theory),
+            key=lambda modifier: modifier.value,
+        )
+    )
+    supported: list[frozenset[Modifier]] = []
+    for modifiers in _modifier_subsets(candidates):
+        try:
+            validate_stage_spec(
+                StageSpec(
+                    stage_type=normalized_stage,
+                    theory=normalized_theory,
+                    modifiers=modifiers,
+                )
+            )
+        except CalculationValidationError:
+            continue
+        supported.append(modifiers)
+    return tuple(supported)
+
+
 def calculation_display_name(spec: CalculationSpec) -> str:
     normalized = CalculationSpec(
         purpose=spec.purpose,
@@ -1243,6 +1281,7 @@ __all__ = [
     "modifier_display_name",
     "stage_display_name",
     "supported_combinations",
+    "supported_stage_modifier_combinations",
     "theory_display_name",
     "validate_calculation_spec",
     "validate_stage_spec",
