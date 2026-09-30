@@ -47,6 +47,28 @@ before execution, not later Custodian or VASP corrections. References are
 created through the same generated-input path used by the web application and
 preserve native JSON values for INCAR settings where practical.
 
+## Later stages
+
+Every stage of a reference is generated from the submitted structure, without
+any previous-stage output: it is a standalone pre-execution reference. At run
+time, stage 2 onwards is generated from the stage before it, so an executed
+later stage can legitimately differ from its reference in:
+
+- the structure (the previous stage's relaxed structure);
+- starting magnetic moments of spin-polarised stages without SOC (the previous
+  stage's final moments);
+- k-points and band-structure paths, regenerated for the relaxed cell;
+- `NBANDS`, derived from the previous stage;
+- `SIGMA` on HSE06 DOS, which follows the previous stage's band gap (no effect
+  with `ISMEAR = -5`);
+- PBE DOS/Band Structure starting from the previous stage's charge density
+  (`ICHARG = 11`).
+
+These differences are expected consequences of BMD Compute's methodology
+(`methodology.md` section 7), not deviations from it. A comparison against a
+reference reports differences; it does not by itself establish that an
+executed stage is nonstandard.
+
 `POTCAR` output is symbolic only. The producer uses pymatgen's `potcar_spec`
 mode and exposes `POTCAR.spec` symbols, not licensed POTCAR file contents.
 

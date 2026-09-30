@@ -41,9 +41,9 @@ The preparation environment records:
 
 - Python version
 - Python implementation
-- local scientific package versions for `pymatgen`, `pymatgen-core`, `atomate2`, `jobflow`, and `custodian`
+- local versions of the scientific packages in `constraints/scientific-runtime.txt` (atomate2, pymatgen, pymatgen-core, custodian, emmet-core, jobflow, spglib, and the supporting monty, numpy, scipy, pydantic, pydantic-settings, maggma and ruamel.yaml)
 
-Remote execution package versions are marked as deferred at submission time because the remote job environment is the source of truth when the calculation actually runs.
+`submission.json` also records `runtime_parity`: the exact versions of the parity-critical packages at preparation. The POWER runner reads its own versions before any VASP work, writes them to `<run_dir>/runtime_environment.json` (see `run_records.md`) and stops if a parity-critical package differs or an input-altering atomate2 setting is active. `python_environment.remote_execution` in the provenance block points to that record; at submission time it is still marked deferred because the runtime record does not exist yet. Runs prepared before this mechanism have no runtime record; their runner log is the only runtime evidence.
 
 ## VASP Execution
 
@@ -67,6 +67,7 @@ The execution section records:
 - for BMD-managed Desired Output workflows, the automatic treatment record (`automatic_treatments`): base recipe, resolved workflow, which treatments were applied to which stages, and any consideration with no applicable stage
 - when the automatic DFT+U rule triggers, `automatic_treatments.dft_u`: policy id/version, rule id, deciding anion, triggering elements, every pymatgen oxidation-state guess and the derived d counts, the d0 gate result and reason, the decision, the frozen L/U/J/LDAUTYPE parameters and their source, the `MPRelaxSet.yaml` SHA-256, the `atomate2`/`pymatgen`/`pymatgen-core` versions, and, per +U stage, the generated `LDAU`/`LDAUTYPE`/`LDAUL`/`LDAUU`/`LDAUJ`/`LMAXMIX` with POSCAR species order and POTCAR symbols. Runtime regenerates each +U stage from the frozen values and stops if any of these differ
 - stage order
+- per-stage Custodian policy (`execution.custodian.stages`), including the unsuccessful-stage policy `stop_children_kwargs = {"handle_unsuccessful": "error"}` that makes an unconverged stage fail the workflow
 - selected resources
 - partition/account policy
 - module load policy

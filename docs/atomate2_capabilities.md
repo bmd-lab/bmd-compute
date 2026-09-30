@@ -1,6 +1,6 @@
 # atomate2 / pymatgen Capability Status
 
-Updated: 2026-08-19
+The declared v1 methodology values live in `methodology.md`; this page maps BMD Compute stages to the upstream atomate2/pymatgen primitives they use.
 
 This document records how the currently installed atomate2/pymatgen VASP surface maps to BMD Compute. It is not a promise that every upstream maker is exposed in the UI.
 
@@ -152,11 +152,34 @@ Primary primitives:
 
 The generated KPOINTS file may contain a combined weighted uniform mesh plus zero-weight high-symmetry line path. Remote preparation must transfer this as file data, not as shell command text.
 
+### HSE06 Density of States
+
+Status: implemented; the Electronic density of states Desired Output.
+
+Supported sequence:
+
+```text
+Geometry Optimisation - PBE
+Static Energy         - HSE06
+Density of States     - HSE06
+```
+
+Primary primitives:
+
+- `HSEBSSetGenerator(mode="uniform")` with `reciprocal_density = 100`
+- `HSEBSMaker`
+
+The DOS stage is self-consistent on its uniform mesh (`ISMEAR = -5`, `NEDOS = 4001`); like HSE06 Band Structure it takes `NBANDS` from the HSE06 Static Energy stage but does not read its charge density.
+
 ### Spin Polarised Calculations
 
-Status: implemented for supported PBE/HSE06 stages where the registry allows the modifier.
+Status: implemented for supported PBE/HSE06 stages where the registry allows the modifier. In Desired Output workflows it is applied automatically to every stage when the structure contains an element in the spin composition screen (see `methodology.md`).
 
 BMD Compute preserves pymatgen/atomate2 magnetic initialization where appropriate. SOC stages convert initial moments into vector `MAGMOM`.
+
+### Van der Waals Correction (DFT-D3)
+
+Status: implemented for PBE Geometry Optimisation and PBE Static Energy through the atomate2/pymatgen `vdw` generator keyword: DFT-D3 (`IVDW = 11`) or DFT-D3(BJ) (`IVDW = 12`). In Desired Output workflows DFT-D3(BJ) is applied automatically to those stages when two-dimensional bonded connectivity is detected; Custom workflows use it only when selected.
 
 ### DFT+U
 
@@ -192,12 +215,6 @@ vasp_ncl executable, Custodian auto_gamma disabled
 HSE06 Band Structure + SOC keeps `HSEBSSetGenerator`'s zero-weight high-symmetry path and `reciprocal_density = 64`, but replaces its symmetry-reduced weighted SCF points with every point of the same mesh (equal weights) because `ISYM = 0` makes VASP use the listed points as the complete sampling. The expansion is checked against the generator's own reduced mesh and refuses to proceed on any mismatch. HSE06 DOS + SOC keeps the automatic uniform mesh.
 
 ## Deliberately Unsupported Or Unvalidated
-
-### HSE06 DOS
-
-Status: deliberately unsupported.
-
-No reviewed BMD Compute HSE06 DOS implementation is enabled. Do not infer support from HSE06 Static or HSE06 Band Structure.
 
 ### SOC Relaxation, PBE SOC DOS, PBE SOC Band Structure
 
