@@ -155,6 +155,12 @@ def structure_from_spec(structure_spec: dict) -> "Structure":
     """
     Reconstruct a pymatgen Structure from the serialized structure portion of a
     SubmissionSpec.
+
+    The web workflow always submits ``pasted_text``; the input-reference
+    producer also accepts ``builder``. The ``path`` and ``mp`` (Materials
+    Project fetch) types are retained for hand-built specifications only: the
+    web workflow does not use them and the input-reference producer rejects
+    them.
     """
 
     from pymatgen.core import Lattice, Structure

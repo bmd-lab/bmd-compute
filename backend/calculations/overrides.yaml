@@ -1,8 +1,0 @@
-# Burton Lab override policies only.
-#
-# Do not copy pymatgen input sets or atomate2 maker defaults here. This file is
-# reserved for small lab-specific INCAR/KPOINTS policy overrides that cannot be
-# inherited directly from pymatgen or atomate2.
-
-incar: {}
-kpoints: {}

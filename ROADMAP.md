@@ -37,9 +37,23 @@ This roadmap tracks complete scientific and operational capabilities. It should 
 - [x] HSE06 Static Energy
 - [x] HSE06 Geometry Optimisation -> Static Energy
 - [x] HSE06 Band Structure with HSE06 Static Energy precursor
-- [x] Spin Polarised modifier for reviewed stages
-- [x] explicit DFT+U modifier where reviewed U values exist
-- [x] SOC for reviewed PBE Static Energy workflows
+- [x] HSE06 Density of States with HSE06 Static Energy precursor
+- [x] Desired Outputs: Energy only, Relaxed structure, Electronic density of states, Electronic band structure
+- [x] Spin Polarised modifier, applied automatically in Desired Outputs by composition screen
+- [x] DFT-D3 / DFT-D3(BJ) van der Waals correction, DFT-D3(BJ) applied automatically for two-dimensional bonded connectivity
+- [x] SOC for PBE/HSE06 Static and HSE06 DOS/Band Structure, applied automatically for heavy elements
+- [x] DFT+U: explicit in Custom workflows; automatic MP/pymatgen oxide/fluoride policy `bmd_compute.dft_u` v1 in Desired Outputs
+- [x] declared v1 executable methodology (`docs/methodology.md`) with regression tests
+
+### Execution Integrity
+
+- [x] versioned run-record contracts (`bmd_compute.submission` v1, `bmd_compute.job_record` v1) with atomic remote writes
+- [x] POTCAR records derived from the executable stage generators
+- [x] submitted runs immutable: Prepare cannot rewrite a submitted attempt
+- [x] shared scientific-runtime constraints for the preparation VM and POWER
+- [x] runtime scientific-stack parity check and `runtime_environment.json` record
+- [x] explicit unsuccessful-stage policy on every stage
+- [x] stage options restricted to supported treatments (no free-form INCAR/KPOINTS)
 
 ### Remote Preparation, Submission, And Monitoring
 
@@ -92,7 +106,7 @@ This roadmap tracks complete scientific and operational capabilities. It should 
 
 This is acceptable for the current lab on-ramp deployment. It is not a public Internet security model.
 
-## Near-Term Hardening
+## Operational Candidates (post-v1)
 
 - [ ] document the production service wrapper used on the TAU VM when finalized
 - [ ] decide whether to add a reverse proxy and HTTPS termination in front of Uvicorn
@@ -101,14 +115,15 @@ This is acceptable for the current lab on-ramp deployment. It is not a public In
 - [ ] add durable job history if students need a persistent dashboard
 - [ ] add cancellation support when operationally needed
 - [ ] add download/archive controls for selected output files
-- [ ] improve exact production dependency locking
 - [ ] record POTCAR hashes if the lab decides that provenance should include them
 
-## Future Scientific Workflows
+## Post-v1 Candidates
 
+These are possible future directions, not commitments; none is part of BMD Compute v1.
+
+- [ ] continuing a workflow across SLURM allocations or reusing completed stages
 - [ ] r2SCAN policy selection and validation
 - [ ] Dielectric/optics
-- [ ] HSE06 DOS, only after a reviewed native implementation is identified
 - [ ] broader SOC workflows, only after separate review
 - [ ] GW
 - [ ] Elastic constants

@@ -83,20 +83,6 @@ DEFAULT_RESOURCES = {
     "walltime": "72:00:00",
 }
 
-WORKFLOW_RESOURCE_OVERRIDES = {
-    "gw_static": {
-        "ntasks": 12,
-        "mem_gb": 240,
-    },
-    "gw_static_bands_true": {
-        "ntasks": 12,
-        "mem_gb": 240,
-    },
-    "relax_static_bands": {
-        "mem_gb": 160,
-    },
-}
-
 MODULES = [
     "intel/rocky8-oneAPI-2023",
     "vasp/rocky8-intel-6.4.1",
@@ -191,6 +177,5 @@ __all__ = [
     "REMOTE_OPERATION_SLOT_TIMEOUT_ENV",
     "REMOTE_OPERATION_SLOT_TIMEOUT_S",
     "SUBMISSION_ENV_KEYS",
-    "WORKFLOW_RESOURCE_OVERRIDES",
     "bmd_debug_enabled",
 ]

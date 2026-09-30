@@ -40,7 +40,6 @@ from backend.config import (
     NOTEBOOK_DEFAULTS,
     POTCAR_LINK_MAP,
     SUBMISSION_ENV_KEYS,
-    WORKFLOW_RESOURCE_OVERRIDES,
 )
 from backend.run_records import submission_record_header
 from backend.runtime_environment import (
@@ -302,14 +301,6 @@ def initialize_submission_attempt(
     return submission_spec
 
 
-def default_resources_for_workflow(workflow: str | None = None) -> dict:
-    resources = dict(DEFAULT_RESOURCES)
-    workflow_name = (workflow or "").lower()
-    resources.update(WORKFLOW_RESOURCE_OVERRIDES.get(workflow_name, {}))
-
-    return resources
-
-
 def default_resources_for_calculation_spec(spec: CalculationSpec | None = None) -> dict:
     if spec is not None:
         validate_calculation_spec(spec)
@@ -538,19 +529,12 @@ def build_job_body(submission_spec: dict) -> str:
         )
         for filename, path in backend_module_paths.items()
     )
-    mp_api_key = submission_spec.get("preflight", {}).get("mp_api_key")
-    mp_export = (
-        f"export MP_API_KEY={shlex.quote(str(mp_api_key))}"
-        if mp_api_key
-        else 'echo "[sbatch] MP_API_KEY not provided for this run."'
-    )
 
     attempt_id = (submission_spec.get("submission") or {}).get("attempt_id")
 
     return f"""
 mkdir -p {shlex.quote(paths["run_dir"])}
 cd {shlex.quote(paths["run_dir"])}
-{mp_export}
 {_shell_export("BMD_SUBMISSION_ATTEMPT_ID", attempt_id) if attempt_id else "true"}
 {_shell_log(f'[sbatch] Using partition={submission_spec["cluster"]["partition"]} account={submission_spec["cluster"]["account"]}')}
 echo "[sbatch] VASP_CMD=$VASP_CMD"
@@ -1372,7 +1356,6 @@ __all__ = [
     "create_submission_spec",
     "default_resources_for_calculation_spec",
     "default_resources_for_workflow_spec",
-    "default_resources_for_workflow",
     "initialize_submission_attempt",
     "new_submission_attempt_id",
     "parse_sbatch_job_id",

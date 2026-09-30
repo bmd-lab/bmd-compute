@@ -26,26 +26,21 @@ FastAPI should stay a thin controller. Scientific behavior belongs in `backend/`
 
 ## Current Capabilities
 
-Supported student-facing workflows include:
+Students choose a Desired Output, or build a Custom workflow:
 
-- Geometry Optimisation
-- Static Energy
-- Double Geometry Optimisation
-- Geometry Optimisation -> Static Energy
-- Density of States
-- Band Structure
+- Energy only: PBE Static Energy
+- Relaxed structure: PBE Geometry Optimisation -> PBE Geometry Optimisation
+- Electronic density of states: PBE Geometry Optimisation -> HSE06 Static Energy -> HSE06 Density of States
+- Electronic band structure: PBE Geometry Optimisation -> HSE06 Static Energy -> HSE06 Band Structure
+- Custom: an ordered list of supported PBE/HSE06 stages and Advanced Options, never changed automatically
 
-Supported scientific controls include:
+Desired Outputs add spin polarisation, DFT-D3(BJ), SOC and DFT+U automatically when their rules trigger. Custom workflows use Spin Polarised, van der Waals correction, SOC and DFT+U only when selected.
 
-- PBE
-- HSE06 for reviewed stages and stage-first workflows
-- Spin Polarised calculations where enabled by the stage registry
-- explicit DFT+U, only when the selected input set has reviewed U values
-- SOC for PBE and HSE06 Static Energy stages and HSE06 DOS and Band Structure stages
+The authoritative declaration of BMD Compute's v1 executable methodology (workflows, automatic treatments, stage settings, k-points, POTCARs, starting moments, stage chaining and the execution model) is [`docs/methodology.md`](docs/methodology.md).
 
 Validated or specifically reviewed examples include PBE Static + SOC on Si, PBE + DFT+U Static -> PBE + DFT+U + SOC Static on Fe2O3, and HSE06 Band Structure through the stage-first HSE static precursor path.
 
-Deliberately unavailable or unreviewed combinations remain blocked by validation. Examples include r2SCAN, Dielectric, GW, general SOC relaxation, PBE DOS/Band Structure + SOC, and arbitrary free-form INCAR editing.
+Deliberately unavailable or unreviewed combinations remain blocked by validation. Examples include r2SCAN, Dielectric, GW, general SOC relaxation, PBE DOS/Band Structure + SOC, and arbitrary free-form INCAR or KPOINTS editing.
 
 ## Scientific Policy Notes
 
@@ -53,7 +48,8 @@ BMD Compute uses pymatgen and atomate2 as the default scientific implementation 
 
 Important current policies:
 
-- Generated inputs are pre-submission policy previews. In downstream stages after relaxation, the runtime structure comes from the previous completed stage.
+- Generated inputs are pre-submission previews generated from the submitted structure. From stage 2 onwards, execution uses the previous stage's outputs (relaxed structure, final moments, regenerated k-points, NBANDS, charge density where applicable); these expected differences are described in `docs/methodology.md`.
+- Spin polarisation is applied automatically in Desired Output workflows to every stage when the structure contains an element in the spin composition screen, and DFT-D3(BJ) (`IVDW = 12`) to PBE Relax/Static stages when two-dimensional bonded connectivity is detected.
 - PBE relax stages use the Burton Lab relax policy, including ENCUT 580 eV.
 - Static/final electronic stages use the Burton Lab final policy, including ENCUT 620 eV where applicable.
 - HSE06 policy is stage-specific: relax uses `PRECFOCK = Fast`, static uses `PRECFOCK = Accurate`, and HSE06 band structure uses the reviewed atomate2 HSE band path.
@@ -63,6 +59,8 @@ Important current policies:
 - In the standard Desired Output workflows SOC is BMD methodology, not advice: when the heavy-element SOC policy triggers, SOC is applied to every non-relaxation stage (PBE Static for Static Energy; HSE06 Static and HSE06 DOS or Band Structure for DOS and Band Structure). Relaxations stay non-SOC. Custom workflows are never changed automatically.
 - HSE06 Band Structure + SOC keeps the atomate2 zero-weight high-symmetry path and `reciprocal_density = 64`, but replaces pymatgen's symmetry-reduced weighted SCF points with every point of the same mesh, because `ISYM = 0` makes VASP treat the listed points as the complete sampling. Non-SOC HSE06 Band Structure is unchanged.
 - Stages that consume the previous stage's electronic data must match its SOC setting: PBE DOS and Band Structure restart from the fixed charge density (`ICHARG = 11`), and PBE and HSE06 DOS/Band Structure size `NBANDS` from the previous run. HSE06 DOS/Band Structure do not read the copied static CHGCAR (no `ICHARG`/`ISTART`, no WAVECAR carried forward).
+- An unsuccessful (unconverged) stage fails the workflow; BMD sets this on every stage instead of relying on atomate2's configurable default. A workflow runs in one SLURM allocation: reaching the walltime is a failure, results are loaded only from the final stage of a completed run, and running again starts a new attempt without reusing completed stages. Continuation across allocations is not part of v1.
+- The POWER runner checks its scientific package versions against those recorded at preparation and stops before any VASP work on a mismatch (`constraints/scientific-runtime.txt`, `runtime_environment.json`).
 - NCORE is an execution-resource policy, not a theory policy. Automatic NCORE is stage-specific and currently applies to Relax, Static, and DOS stages; Band Structure omits automatic NCORE pending separate benchmarking.
 
 ## Operational Safety

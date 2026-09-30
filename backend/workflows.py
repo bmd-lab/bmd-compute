@@ -435,8 +435,8 @@ def validate_input_set_for_modifiers(input_set, *, spec: CalculationSpec) -> Non
             "DFT+U was requested, but no U values are available for this structure "
             "with the current PBE input set.",
             suggestion=(
-                "Remove DFT+U for this material, or add a reviewed Burton Lab "
-                "override before submitting the calculation."
+                "Remove DFT+U for this material: no Materials Project U values "
+                "apply to this composition."
             ),
         )
 

@@ -2,6 +2,8 @@
 
 BMD Compute represents calculations as ordered scientific stages. The user chooses a scientific goal; the backend turns that into a validated stage plan and the corresponding pymatgen/atomate2 inputs.
 
+The v1 executable methodology itself (Desired Outputs, automatic treatments, stage settings, k-points, POTCARs and chaining) is declared in `methodology.md`. This page describes the objects and rules that implement it.
+
 The current architecture is stage-first. Legacy `CalculationSpec` objects remain for compatibility, but new multi-stage behavior should be expressed as `WorkflowSpec`.
 
 ## Core Objects
@@ -76,15 +78,16 @@ HSE06 support is stage-specific:
 - Geometry Optimisation: supported, with `PRECFOCK = Fast`
 - Static Energy: supported, with `PRECFOCK = Accurate` and hybrid-compatible smearing
 - Band Structure: supported through atomate2 HSE band primitives when preceded by HSE06 Static Energy
-- DOS: not supported
+- DOS: supported through atomate2 HSE uniform-mode primitives when preceded by HSE06 Static Energy
 
 ## Modifiers
 
 Current modifiers are:
 
 - Spin Polarised
-- explicit DFT+U
+- DFT+U
 - SOC
+- van der Waals correction (DFT-D3 or DFT-D3(BJ), PBE Relax/Static only)
 - Gamma-only
 - Ions-only
 
@@ -94,6 +97,7 @@ Important rules:
 
 - SOC is available for PBE and HSE06 Static Energy stages and HSE06 DOS and Band Structure stages, and uses `vasp_ncl` with Custodian `auto_gamma` disabled.
 - SOC and van der Waals correction may be combined on PBE Static Energy.
+- In BMD-managed Desired Output workflows Spin Polarised is applied automatically to every stage when the spin composition screen triggers, and DFT-D3(BJ) to PBE Relax/Static stages when two-dimensional bonded connectivity is detected (see `methodology.md`).
 - A stage that restarts from the previous fixed charge density (`ICHARG = 11`), or whose generator sizes `NBANDS` from the previous run (PBE and HSE06 DOS/Band Structure), must use the same SOC setting as that stage.
 - HSE06 DOS + SOC keeps the automatic uniform Gamma mesh; with `ISYM = 0` VASP expands it over the full zone.
 - In BMD-managed Desired Output workflows SOC is applied automatically to every non-relaxation stage when the heavy-element SOC policy triggers; relaxations remain non-SOC.
@@ -136,9 +140,10 @@ GGA = PE
 Stage-specific HSE06 amendments include:
 
 ```text
-Relax:          PRECFOCK = Fast
-Static:         PRECFOCK = Accurate, ISMEAR = 0
-Band Structure: atomate2 HSE band path with HSE-compatible stage settings
+Relax:          ALGO = Damped, TIME = 0.4, PRECFOCK = Fast
+Static:         ALGO = Damped, TIME = 0.4, PRECFOCK = Accurate, ISMEAR = 0
+DOS:            ALGO = Normal, PRECFOCK = Fast, ISMEAR = -5
+Band Structure: ALGO = Normal, PRECFOCK = Fast, ISMEAR = 0, SIGMA = 0.01
 ```
 
 ## Resource Policy
@@ -170,7 +175,7 @@ Automatic NCORE is resource-derived and stage-specific. It currently applies to 
 
 Generated inputs are pre-submission policy previews. They show the INCAR, KPOINTS, POSCAR, POTCAR symbols, and SLURM/script policy BMD Compute intends to use before remote preparation.
 
-For downstream stages after a relaxation, the preview cannot know the future relaxed structure. At runtime, stage chaining uses the previous stage output as the input structure.
+Previews are generated for every stage from the submitted structure, without any previous-stage output. At runtime, stage 2 onwards is generated from the stage before it: its relaxed structure, its final magnetic moments (spin-polarised stages without SOC), k-points and band paths regenerated for the relaxed cell, `NBANDS` derived from it, the HSE06 DOS `SIGMA` that follows its band gap, and, for PBE DOS/Band Structure, its charge density. These are expected differences, not methodology deviations; see `methodology.md` section 7.
 
 Preview generation and remote execution should share the same stage builders for policy-sensitive inputs. New modifiers and theory amendments should include tests comparing preview and reconstructed execution paths.
 
@@ -201,6 +206,8 @@ Submission state includes the serialized `WorkflowSpec`, resources, environment,
 
 Remote execution reconstructs the workflow from `submission.json`, configures atomate2/Custodian, and runs the stages in order. The sbatch allocation controls `SLURM_NTASKS`; the VASP command resolver expands the runtime task count before Custodian receives argv.
 
+A workflow runs in one SLURM allocation. The runner first checks that the POWER scientific stack matches the versions recorded at preparation and stops before any VASP work if it does not (`runtime_environment.json`). An unsuccessful (unconverged) stage fails the workflow and no dependent stage runs. Reaching the walltime (`TIMEOUT`) or any other failure ends the run as failed. Results are loaded only for a completed run, from its final stage; partial results are not loaded. Running again is a new submission attempt in a new run directory, and completed stages are not reused; continuing a workflow across allocations is not part of v1.
+
 Submission idempotency is enforced by server-side state in the remote logs area. Repeated submit attempts with the same attempt id should not create duplicate SLURM jobs once a submission has reached the protected state.
 
 ## Results
@@ -218,20 +225,22 @@ Result parsing runs remotely where possible and returns JSON-safe compact payloa
 
 Supported now:
 
-- PBE relax/static/relax-static/double-relax/DOS/band-structure workflows
+- the four Desired Outputs: Energy only, Relaxed structure, Electronic density of states and Electronic band structure (see `methodology.md`)
+- Custom PBE relax/static/relax-static/double-relax/DOS/band-structure workflows
 - HSE06 relax/static/relax-static stages and workflows
-- HSE06 band structure with an HSE06 static electronic precursor
-- SOC on PBE/HSE06 Static and HSE06 DOS/Band Structure stages, applied automatically in Desired Output workflows
-- explicit DFT+U when available from the input set
+- HSE06 DOS and band structure with an HSE06 static electronic precursor
+- Spin Polarised, DFT-D3/DFT-D3(BJ), SOC and DFT+U, applied automatically in Desired Output workflows and by selection in Custom workflows
 
-Future or deliberately unsupported:
+Not part of v1 (deliberately unsupported, or post-v1 candidates rather than commitments):
 
 - SOC relaxation and PBE DOS/Band Structure + SOC
 - r2SCAN
 - Dielectric/optics
 - GW
-- arbitrary user INCAR editing
+- arbitrary user INCAR or KPOINTS editing (rejected at validation)
+- continuing a workflow across SLURM allocations, or reusing completed stages
 - non-linear jobflow directory semantics beyond the current linear stage chains
+
 ## Executable Capability JSON
 
 BMD Compute exposes its executable stage capability description through a small read-only JSON producer:

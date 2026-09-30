@@ -22,9 +22,10 @@ def build_calculation_flow(
     """
     Build a Jobflow Flow for a calculation intent.
 
-    This is currently a compatibility adapter. It validates the new
-    CalculationSpec object and delegates to backend.workflows so this PR does
-    not change atomate2 makers, pymatgen input sets, or Burton Lab overrides.
+    A ``WorkflowSpec`` is built by ``build_atomate2_flow_for_workflow_spec``
+    (the path used for preview-parity and remote execution); a legacy
+    ``CalculationSpec`` is validated and built by the single-calculation
+    builders in ``backend.workflows``.
     """
 
     if isinstance(spec, WorkflowSpec):

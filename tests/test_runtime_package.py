@@ -63,7 +63,6 @@ def test_runtime_package_includes_transitive_backend_python_sources():
     assert all(name.endswith(".py") for name in names)
     assert all("__pycache__" not in name for name in names)
     assert all(not name.startswith("tests/") for name in names)
-    assert "calculations/overrides.yaml" not in names
     assert tuple(sorted(runtime_package_relative_paths())) == runtime_package_relative_paths()
 
 
