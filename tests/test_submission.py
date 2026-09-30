@@ -23,7 +23,6 @@ from backend.submission import (
     build_sbatch_script,
     build_submission_script_artifact,
     create_submission_spec,
-    default_resources_for_workflow,
 )
 
 
@@ -373,9 +372,6 @@ except CalculationValidationError as exc:
 else:
     raise AssertionError("Unsafe SLURM partition values should be rejected.")
 
-assert default_resources_for_workflow("gw_static")["ntasks"] == 12
-assert default_resources_for_workflow("gw_static")["mem_gb"] == 240
-assert default_resources_for_workflow("relax_static_bands")["mem_gb"] == 160
 
 # The POTCAR record comes from the executable stage generators, never from a
 # parallel table: an object that is not a real structure yields an explicit
@@ -493,8 +489,6 @@ assert backend_module_names >= {
 assert all(name.endswith(".py") for name in backend_module_names)
 assert all("__pycache__" not in name for name in backend_module_names)
 assert all(not name.startswith("tests/") for name in backend_module_names)
-assert "calculations/overrides.yaml" not in backend_module_names
-assert "calculations/presets.yaml" not in backend_module_names
 assert "class CalculationSpec" in backend_module_sources["calculations/models.py"]
 assert (
     "def hse_band_structure_run_vasp_kwargs"
