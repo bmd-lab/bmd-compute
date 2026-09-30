@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import subprocess
 from functools import lru_cache
@@ -268,9 +269,12 @@ def _workflow_spec_dict(submission_spec: dict) -> dict:
 
 def _git_stdout(repo_root: Path, *args: str) -> str | None:
     try:
+        # --no-optional-locks / GIT_OPTIONAL_LOCKS=0: `git status` must not
+        # refresh .git/index (or leave .git/index.lock) in the live checkout.
         result = subprocess.run(
             [
                 "git",
+                "--no-optional-locks",
                 "-c",
                 f"safe.directory={repo_root.as_posix()}",
                 "-C",
@@ -281,6 +285,7 @@ def _git_stdout(repo_root: Path, *args: str) -> str | None:
             capture_output=True,
             text=True,
             timeout=3,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
         )
     except Exception:
         return None

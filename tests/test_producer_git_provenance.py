@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from backend import provenance
 from backend.calculations import capabilities
 from backend.calculations.capabilities import build_capability_payload, git_provenance
 from backend.calculations.input_reference import build_input_reference_payload
@@ -165,5 +166,39 @@ def test_git_provenance_does_not_rewrite_the_checkout_index(tmp_path):
 
     assert provenance["provenance_available"] is True
     assert provenance["dirty"] is False
+    assert index.read_bytes() == before
+    assert not (repo / ".git" / "index.lock").exists()
+
+
+def test_submission_provenance_invokes_git_without_optional_locks(monkeypatch):
+    calls = _record_git_calls(monkeypatch)
+    provenance.source_metadata.cache_clear()
+    try:
+        metadata = provenance.source_metadata()
+    finally:
+        provenance.source_metadata.cache_clear()
+
+    # Every git call made for submission provenance (rev-parse, and status
+    # when this is a checkout) disables optional locks.
+    _assert_no_optional_locks(calls)
+    assert metadata["status"] in {"available", "unavailable"}
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_submission_provenance_git_status_does_not_rewrite_the_index(tmp_path, monkeypatch):
+    control = _repository_with_stale_index(tmp_path / "control")
+    control_index = control / ".git" / "index"
+    control_before = control_index.read_bytes()
+    _git(control, "status", "--short")
+    if control_index.read_bytes() == control_before:
+        pytest.skip("this git version does not refresh the index during status")
+
+    repo = _repository_with_stale_index(tmp_path / "submission")
+    index = repo / ".git" / "index"
+    before = index.read_bytes()
+
+    calls = _record_git_calls(monkeypatch)
+    assert provenance._git_stdout(repo, "status", "--short") == ""
+    _assert_no_optional_locks(calls)
     assert index.read_bytes() == before
     assert not (repo / ".git" / "index.lock").exists()
