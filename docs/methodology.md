@@ -60,21 +60,27 @@ SOC stages run `vasp_ncl` with `LSORBIT = True`, `LNONCOLLINEAR = True`,
 
 ## 3. Stage methodology
 
+Values marked (adopted) come from the pinned atomate2/pymatgen input sets
+rather than from BMD Compute's own stage settings. They are declared v1
+methodology all the same: a dependency change must reproduce them
+deliberately.
+
 Common to every stage: PBE_64 POTCARs (section 5), `EDIFF = 1e-6`,
-`PREC = Accurate`, `LREAL = False`, `LASPH = True`, `ADDGRID = True` and at most
-`NELM = 200` electronic steps. Stages without spin polarisation or SOC set
-`ISPIN = 1` explicitly.
+`PREC = Accurate`, `LREAL = False`, `ADDGRID = True`, `LASPH = True` (adopted)
+and at most `NELM = 200` electronic steps (adopted). On Geometry Optimisation
+stages `PREC` and `LREAL` are also adopted values. Stages without spin
+polarisation or SOC set `ISPIN = 1` explicitly.
 
 ### PBE Geometry Optimisation
 
 | Setting | Value |
 | --- | --- |
 | Plane-wave cutoff | `ENCUT = 580` eV |
-| Ionic relaxation | conjugate gradient (`IBRION = 2`), ions and cell (`ISIF = 3`; `ISIF = 2` for the Custom ions-only option) |
+| Ionic relaxation | conjugate gradient (`IBRION = 2`, adopted), ions and cell (`ISIF = 3`, adopted; BMD sets `ISIF = 2` for the Custom ions-only option) |
 | Force convergence | `EDIFFG = -0.01` eV/A |
-| Ionic step limit | `NSW = 99` |
+| Ionic step limit | `NSW = 99` (adopted) |
 | Electronic algorithm | `ALGO = Fast` |
-| Smearing | Gaussian, `ISMEAR = 0`, `SIGMA = 0.2` eV |
+| Smearing | Gaussian, `ISMEAR = 0`, `SIGMA = 0.2` eV (adopted) |
 
 The smearing is the pymatgen choice for a system whose band gap is not yet
 known; BMD adopts it for all relaxations.
@@ -103,8 +109,8 @@ All HSE06 stages use `LHFCALC = True`, `AEXX = 0.25`, `HFSCREEN = 0.2` and
 | --- | --- |
 | Geometry Optimisation (Custom) | relaxation settings above with `ALGO = Damped`, `TIME = 0.4`, `PRECFOCK = Fast` |
 | Static Energy | `ENCUT = 620` eV, `ALGO = Damped`, `TIME = 0.4`, `PRECFOCK = Accurate`, `ISMEAR = 0`, `SIGMA = 0.05` |
-| Density of States | self-consistent on a uniform mesh, `ENCUT = 620` eV, `ALGO = Normal`, `PRECFOCK = Fast`, `ISMEAR = -5`, `NEDOS = 4001`, `NELMIN = 5` |
-| Band Structure | self-consistent on a uniform mesh plus a zero-weight path, `ENCUT = 620` eV, `ALGO = Normal`, `PRECFOCK = Fast`, `ISMEAR = 0`, `SIGMA = 0.01`, `NELMIN = 5` |
+| Density of States | self-consistent on a uniform mesh, `ENCUT = 620` eV, `ALGO = Normal`, `PRECFOCK = Fast`, `ISMEAR = -5`, `NEDOS = 4001`, `NELMIN = 5` (adopted) |
+| Band Structure | self-consistent on a uniform mesh plus a zero-weight path, `ENCUT = 620` eV, `ALGO = Normal`, `PRECFOCK = Fast`, `ISMEAR = 0`, `SIGMA = 0.01`, `NELMIN = 5` (adopted) |
 
 HSE06 DOS and Band Structure follow an HSE06 Static Energy stage but do not
 read its charge density or wavefunctions.
@@ -116,8 +122,8 @@ reciprocal-lattice volume (pymatgen `automatic_density_by_vol`):
 
 | Stage | Sampling |
 | --- | --- |
-| Geometry Optimisation, Static Energy (PBE and HSE06) | reciprocal density 64 |
-| PBE Density of States | reciprocal density 100 |
+| Geometry Optimisation, Static Energy (PBE and HSE06) | reciprocal density 64 (adopted) |
+| PBE Density of States | reciprocal density 100 (adopted) |
 | PBE Band Structure | high-symmetry path, line density 40 |
 | HSE06 Density of States | reciprocal density 100 |
 | HSE06 Band Structure | uniform reciprocal density 64 plus a zero-weight high-symmetry path at line density 40 |

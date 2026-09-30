@@ -25,7 +25,10 @@ from backend.workflows import (
     build_band_structure_input_set_generator,
     build_dos_input_set_generator,
 )
+from backend.parser import parse_structure
 from test_automatic_dft_u import NIO, build_route, job_maker, runtime_jobs
+from test_automatic_soc import BI_POSCAR
+from test_structure_dimensionality import sns2_structure
 
 
 SI = Structure(
@@ -48,7 +51,7 @@ PBE_RELAX = {
     "ISMEAR": 0,
     "SIGMA": 0.2,
 }
-PBE_STATIC = {"ENCUT": 620, "ALGO": "Normal", "ISMEAR": -5, "NEDOS": 4001, "LORBIT": 11}
+PBE_STATIC = {"ENCUT": 620, "ALGO": "Normal", "ISMEAR": -5, "SIGMA": 0.05, "NEDOS": 4001, "LORBIT": 11}
 HSE06 = {"LHFCALC": True, "AEXX": 0.25, "HFSCREEN": 0.2}
 HSE06_STATIC = {**HSE06, "ENCUT": 620, "ALGO": "Damped", "TIME": 0.4, "PRECFOCK": "Accurate", "ISMEAR": 0, "SIGMA": 0.05}
 HSE06_DOS = {**HSE06, "ENCUT": 620, "ALGO": "Normal", "PRECFOCK": "Fast", "ISMEAR": -5, "NEDOS": 4001, "NELMIN": 5}
@@ -115,6 +118,38 @@ def test_automatic_treatment_screens_and_placement():
         ["spin_polarized"],
         ["spin_polarized"],
     ]
+
+
+def _resolved_previews(structure, desired_output):
+    workflow = resolve_default_treatments(
+        structure, desired_output_workflow_spec(desired_output), desired_output=desired_output
+    ).resolved_workflow
+    return stages(structure, workflow)
+
+
+def test_two_dimensional_structure_gets_automatic_d3_bj_on_pbe_relax_and_static_only():
+    structure = sns2_structure()  # layered SnS2: two-dimensional bonded connectivity
+
+    (static,) = _resolved_previews(structure, "energy_only")
+    assert static["input_set"].incar["IVDW"] == 12
+
+    relax, hse_static, dos = _resolved_previews(structure, "electronic_dos")
+    assert relax["input_set"].incar["IVDW"] == 12
+    assert "IVDW" not in hse_static["input_set"].incar
+    assert "IVDW" not in dos["input_set"].incar
+
+
+def test_heavy_element_gets_automatic_soc_on_non_relaxation_stages_only():
+    structure = parse_structure(BI_POSCAR)
+
+    relax, hse_static, band = _resolved_previews(structure, "electronic_band_structure")
+    assert "LSORBIT" not in relax["input_set"].incar
+    for preview in (hse_static, band):
+        assert preview["input_set"].incar["LSORBIT"] is True
+        assert preview["vasp_executable"] == "vasp_ncl"
+
+    (static,) = _resolved_previews(structure, "energy_only")
+    assert static["input_set"].incar["LSORBIT"] is True
 
 
 def test_d3_bj_is_ivdw_12_and_d3_zero_damping_is_ivdw_11():

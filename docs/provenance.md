@@ -33,7 +33,7 @@ The source section records best-effort Git metadata:
 - dirty path count when available
 - unavailable/unknown status when Git metadata cannot be read
 
-The provenance code uses a one-shot `safe.directory` argument for Git inspection where needed. It does not modify global Git configuration.
+The provenance code uses a one-shot `safe.directory` argument for Git inspection where needed. It does not modify global Git configuration. Git inspection runs with optional locking disabled (`--no-optional-locks`, `GIT_OPTIONAL_LOCKS=0`), so recording provenance never rewrites the checkout's index or leaves `.git/index.lock` behind.
 
 ## Python Environment
 
