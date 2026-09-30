@@ -273,6 +273,25 @@ def test_spin_polarised_stages_start_from_the_pinned_default_moments():
 # --- 7-8. Chaining and unsuccessful stages ---------------------------------------------------------
 
 
+def test_supported_analysis_stage_precursors():
+    from backend.calculations.registry import CalculationValidationError, validate_workflow_spec
+
+    supported = {
+        (StageType.DOS, Theory.PBE): {Theory.PBE},
+        (StageType.BAND_STRUCTURE, Theory.PBE): {Theory.PBE},
+        (StageType.DOS, Theory.HSE06): {Theory.PBE, Theory.HSE06},
+        (StageType.BAND_STRUCTURE, Theory.HSE06): {Theory.HSE06},
+    }
+    for (stage_type, theory), precursors in supported.items():
+        for precursor in (Theory.PBE, Theory.HSE06):
+            workflow = custom(StageSpec(StageType.STATIC, precursor), StageSpec(stage_type, theory))
+            if precursor in precursors:
+                validate_workflow_spec(workflow)
+            else:
+                with pytest.raises(CalculationValidationError):
+                    validate_workflow_spec(workflow)
+
+
 def test_analysis_stages_size_nbands_from_the_previous_stage():
     for theory in (Theory.PBE, Theory.HSE06):
         assert build_dos_input_set_generator(SI, theory=theory).nbands_factor == 1.2

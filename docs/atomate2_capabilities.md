@@ -143,7 +143,7 @@ Static Energy         - HSE06
 Band Structure        - HSE06
 ```
 
-The PBE relax supplies geometry only. The electronic precursor for the HSE06 band calculation must be HSE06 Static Energy.
+The PBE relax supplies geometry. BMD Compute requires HSE06 Static Energy before HSE06 Band Structure. The band stage takes its structure, `NBANDS` and starting moments from that stage and recomputes the HSE06 ground state self-consistently; no charge density or wavefunction is carried over.
 
 Primary primitives:
 
@@ -154,13 +154,20 @@ The generated KPOINTS file may contain a combined weighted uniform mesh plus zer
 
 ### HSE06 Density of States
 
-Status: implemented; the Electronic density of states Desired Output.
+Status: implemented.
 
-Supported sequence:
+Supported sequences:
 
 ```text
 Geometry Optimisation - PBE
 Static Energy         - HSE06
+Density of States     - HSE06
+```
+
+This is the Electronic density of states Desired Output. HSE06 DOS may also follow a PBE Static Energy stage, a supported Custom option:
+
+```text
+Static Energy         - PBE
 Density of States     - HSE06
 ```
 
@@ -169,7 +176,7 @@ Primary primitives:
 - `HSEBSSetGenerator(mode="uniform")` with `reciprocal_density = 100`
 - `HSEBSMaker`
 
-The DOS stage is self-consistent on its uniform mesh (`ISMEAR = -5`, `NEDOS = 4001`); like HSE06 Band Structure it takes `NBANDS` from the HSE06 Static Energy stage but does not read its charge density.
+The DOS stage is self-consistent on its uniform mesh (`ISMEAR = -5`, `NEDOS = 4001`); like HSE06 Band Structure it takes the structure, `NBANDS` and starting moments from the preceding Static Energy stage and neither copies nor reads its charge density or wavefunction.
 
 ### Spin Polarised Calculations
 
