@@ -15,6 +15,7 @@ from copy import deepcopy
 
 from backend.calculations.models import CalculationSpec, WorkflowSpec
 from backend.calculations.registry import (
+    CalculationValidationError,
     calculation_spec_from_workflow_spec,
     legacy_workflow_from_spec,
     modifier_display_name,

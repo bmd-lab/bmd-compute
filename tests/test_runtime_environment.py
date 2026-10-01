@@ -20,8 +20,13 @@ from backend.runtime_environment import (
     enforce_runtime_environment,
     prepared_runtime_parity,
 )
+import backend.paramiko_remote as paramiko_remote
+import backend.submission as submission
+import main
+from backend.calculations.registry import CalculationValidationError
 from backend.submission import submission_attempt_fingerprint
 from test_automatic_dft_u import NIO, build_route
+from test_default_treatment_resolution import _managed_identity, _prepare_managed, _submit_managed
 
 
 PRODUCTION = {
@@ -193,6 +198,46 @@ def test_unreadable_runtime_versions_stop_execution(tmp_path):
 def test_preparation_refuses_when_a_parity_package_is_missing():
     with pytest.raises(RuntimeParityError, match="emmet-core"):
         prepared({**PRODUCTION, "emmet-core": None})
+
+
+def test_missing_parity_package_stops_preparation_and_submission_routes(monkeypatch):
+    identity, workflow_spec_json = _managed_identity()
+    real = runtime_environment._default_version_lookup
+
+    def preparation_lookup(name):
+        if name == "custodian":
+            raise metadata.PackageNotFoundError(name)
+        return real(name)
+
+    def unreachable(*args, **kwargs):
+        raise AssertionError("a missing parity package must stop before any remote work")
+
+    monkeypatch.setattr(runtime_environment, "_default_version_lookup", preparation_lookup)
+    monkeypatch.setattr(main, "prepare_remote_submission", unreachable)
+    monkeypatch.setattr(main, "submit_remote_workflow", unreachable)
+    monkeypatch.setattr(paramiko_remote, "ParamikoRemoteRunner", unreachable)
+
+    with pytest.raises(CalculationValidationError) as excinfo:
+        submission._prepared_runtime_parity_or_error()
+    assert isinstance(excinfo.value.__cause__, RuntimeParityError)
+
+    responses = (
+        build_route(NIO, workflow="energy_only"),
+        _prepare_managed(identity, workflow_spec_json),
+        _submit_managed(identity, workflow_spec_json),
+    )
+    for response in responses:
+        assert response.status_code == 400
+        error = response.context["calculation_error"]
+        assert error["message"] == (
+            "The preparation environment is missing parity-critical package(s): custodian"
+        )
+        assert "constraints/scientific-runtime.txt" in error["suggestion"]
+        assert not response.context.get("generated_inputs")
+        assert not response.context.get("submission_spec")
+        assert not response.context.get("remote_preparation")
+        assert not response.context.get("submission_result")
+        assert "custodian" in response.template.render(response.context)
 
 
 # --- Mutable atomate2 settings ------------------------------------------------------
