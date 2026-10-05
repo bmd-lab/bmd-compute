@@ -43,3 +43,7 @@ pydantic-settings==2.14.2
 maggma==0.74.0
 # loads the pymatgen/atomate2 YAML input-set configurations
 ruamel.yaml==0.19.1
+# phonon displacement planning (backend/phonons, M1). Imported lazily and not
+# used by any executable workflow yet; a missing install on POWER is recorded,
+# not fatal. Promote to Tier 1 before phonon execution depends on it.
+phonopy==4.8.1

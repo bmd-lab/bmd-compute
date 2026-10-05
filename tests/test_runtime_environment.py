@@ -44,6 +44,7 @@ PRODUCTION = {
     "pydantic-settings": "2.14.2",
     "maggma": "0.74.0",
     "ruamel.yaml": "0.19.1",
+    "phonopy": "4.8.1",
 }
 
 
@@ -160,6 +161,16 @@ def test_supporting_package_difference_is_recorded_but_does_not_stop(tmp_path):
     assert record["supporting_packages"]["maggma"] is None
 
 
+def test_phonopy_is_recorded_but_its_absence_never_stops_a_run(tmp_path):
+    # Phonopy serves only the non-executable displacement planner (M1). It must
+    # not become a precondition for existing POWER calculations.
+    assert "phonopy" in RECORDED_SUPPORTING_PACKAGES
+    assert "phonopy" not in PARITY_CRITICAL_PACKAGES
+    record = enforce(tmp_path, prepared(), {**PRODUCTION, "phonopy": None})
+    assert record["status"] == "passed"
+    assert record["supporting_packages"]["phonopy"] is None
+
+
 def _malformed_blocks():
     good = prepared()
     return {
@@ -269,7 +280,11 @@ def test_record_reflects_the_actual_installed_versions(tmp_path):
     for name in PARITY_CRITICAL_PACKAGES:
         assert record["runtime_packages"][name] == metadata.version(name)
     for name in RECORDED_SUPPORTING_PACKAGES:
-        assert record["supporting_packages"][name] == metadata.version(name)
+        try:
+            installed = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            installed = None  # a supporting package may be absent (e.g. phonopy on POWER)
+        assert record["supporting_packages"][name] == installed
     from atomate2 import SETTINGS
 
     assert record["atomate2_settings"]["SYMPREC"] == SETTINGS.SYMPREC

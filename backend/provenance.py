@@ -34,6 +34,7 @@ SCIENTIFIC_PACKAGE_NAMES = (
     "pydantic-settings",
     "maggma",
     "ruamel.yaml",
+    "phonopy",
 )
 
 
