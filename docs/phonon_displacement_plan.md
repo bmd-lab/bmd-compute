@@ -31,9 +31,14 @@ nothing here assumes they do.
 
 ## Inputs and policy
 
-- `structure`: an ordered, non-magnetic pymatgen `Structure`. It is used exactly
-  as given: no standardization, wrapping or symmetrization. Standardization is
-  not approved methodology yet.
+- `structure`: an ordered, non-magnetic pymatgen `Structure`. A nonzero `magmom`
+  site property or a nonzero `Species.spin` is refused. The structure is not
+  standardized, wrapped or symmetrized; standardization is not approved
+  methodology yet. Its identity in the plan is the lattice, element symbols and
+  fractional coordinates as given. Oxidation-state decorations and other site
+  properties (for example `selective_dynamics`) are not part of that identity.
+  How other site properties should be treated is an open policy question to
+  settle before execution.
 - `supercell_matrix`: an explicit 3x3 integer matrix with positive determinant.
   Automatic supercell selection is not approved and is not provided.
 - `PhononPolicy` (`bmd_compute.phonon_displacement_planning` v1, status

@@ -538,6 +538,75 @@ def test_unsupported_structures_fail_closed():
         build_displacement_plan(nacl(), PROVISIONAL_PHONON_POLICY.to_dict(), supercell_matrix=DIAG2)
 
 
+# --- species-level spin (non-magnetic boundary) -------------------------------------------
+
+
+def _bcc_fe(specie) -> Structure:
+    return Structure(Lattice.cubic(2.87), [specie, specie], [[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]])
+
+
+@pytest.fixture(scope="module")
+def plain_fe_plan() -> DisplacementPlan:
+    return build_displacement_plan(_bcc_fe("Fe"), supercell_matrix=DIAG2)
+
+
+def test_plain_non_magnetic_fe_is_accepted(plain_fe_plan):
+    assert plain_fe_plan.space_group == ("Im-3m", 229)
+    assert plain_fe_plan.to_dict()["working_structure"]["species"] == ["Fe", "Fe"]
+
+
+@pytest.mark.parametrize(
+    "specie",
+    [Species("Fe", 0), Species("Fe", 0, spin=0), Species("Fe", 2, spin=0), Species("Fe", 0, spin=0.0)],
+    ids=["spin-absent", "spin-0", "Fe2+-spin-0", "spin-0.0"],
+)
+def test_absent_or_zero_species_spin_is_not_rejected(specie, plain_fe_plan):
+    assert build_displacement_plan(_bcc_fe(specie), supercell_matrix=DIAG2) == plain_fe_plan
+
+
+@pytest.mark.parametrize("spin", [5, -2, 0.5, -0.5], ids=["spin+5", "spin-2", "spin+0.5", "spin-0.5"])
+def test_nonzero_species_spin_is_rejected(spin):
+    with pytest.raises(ValueError, match="carries a spin"):
+        build_displacement_plan(_bcc_fe(Species("Fe", 0, spin=spin)), supercell_matrix=DIAG2)
+
+
+def test_one_spin_decorated_site_is_enough_to_reject():
+    structure = Structure(
+        Lattice.cubic(2.87), ["Fe", Species("Fe", 0, spin=5)], [[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]]
+    )
+    with pytest.raises(ValueError, match="carries a spin"):
+        build_displacement_plan(structure, supercell_matrix=DIAG2)
+
+
+def test_species_spin_survives_serialization_and_is_still_rejected():
+    original = _bcc_fe(Species("Fe", 0, spin=5))
+    for restored in (
+        Structure.from_dict(original.as_dict()),
+        Structure.from_dict(json.loads(json.dumps(original.as_dict()))),
+        Structure.from_str(original.to(fmt="json"), fmt="json"),
+        original.copy(),
+    ):
+        assert restored[0].specie.spin == 5
+        with pytest.raises(ValueError, match="carries a spin"):
+            build_displacement_plan(restored, supercell_matrix=DIAG2)
+
+
+def test_species_spin_is_rejected_before_phonopy_is_invoked(monkeypatch):
+    def _must_not_run(*args, **kwargs):
+        raise AssertionError("Phonopy must not be reached for a spin-decorated structure")
+
+    monkeypatch.setattr(phonopy, "Phonopy", _must_not_run)
+    with pytest.raises(ValueError, match="carries a spin"):
+        build_displacement_plan(_bcc_fe(Species("Fe", 0, spin=5)), supercell_matrix=DIAG2)
+
+
+def test_magmom_site_property_is_still_rejected_alongside_species_spin():
+    magnetic = _bcc_fe("Fe")
+    magnetic.add_site_property("magmom", [2.2, 2.2])
+    with pytest.raises(ValueError, match="magnetic moments are present"):
+        build_displacement_plan(magnetic, supercell_matrix=DIAG2)
+
+
 # --- record validation -------------------------------------------------------------------
 
 

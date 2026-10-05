@@ -13,9 +13,13 @@ Phonopy's dataset order, which defines identity and the order forces must be
 supplied in, not an execution order. Sequential, concurrent or array execution
 are all compatible with the same plan.
 
-The working structure is used exactly as given. Standardization of a user's
-structure is not approved methodology yet; a caller that needs it must do it
-before planning, and the plan records the structure it was actually given.
+The working structure is not standardized, wrapped or symmetrized.
+Standardization of a user's structure is not approved methodology yet; a caller
+that needs it must do it before planning. The plan's structure identity is the
+lattice, element symbols and fractional coordinates as given. Oxidation-state
+decorations and other site properties (for example ``selective_dynamics``) are
+not part of it, and magnetic structures (a nonzero ``magmom`` site property or
+``Species.spin``) are refused.
 Under the eventual R2 workflow the working structure is the relaxed structure
 produced by the prerequisite relaxation, so the plan can only be built after
 that relaxation; nothing here assumes it is known earlier.
@@ -274,6 +278,12 @@ def _working_structure_record(structure: Any) -> dict[str, Any]:
         specie = site.specie
         if isinstance(specie, DummySpecies) or not isinstance(specie, (Element, Species)):
             raise ValueError(f"site species {specie!r} is not a chemical element")
+        # Checked before the species is reduced to its element symbol, which
+        # would otherwise discard the spin silently.
+        if isinstance(specie, Species) and _nonzero_spin(getattr(specie, "spin", None)):
+            raise ValueError(
+                f"site species {specie!r} carries a spin; magnetic phonon planning is not supported"
+            )
         # Oxidation-state decorations are not part of planning identity.
         species.append(specie.symbol if isinstance(specie, Element) else specie.element.symbol)
     magmoms = structure.site_properties.get("magmom")
@@ -287,6 +297,17 @@ def _working_structure_record(structure: Any) -> dict[str, Any]:
         [[float(x) for x in row] for row in structure.frac_coords.tolist()],
         COORDS_FRACTIONAL,
     )
+
+
+def _nonzero_spin(spin: Any) -> bool:
+    """True unless ``spin`` is absent or exactly zero; unreadable values fail closed."""
+
+    if spin is None:
+        return False
+    try:
+        return float(spin) != 0.0
+    except (TypeError, ValueError):
+        return True
 
 
 def _nonzero_moment(value: Any) -> bool:
