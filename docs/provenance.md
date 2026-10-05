@@ -41,7 +41,7 @@ The preparation environment records:
 
 - Python version
 - Python implementation
-- local versions of the scientific packages in `constraints/scientific-runtime.txt` (atomate2, pymatgen, pymatgen-core, custodian, emmet-core, jobflow, spglib, and the supporting monty, numpy, scipy, pydantic, pydantic-settings, maggma and ruamel.yaml)
+- local versions of the scientific packages in `constraints/scientific-runtime.txt` (atomate2, pymatgen, pymatgen-core, custodian, emmet-core, jobflow, spglib, and the supporting monty, numpy, scipy, pydantic, pydantic-settings, maggma, ruamel.yaml and phonopy)
 
 `submission.json` also records `runtime_parity`: the exact versions of the parity-critical packages at preparation. The POWER runner reads its own versions before any VASP work, writes them to `<run_dir>/runtime_environment.json` (see `run_records.md`) and stops if a parity-critical package differs or an input-altering atomate2 setting is active. `python_environment.remote_execution` in the provenance block points to that record; at submission time it is still marked deferred because the runtime record does not exist yet. Runs prepared before this mechanism have no runtime record; their runner log is the only runtime evidence.
 

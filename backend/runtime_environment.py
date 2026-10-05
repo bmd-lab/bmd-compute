@@ -56,6 +56,7 @@ RECORDED_SUPPORTING_PACKAGES = (
     "pydantic-settings",
     "maggma",
     "ruamel.yaml",
+    "phonopy",
 )
 RECORDED_ATOMATE2_SETTINGS = (
     "CONFIG_FILE",

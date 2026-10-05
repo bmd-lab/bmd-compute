@@ -123,8 +123,12 @@ It lists two tiers:
   runner reads its own before building the workflow and stops, without starting
   VASP, on any missing or different version.
 - **Supporting** (monty, numpy, scipy, pydantic, pydantic-settings, maggma,
-  ruamel.yaml): pinned for reproducible installs and recorded at run time, but a
-  difference does not stop a run.
+  ruamel.yaml, phonopy): pinned for reproducible installs and recorded at run
+  time, but a difference does not stop a run. phonopy is used only by the
+  non-executable phonon displacement planner (`backend/phonons`); it is imported
+  lazily, so a POWER environment without it still runs every existing workflow
+  and records it as missing. It must move to the parity-critical tier before
+  any phonon calculation executes.
 
 Web-only, SSH, scheduler and test packages stay out of the constraints file.
 Upgrading any pinned package is a deliberate change: update the constraints file,
