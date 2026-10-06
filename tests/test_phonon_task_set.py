@@ -12,6 +12,10 @@ from pymatgen.core import Lattice, Structure  # noqa: E402
 
 from backend.calculations.models import StageSpec, StageType, Theory, WorkflowSpec  # noqa: E402
 from backend.phonons import DisplacementPlan, build_displacement_plan  # noqa: E402
+from backend.phonons.working_structure import (  # noqa: E402
+    PhononWorkingStructure,
+    prepare_phonon_working_structure,
+)
 from backend.phonons.task_set import (  # noqa: E402
     build_phonon_force_task_set,
     verify_phonon_force_task_set,
@@ -84,21 +88,32 @@ REFERENCE_CASES = [
 ]
 
 
+# Plan hash -> the M2b working-structure record the plan was built from.
+WORKING: dict[str, PhononWorkingStructure] = {}
+
+
+def plan_from_stage1(structure: Structure, matrix) -> DisplacementPlan:
+    working = prepare_phonon_working_structure(structure)
+    plan = build_displacement_plan(working.working_structure(), supercell_matrix=matrix)
+    WORKING[plan.plan_sha256] = working
+    return plan
+
+
 @pytest.fixture(scope="module")
 def plans() -> dict[str, DisplacementPlan]:
     return {
-        name: build_displacement_plan(factory(), supercell_matrix=matrix)
+        name: plan_from_stage1(factory(), matrix)
         for name, factory, matrix, _count in REFERENCE_CASES
     }
 
 
 def task_set_for(plan: DisplacementPlan, **overrides) -> StageTaskSet:
     arguments = dict(
+        working_structure=WORKING[plan.plan_sha256],
         workflow=WORKFLOW,
         stage_index=2,
         submission_attempt_id=ATTEMPT,
         upstream_stage_index=1,
-        upstream_structure_sha256=plan.to_dict()["working_structure"]["sha256"],
     )
     arguments.update(overrides)
     return build_phonon_force_task_set(plan, **arguments)
@@ -154,7 +169,7 @@ def test_one_stage_holds_all_displacement_tasks(plans):
 
 def test_construction_is_deterministic(plans):
     first = task_set_for(plans["NaCl"])
-    rebuilt = task_set_for(build_displacement_plan(nacl(), supercell_matrix=DIAG2))
+    rebuilt = task_set_for(plan_from_stage1(nacl(), DIAG2))
 
     assert first.to_json() == rebuilt.to_json()
     assert StageTaskSet.from_json(first.to_json()).task_set_sha256 == first.task_set_sha256
@@ -215,11 +230,11 @@ def test_only_validated_plan_objects_are_accepted(plans):
     with pytest.raises(StageTaskSetContractError):
         build_phonon_force_task_set(
             plans["Si"].to_dict(),
+            working_structure=WORKING[plans["Si"].plan_sha256],
             workflow=WORKFLOW,
             stage_index=2,
             submission_attempt_id=ATTEMPT,
             upstream_stage_index=1,
-            upstream_structure_sha256="0" * 64,
         )
     with pytest.raises(StageTaskSetContractError):
         verify_phonon_force_task_set(task_set_for(plans["Si"]).to_dict(), plans["Si"])
