@@ -268,7 +268,8 @@ def test_rounding_beyond_tolerance_is_not_repaired():
     lower symmetry and does not loosen the tolerance to recover it."""
 
     data = prepare_phonon_working_structure(gan(third=0.3333)).to_dict()
-    assert data["symmetry"]["incoming"] == {"international": "Cmc2_1", "number": 36, "operations": 4}
+    incoming = data["symmetry"]["incoming"]
+    assert (incoming["international"], incoming["number"], incoming["operations"]) == ("Cmc2_1", 36, 4)
     assert data["symmetry"]["working"] == data["symmetry"]["incoming"]
     assert data["idealization"]["max_site_shift_angstrom"] <= SYMPREC
 
@@ -782,3 +783,106 @@ def test_no_moment_magnitude_is_small_enough_to_ignore(value):
     assert set(WorkingStructurePolicy().to_dict()) == {
         "policy_id", "policy_version", "status", "method", "symprec_angstrom", "angle_tolerance_degrees",
     }
+
+
+# --- handedness of the working lattice (record boundary) ---------------------------------
+
+
+def _forged_working(record: dict, lattice, coords) -> dict:
+    """Replace the working structure, keeping every derived field consistent."""
+
+    from backend.phonons.working_structure import _idealization_magnitudes
+
+    working = record["working"]
+    record["working"] = structure_record(lattice, working["species"], coords, "fractional")
+    record["idealization"] = _idealization_magnitudes(record["incoming"], record["working"])
+    return rehash(record)
+
+
+def test_forged_inverted_working_lattice_is_rejected_structurally(record):
+    working = record["working"]
+    inverted = [[-x for x in row] for row in working["lattice"]]
+    forged = _forged_working(record, inverted, working["coords"])
+
+    assert forged["working"]["sha256"] == structure_record(
+        inverted, working["species"], working["coords"], "fractional"
+    )["sha256"]
+    assert forged["record_sha256"] == record_sha256(forged)
+    with pytest.raises(PhononWorkingStructureError, match="right-handed"):
+        validate_working_structure_record(forged)
+    with pytest.raises(PhononWorkingStructureError, match="right-handed"):
+        PhononWorkingStructure.from_dict(forged)
+
+
+def test_forged_reflected_working_basis_is_rejected_structurally(record):
+    """Swapping two basis vectors (and the matching coordinates) describes the
+    same atoms in a left-handed basis; it must not validate."""
+
+    working = record["working"]
+    lattice = [working["lattice"][1], working["lattice"][0], working["lattice"][2]]
+    coords = [[row[1], row[0], row[2]] for row in working["coords"]]
+    forged = _forged_working(record, lattice, coords)
+    with pytest.raises(PhononWorkingStructureError, match="right-handed"):
+        validate_working_structure_record(forged)
+    with pytest.raises(PhononWorkingStructureError, match="right-handed"):
+        PhononWorkingStructure.from_dict(forged)
+
+
+def test_left_handed_incoming_structure_is_still_refused():
+    refuse(Structure(Lattice(-si().lattice.matrix), ["Si", "Si"], si().frac_coords), "malformed")
+
+
+# --- setting-level symmetry invariant ----------------------------------------------------
+
+
+@pytest.mark.parametrize("name, factory, _number, _symbol", REFERENCE, ids=[r[0] for r in REFERENCE])
+def test_symmetry_blocks_record_hall_setting_rotations_and_site_classes(name, factory, _number, _symbol):
+    data = prepare_phonon_working_structure(factory()).to_dict()
+    block = data["symmetry"]["incoming"]
+    assert block == data["symmetry"]["working"]
+    assert set(block) == {"international", "number", "hall_number", "operations", "rotations", "equivalent_atoms"}
+    flattened = [tuple(x for row in rotation for x in row) for rotation in block["rotations"]]
+    assert flattened == sorted(set(flattened))
+    assert (1, 0, 0, 0, 1, 0, 0, 0, 1) in flattened
+    assert len(block["equivalent_atoms"]) == len(factory())
+    assert "wyckoffs" not in json.dumps(block) and "origin" not in json.dumps(block)
+
+
+def test_site_classes_distinguish_same_species_orbits():
+    classes = prepare_phonon_working_structure(mos2()).to_dict()["symmetry"]["incoming"]["equivalent_atoms"]
+    assert classes == [0, 0, 2, 2, 2, 2]
+
+
+def test_noisy_structure_keeps_its_setting_level_symmetry():
+    rng = np.random.default_rng(7)
+    noisy = Structure(si().lattice, ["Si", "Si"], si().frac_coords + rng.normal(scale=2e-7, size=(2, 3)))
+    data = prepare_phonon_working_structure(noisy).to_dict()
+    exact = prepare_phonon_working_structure(si()).to_dict()
+    for key in ("hall_number", "rotations", "equivalent_atoms", "number"):
+        assert data["symmetry"]["working"][key] == exact["symmetry"]["working"][key]
+
+
+def _identity_first(block):
+    return block["rotations"]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda b: b.update(hall_number=b["hall_number"] + 1),
+        lambda b: b.update(hall_number=0),
+        lambda b: b.update(rotations=list(reversed(b["rotations"]))),
+        lambda b: b.update(rotations=b["rotations"] + [b["rotations"][0]]),
+        lambda b: b.update(rotations=[r for r in b["rotations"] if r != [[1, 0, 0], [0, 1, 0], [0, 0, 1]]]),
+        lambda b: b.update(rotations=[[[2, 0, 0], [0, 1, 0], [0, 0, 1]]] + b["rotations"][1:]),
+        lambda b: b.update(rotations=[[[1.0, 0, 0], [0, 1, 0], [0, 0, 1]]] + b["rotations"][1:]),
+        lambda b: b.update(equivalent_atoms=[1, 0, 2, 2]),
+        lambda b: b.update(equivalent_atoms=[0, 0, 0, 0]),
+        lambda b: b.update(equivalent_atoms=[0, 0, 2]),
+    ],
+    ids=["hall-differs", "hall-range", "unsorted", "duplicate", "no-identity", "not-unimodular",
+         "float-entry", "non-canonical-classes", "classes-differ", "classes-length"],
+)
+def test_altered_working_symmetry_blocks_are_rejected(record, mutate):
+    mutate(record["symmetry"]["working"])
+    reject(rehash(record))

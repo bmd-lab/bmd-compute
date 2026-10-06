@@ -115,13 +115,22 @@ Applied as `symmetry_idealization`, always:
    `transformation_matrix` and `R` is `std_rotation_matrix`.
 3. Each position becomes the average of its symmetry images under the detected
    operations, which is the projection onto the symmetric configuration.
-4. The working structure must give the same detected space group and operation
-   count as the incoming structure, and no site may move more than `symprec`.
-   Otherwise the structure is refused (`symmetry_unstable`).
+4. The working structure must give the same detected symmetry as the incoming
+   structure: space group, Hall setting, operation count, the sorted set of
+   point rotations in the input basis, and the partition of sites into
+   symmetry-equivalent classes. No site may move more than `symprec`.
+   Otherwise the structure is refused (`symmetry_unstable`). Wyckoff letters
+   and origin shifts are deliberately not compared. They are representation
+   choices that can change (for example on noisy Si) with no physical change.
+   Comparing the per-operation site permutations is left for later hardening.
 
-This keeps the atom count, atom order, lattice basis, origin and handedness.
-The Cartesian frame is kept: a rotated input gives the same rotation of the
-output. Free coordinates such as a polar axis are not moved, and nothing is
+This keeps the atom count, atom order, lattice basis, origin and handedness;
+record validation also requires a right-handed working lattice. The Cartesian
+frame is kept: a rotated input gives the same rotation of the output. The
+lattice metric is symmetrized, which is a small strain. On long or skewed
+basis vectors an individual lattice component can still change by more than
+`symprec` (`idealization.max_lattice_change_angstrom` records the largest), so
+no component-wise bound applies. Free coordinates such as a polar axis are not moved, and nothing is
 wrapped or rounded. Averaging can change the last bits of coordinates that were
 already exact. That change is deterministic and visible in the record
 (`idealization.max_site_shift_angstrom`).
@@ -143,7 +152,7 @@ symmetric. It never raises the symmetry Phonopy sees:
 | --- | --- | --- | --- |
 | exact | P6_3mc | none needed | 4 |
 | `1/3` rounded to 6 decimals | P6_3mc | sites moved by 1.8e-6 Angstrom | 4 |
-| `1/3` rounded to 4 decimals | Cmc2_1 | sub-tolerance only | 8 |
+| `1/3` rounded to 4 decimals | Cmc2_1 | sites moved by at most `symprec` | 8 |
 
 Recovering P6_3mc for the last case needs a looser tolerance. That is an
 unapproved scientific decision, and M2b does not make it.
@@ -158,7 +167,7 @@ unapproved scientific decision, and M2b does not make it.
 | `incoming` | B, with its `sha256` |
 | `working` | C as an M1 `structure_record`, with its `sha256` |
 | `transformations` | applied kinds, in the fixed order `drop_zero_magmom`, `drop_zero_velocities`, `reduce_species_to_elements`, `symmetry_idealization` |
-| `symmetry.incoming`, `symmetry.working` | `international`, `number`, `operations`; must be equal |
+| `symmetry.incoming`, `symmetry.working` | `international`, `number`, `hall_number`, `operations`, `rotations` (sorted distinct point rotations in the input basis), `equivalent_atoms` (each site's lowest-index equivalent); must be equal |
 | `idealization` | `max_site_shift_angstrom`, `max_lattice_change_angstrom`, recomputed in plain Python by the validator |
 | `record_sha256` | canonical hash of every other field |
 
@@ -214,6 +223,9 @@ record's `working` exactly. The M2a task set records the Stage-1 identity as
 - **Residual moments:** decided. There is no moment threshold; eligibility is
   methodological and checked in M2c (see above). Still to confirm on POWER:
   whether `ISPIN = 1` relaxations ever carry `magmom`.
-- **Phonopy parity:** whether spglib and NumPy must match exactly between
-  preparation and execution for re-verification on POWER. Phonopy parity is an
-  M3 requirement.
+- **Runtime parity (carried forward, required before M2c/M3 execution
+  authority):** exact working-structure hashes depend on the spglib version,
+  NumPy arithmetic, symmetry-operation order and floating-point reduction. Before
+  authoritative materialization on POWER, the relevant scientific stack
+  (Phonopy, spglib, NumPy) must be parity-critical. It is recorded-only today,
+  which is acceptable while M2b is not executable.

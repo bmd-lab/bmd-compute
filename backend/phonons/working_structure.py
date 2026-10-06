@@ -38,7 +38,10 @@ space group spglib detects at the policy tolerance, *in the input setting*: the
 same lattice basis, atom count, atom order, origin and handedness. The lattice
 is spglib's idealized standard lattice mapped back through its transformation
 matrix and standardization rotation (``P^T L_std R``), so the Cartesian frame
-is kept and only sub-tolerance metric noise changes. Positions are the average
+is kept and only the lattice metric is symmetrized. That is a small strain, but
+on long or skewed basis vectors an individual lattice component can change by
+more than ``symprec``; no component-wise bound is implied or enforced. Positions
+are the average
 of each atom's symmetry images (the projection onto the symmetric
 configuration), so no origin shift is introduced and free coordinates (for
 example along a polar axis) are unchanged. Nothing is wrapped or rounded.
@@ -131,7 +134,9 @@ POLICY_KEYS = frozenset(
 SOFTWARE_KEYS = frozenset({"spglib", "numpy"})
 INCOMING_KEYS = frozenset({"lattice", "species", "coords", "coords_type", "site_properties", "sha256"})
 SPECIES_KEYS = frozenset({"element", "oxidation_state", "spin"})
-SYMMETRY_KEYS = frozenset({"international", "number", "operations"})
+SYMMETRY_KEYS = frozenset(
+    {"international", "number", "hall_number", "operations", "rotations", "equivalent_atoms"}
+)
 IDEALIZATION_KEYS = frozenset({"max_site_shift_angstrom", "max_lattice_change_angstrom"})
 
 _REGISTERED_POLICY_VALUES = {
@@ -319,9 +324,10 @@ def prepare_phonon_working_structure(
     )
     if working_symmetry != incoming_symmetry:
         raise PhononWorkingStructureError(
-            "symmetry idealization changed the detected space group "
-            f"({incoming_symmetry['international']} -> {working_symmetry['international']}); "
-            "the structure is too close to the symmetry tolerance to be idealized deterministically",
+            "symmetry idealization changed the detected symmetry (space group, Hall setting, "
+            f"rotations or equivalent sites; {incoming_symmetry['international']} -> "
+            f"{working_symmetry['international']}); the structure is too close to the symmetry "
+            "tolerance to be idealized deterministically",
             code="symmetry_unstable",
         )
     idealization = _idealization_magnitudes(incoming, working)
@@ -573,10 +579,30 @@ def _symmetry_dataset(lattice, coords, numbers, policy: WorkingStructurePolicy):
 
 
 def _symmetry_summary(dataset) -> dict[str, Any]:
+    """Setting-level symmetry that idealization must leave unchanged.
+
+    Besides the space group: the Hall setting, the set of distinct point
+    rotations in the input basis (sorted), and the partition of sites into
+    symmetry-equivalent classes (each site mapped to the lowest index in its
+    class). Wyckoff letters and origin shifts are deliberately not included:
+    they are representation choices that can change without any physical
+    change.
+    """
+
+    equivalent = [int(value) for value in dataset.equivalent_atoms]
+    lowest: dict[int, int] = {}
+    for index, representative in enumerate(equivalent):
+        lowest.setdefault(representative, index)
+    rotations = sorted(
+        {tuple(int(value) for value in rotation.flatten()) for rotation in dataset.rotations}
+    )
     return {
         "international": str(dataset.international),
         "number": int(dataset.number),
+        "hall_number": int(dataset.hall_number),
         "operations": int(len(dataset.rotations)),
+        "rotations": [[list(rotation[0:3]), list(rotation[3:6]), list(rotation[6:9])] for rotation in rotations],
+        "equivalent_atoms": [lowest[representative] for representative in equivalent],
     }
 
 
@@ -691,6 +717,10 @@ def validate_working_structure_record(payload: Any) -> None:
         working = _structure(record["working"], "working", COORDS_FRACTIONAL)
     except PhononPlanContractError as exc:
         raise PhononWorkingStructureError(str(exc)) from None
+    # Handedness is part of the working-structure invariant, not only of the
+    # incoming structure: a reflected working lattice must not validate.
+    if _det3(working["lattice"]) <= 0.0:
+        raise PhononWorkingStructureError("working lattice must be right-handed (positive determinant)")
     if working["species"] != [entry["element"] for entry in incoming["species"]]:
         raise PhononWorkingStructureError("working species are not the incoming elements in order")
     if len(working["coords"]) != len(incoming["coords"]):
@@ -709,7 +739,10 @@ def validate_working_structure_record(payload: Any) -> None:
 
     symmetry = _mapping(record["symmetry"], "symmetry")
     _exact_keys(symmetry, {"incoming", "working"}, "symmetry")
-    blocks = [_symmetry_block(symmetry[name], f"symmetry.{name}") for name in ("incoming", "working")]
+    blocks = [
+        _symmetry_block(symmetry[name], f"symmetry.{name}", len(incoming["species"]))
+        for name in ("incoming", "working")
+    ]
     if blocks[0] != blocks[1]:
         raise PhononWorkingStructureError("symmetry idealization must not change the detected space group")
 
@@ -769,15 +802,46 @@ def _incoming_block(value: Any) -> dict[str, Any]:
     return dict(incoming)
 
 
-def _symmetry_block(value: Any, label: str) -> dict[str, Any]:
+def _symmetry_block(value: Any, label: str, natom: int) -> dict[str, Any]:
     block = _mapping(value, label)
     _exact_keys(block, SYMMETRY_KEYS, label)
     if type(block["international"]) is not str or not block["international"]:
         raise PhononWorkingStructureError(f"{label}.international must be a symbol")
     if type(block["number"]) is not int or not 1 <= block["number"] <= 230:
         raise PhononWorkingStructureError(f"{label}.number must be a space-group number 1-230")
+    if type(block["hall_number"]) is not int or not 1 <= block["hall_number"] <= 530:
+        raise PhononWorkingStructureError(f"{label}.hall_number must be a Hall number 1-530")
     if type(block["operations"]) is not int or block["operations"] < 1:
         raise PhononWorkingStructureError(f"{label}.operations must be a positive integer")
+
+    rotations = block["rotations"]
+    if type(rotations) is not list or not rotations:
+        raise PhononWorkingStructureError(f"{label}.rotations must be a non-empty list")
+    flattened = []
+    for rotation in rotations:
+        if (
+            type(rotation) is not list
+            or len(rotation) != 3
+            or any(type(row) is not list or len(row) != 3 or any(type(x) is not int for x in row) for row in rotation)
+        ):
+            raise PhononWorkingStructureError(f"{label}.rotations must be 3x3 integer matrices")
+        if abs(_det3(rotation)) != 1:
+            raise PhononWorkingStructureError(f"{label}.rotations must be unimodular")
+        flattened.append(tuple(x for row in rotation for x in row))
+    if flattened != sorted(set(flattened)):
+        raise PhononWorkingStructureError(f"{label}.rotations must be distinct and sorted")
+    if (1, 0, 0, 0, 1, 0, 0, 0, 1) not in flattened or block["operations"] % len(flattened):
+        raise PhononWorkingStructureError(f"{label}.rotations are inconsistent with the operations")
+
+    equivalent = block["equivalent_atoms"]
+    if (
+        type(equivalent) is not list
+        or len(equivalent) != natom
+        or any(type(x) is not int or not 0 <= x <= index or equivalent[x] != x for index, x in enumerate(equivalent))
+    ):
+        raise PhononWorkingStructureError(
+            f"{label}.equivalent_atoms must map each site to the lowest index of its class"
+        )
     return dict(block)
 
 
