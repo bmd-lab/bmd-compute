@@ -36,6 +36,7 @@ from backend.calculations.resources import (
     stage_allows_automatic_ncore,
 )
 from backend.calculations.dispersion import dispersion_method_from_options
+from backend.calculations.structure_constraints import reject_unsupported_structure_constraints
 from backend.calculations.custodian_policy import (
     bmd_custodian_handlers,
     hse_band_structure_run_vasp_kwargs,
@@ -1711,6 +1712,7 @@ def build_atomate2_flow_for_workflow_spec(
 ):
     from atomate2.vasp.jobs.core import NonSCFMaker, RelaxMaker, StaticMaker
 
+    reject_unsupported_structure_constraints(structure)
     workflow = validate_workflow_spec(workflow_spec)
     stage_directories = workflow_stage_directories(workflow)
     stage_artifacts = workflow_stage_artifact_policies(workflow)
@@ -2010,6 +2012,7 @@ def build_atomate2_flow_for_spec(
     resources=None,
     potcar_functional="PBE_64",
 ):
+    reject_unsupported_structure_constraints(structure)
     calculation_spec = validate_calculation_spec(spec)
     user_incar = dict(incar or {})
     calculation_modifiers = calculation_spec.modifiers

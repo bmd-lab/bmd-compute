@@ -18,6 +18,7 @@ from backend.calculations.registry import (
     workflow_spec_from_calculation_spec,
     workflow_stage_directories,
 )
+from backend.calculations.structure_constraints import reject_unsupported_structure_constraints
 from backend.workflow_summary import calculation_plan_from_spec
 from backend.workflows import (
     build_band_structure_input_set_generator,
@@ -51,6 +52,7 @@ def preview_generated_inputs(
     read locally and no HPC resources are contacted.
     """
 
+    reject_unsupported_structure_constraints(structure)
     if isinstance(spec, WorkflowSpec):
         workflow_spec = validate_workflow_spec(spec)
     else:
@@ -116,6 +118,7 @@ def generated_input_stage_previews(
     resources=None,
     potcar_functional: str = "PBE_64",
 ) -> tuple[dict, ...]:
+    reject_unsupported_structure_constraints(structure)
     if isinstance(spec, WorkflowSpec):
         workflow_spec = validate_workflow_spec(spec)
     else:
