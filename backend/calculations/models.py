@@ -57,6 +57,10 @@ class StageType(_IntentEnum):
     STATIC = "static"
     DOS = "dos"
     BAND_STRUCTURE = "band_structure"
+    # Representation only (Phonopy M2a): one stage whose calculations are a
+    # task set derived at runtime. Not executable; see
+    # backend.calculations.stage_materialization.
+    PHONON_FORCES = "phonon_forces"
 
 
 def _normalize_modifiers(modifiers: Iterable[Modifier | str] | None) -> frozenset[Modifier]:
