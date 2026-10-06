@@ -18,7 +18,11 @@ Record (all keys required, no others)::
         stage_sha256            canonical hash of that StageSpec (methodology)
     upstream_structure  the earlier stage output the source was derived from
         stage_index             1-based, earlier than parent.stage_index
-        sha256                  structure hash (M1 ``structure_record`` rule)
+        sha256                  identity of that stage's actual output
+                                structure, as the materializer defines it
+                                (phonons: the M2b incoming Stage-1 identity,
+                                ``PhononWorkingStructure.incoming_sha256``;
+                                never the working-structure hash)
     source            the record that defines the tasks (the materializer's)
         materializer            the parent stage type's materializer
         schema, schema_version  the source record's schema

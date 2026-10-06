@@ -50,7 +50,7 @@ materialized for one `derived_task_set` stage:
 | `parent.stage_type` | a `derived_task_set` stage type |
 | `parent.stage_sha256` | canonical hash of the parent `StageSpec` (its methodology) |
 | `upstream_structure.stage_index` | earlier stage whose output structure the source was derived from |
-| `upstream_structure.sha256` | that structure's hash (M1 `structure_record` rule) |
+| `upstream_structure.sha256` | identity of that stage's actual output structure, as the materializer defines it (phonons: the M2b incoming Stage-1 identity, never the working-structure hash) |
 | `source.materializer` | fixed by the parent stage type |
 | `source.schema`, `schema_version`, `sha256` | the record that defines the tasks, by its own canonical hash |
 | `task_order` | `"source_canonical"` |
@@ -110,9 +110,21 @@ displacement vectors, dataset indices, displaced structures, supercell,
 primitive matrix, Phonopy policy and version. The task set refers to it by
 `plan_sha256` and lists only `disp_NNN` IDs and displaced-structure hashes.
 
-How the upstream (relaxed) structure becomes the plan's working structure is the
-phonon working-structure boundary (M2b). The task set records the upstream
-structure hash but does not check that relation yet.
+The upstream identity is the actual Stage-1 output, not the structure Phonopy
+saw. Three identities, each answering one question, are bridged by the M2b
+working-structure record (`phonon_working_structure.md`):
+
+| Identity | Question |
+| --- | --- |
+| `task_set.upstream_structure.sha256` = `working.incoming_sha256` | what Stage 1 produced |
+| `working.working_sha256` = `plan.working_structure.sha256` | what BMD handed to Phonopy |
+| `task_set.source.sha256` = `plan.plan_sha256` | which displacement plan |
+
+`build_phonon_force_task_set` takes the working-structure record, not a raw
+hash, and requires the plan to have been built from exactly its working
+structure. `verify_phonon_force_task_set_chain` checks every link from the
+actual Stage-1 structure: parent stage, working-structure re-derivation,
+upstream identity, M1 plan rebuild and task list.
 
 ## Task directories
 
@@ -134,8 +146,8 @@ written (M2c).
 
 ## Requirements recorded for later milestones
 
-- **M2b:** the phonon working-structure boundary, from the Stage-1 output to
-  the M1 working structure, and its check against `upstream_structure`.
+- **M2b (done):** the phonon working-structure boundary; see
+  `phonon_working_structure.md`.
 - **M2c:** runtime materialization: write and re-verify the task set for an
   attempt on POWER, and decide its file location and submission integration.
 - **M2d / M3: result discovery.** `backend/results.py` assumes the final stage
