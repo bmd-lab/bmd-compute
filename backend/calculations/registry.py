@@ -21,6 +21,7 @@ from backend.calculations.vasp_stage_definitions import (
     stage_inherits_previous_band_count,
     stage_reads_previous_charge_density,
 )
+from backend.calculations.stage_materialization import stage_type_is_executable
 from backend.calculations.theory_policy import (
     CalculationStage,
     theory_default_potcar_functional,
@@ -41,6 +42,9 @@ class CalculationValidationError(ValueError):
         self.message = message
         self.suggestion = suggestion
         self.diagnostic = dict(diagnostic) if diagnostic is not None else None
+
+
+NON_EXECUTABLE_STAGE_CODE = "stage_type_not_executable"
 
 
 _ACTIVE_UI_MODIFIERS = (
@@ -165,6 +169,7 @@ _STAGE_DISPLAY_NAMES = {
     StageType.STATIC: "Static Energy",
     StageType.DOS: "Density of States",
     StageType.BAND_STRUCTURE: "Band Structure",
+    StageType.PHONON_FORCES: "Phonon Force Calculations",
 }
 
 _STAGE_DESCRIPTIONS = {
@@ -856,6 +861,19 @@ def validate_user_workflow_spec(workflow: WorkflowSpec) -> WorkflowSpec:
 
 
 def _validate_stage_support(stage: StageSpec) -> None:
+    # Representation-only stage types (for example the future phonon force
+    # stage) fail closed here, before any other check: every Build, Prepare,
+    # Submit and input-preview path validates its stages through this function.
+    if not stage_type_is_executable(stage.stage_type):
+        raise CalculationValidationError(
+            f"{stage_display_name(stage)} stages are not available in BMD Compute yet.",
+            suggestion="Choose a supported workflow.",
+            diagnostic={
+                "code": NON_EXECUTABLE_STAGE_CODE,
+                "policy": "fail_closed",
+                "stage_type": stage.stage_type.value,
+            },
+        )
     _validate_stage_option_keys(stage)
     calculation_stage = CalculationStage(stage.stage_type.value)
     theory_label = theory_display_name(stage.theory)
@@ -1173,6 +1191,7 @@ def calculation_form_options() -> dict:
                 "description": _STAGE_DESCRIPTIONS.get(stage_type, ""),
             }
             for stage_type in StageType
+            if stage_type_is_executable(stage_type)
         ],
         "desired_outputs": list(_desired_output_options()),
         "recipes": list(_recommended_workflow_recipes()),

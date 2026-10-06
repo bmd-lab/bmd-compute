@@ -29,6 +29,10 @@ Under R2 the plan is built from the relaxed structure after the prerequisite
 relaxation. Build and Prepare therefore cannot know the final task count, and
 nothing here assumes they do.
 
+The force stage's materialized task set (`bmd_compute.stage_task_set`, stage
+type `phonon_forces`) binds to a plan by `plan_sha256` and lists only the task
+IDs and displaced-structure hashes; see `stage_task_sets.md`.
+
 ## Inputs and policy
 
 - `structure`: an ordered, non-magnetic pymatgen `Structure`. A nonzero `magmom`
