@@ -770,3 +770,15 @@ def test_web_application_does_not_load_the_boundary(tmp_path):
     )
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "False"
+
+
+@pytest.mark.parametrize("value", [5e-324, -5e-324, 1e-300, 0.0004])
+def test_no_moment_magnitude_is_small_enough_to_ignore(value):
+    """Magnetic eligibility is never inferred from moment magnitude."""
+
+    refuse(with_property(si(), "magmom", [value, 0.0]), "magnetic")
+    refuse(with_property(si(), "magmom", [[0.0, 0.0, value], [0.0, 0.0, 0.0]]), "magnetic")
+    # The policy holds only symmetry parameters; nothing about moments.
+    assert set(WorkingStructurePolicy().to_dict()) == {
+        "policy_id", "policy_version", "status", "method", "symprec_angstrom", "angle_tolerance_degrees",
+    }

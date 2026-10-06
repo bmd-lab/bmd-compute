@@ -46,8 +46,62 @@ The policy is closed. Anything not listed is rejected, never repaired.
 | non-finite values, singular or left-handed lattice | rejected |
 
 "Zero" means exactly zero (`-0.0` counts as zero). This is the same exact-zero
-rule M1 applies to spin and `magmom`. A Stage-1 calculation with residual
-moments such as `0.001` is therefore refused; see the open questions below.
+rule M1 applies to spin and `magmom`. There is deliberately no moment-magnitude
+threshold: Phonopy treats supplied moments as magnetic-symmetry information and
+defines no cutoff below which magnetism is negligible, so neither does BMD.
+
+## Magnetic eligibility is a workflow check, not a structure check
+
+Initial BMD phonons are non-magnetic, and eligibility is methodological: the
+Stage-1 relaxation must be explicitly non-spin-polarized. A spin-polarized or
+non-collinear Stage 1 is unsupported, whatever the size of its final moments.
+
+M2b cannot establish this. Its only input is a structure, and the structure
+says nothing reliable about the methodology that produced it:
+
+- In the current stack, `magmom` reaches an atomate2 output structure in one
+  way only. `emmet.core.vasp.calculation` copies the per-ion `tot` column of
+  the OUTCAR `magnetization (x)` table onto the CONTCAR structure. It does this
+  when pymatgen's `Outcar.magnetization` is non-empty, and that happens only if
+  the OUTCAR contains that table. Values are read as written, to three decimals,
+  so `-0.000` becomes `-0.0` and small residuals stay nonzero. Non-collinear
+  runs give `Magmom` vectors. `Poscar` and `Vasprun` never add `magmom`.
+- BMD's relax stage removes `LORBIT`. VASP writes the per-ion table only for
+  spin-polarized runs with `LORBIT` (or `RWIGS`) set. A spin-polarized BMD
+  relaxation may therefore return a structure with no `magmom` at all. The
+  absence of moments does not prove a non-magnetic calculation, and small
+  moments do not prove one either. This is VASP output behaviour, not Python
+  source, and still needs confirming on POWER.
+
+The authoritative facts are the attempt's frozen Stage-1 `StageSpec` and the
+INCAR that actually ran:
+- BMD sets `ISPIN = 2` exactly when the stage has `spin_polarized`;
+- SOC makes the run non-collinear;
+- `vasprun.xml` records the `ISPIN` VASP used.
+
+**M2c requirement.** Before calling M2b, the phonon materializer must refuse
+the workflow unless:
+- the Stage-1 `StageSpec` has neither `spin_polarized` nor `soc`;
+- the executed Stage-1 parameters report `ISPIN = 1` and no `LNONCOLLINEAR`.
+
+It must never infer eligibility from moment values.
+
+M2b's role is structure hygiene, and it stays fail-closed where provenance is
+ambiguous:
+
+| Case | M2b behaviour |
+| --- | --- |
+| no `magmom`, no spin | accepted (eligibility still required from M2c) |
+| exactly-zero `magmom` | recorded in the incoming identity, then dropped |
+| nonzero `magmom`, any magnitude | rejected (`magnetic`) |
+| nonzero `Species.spin` | rejected (`magnetic`) |
+| spin-polarized Stage-1 methodology | rejected by the M2c eligibility check, whatever the moments |
+
+If a POWER check shows that non-spin-polarized (`ISPIN = 1`) relaxations do
+produce nonzero `magmom`, those outputs are refused today. Accepting them would
+need an explicit, versioned M2b input carrying M2c's verified non-magnetic
+methodology, recorded in the working-structure record. It must never be a
+magnitude rule.
 
 ## Symmetry idealization
 
@@ -157,9 +211,9 @@ record's `working` exactly. The M2a task set records the Stage-1 identity as
   should be refused. M2b records both groups but does not judge them.
 - **Recovering symmetry lost beyond 1e-5:** a looser idealization tolerance,
   or standardizing before Stage 1.
-- **Residual moments:** whether Stage 1 for non-magnetic phonons runs without
-  spin polarization, or a residual-moment tolerance is approved. Today any
-  nonzero `magmom` is refused.
+- **Residual moments:** decided. There is no moment threshold; eligibility is
+  methodological and checked in M2c (see above). Still to confirm on POWER:
+  whether `ISPIN = 1` relaxations ever carry `magmom`.
 - **Phonopy parity:** whether spglib and NumPy must match exactly between
   preparation and execution for re-verification on POWER. Phonopy parity is an
   M3 requirement.
