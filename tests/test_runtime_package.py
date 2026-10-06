@@ -11,6 +11,7 @@ from backend.runtime_package import (
 from backend.submission import (
     build_backend_module_sources,
     build_remote_runtime_preflight_source,
+    build_run_job_script,
     create_submission_spec,
     json_dumps_for_remote_file,
 )
@@ -157,6 +158,7 @@ def test_remote_runtime_preflight_uses_uploaded_bundle_and_submission_json(tmp_p
         json_dumps_for_remote_file(spec),
         encoding="utf-8",
     )
+    (tmp_path / "run_job.py").write_text(build_run_job_script(spec), encoding="utf-8")
 
     completed = _run_isolated(tmp_path, build_remote_runtime_preflight_source(spec))
 

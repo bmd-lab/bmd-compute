@@ -35,6 +35,41 @@ The source section records best-effort Git metadata:
 
 The provenance code uses a one-shot `safe.directory` argument for Git inspection where needed. It does not modify global Git configuration. Git inspection runs with optional locking disabled (`--no-optional-locks`, `GIT_OPTIONAL_LOCKS=0`), so recording provenance never rewrites the checkout's index or leaves `.git/index.lock` behind.
 
+## Runtime Package
+
+`bmd_compute.runtime_source` records the packaged runtime that Prepare uploads
+to `<run_dir>/backend/`: every `backend/**/*.py` file outside `tests/` and cache
+directories, with its SHA-256 (`manifest`, keyed by package-relative POSIX
+path). Files are uploaded byte for byte, so the manifest is the hash of exactly
+what lands on POWER.
+
+The manifest is enforced, not only recorded:
+
+- Prepare refuses to upload if the package it is about to upload no longer
+  matches the recorded manifest.
+- The generated `run_job.py` carries the same manifest and the verification
+  code itself (embedded from `backend/runtime_package_guard.py`, never imported
+  from the uploaded copy). Before importing anything from `backend/` it requires
+  the directory to hold exactly the manifest files: each a regular file with the
+  recorded SHA-256, and no missing, extra or symbolic-link entries
+  (`__pycache__` directories are ignored). Every `backend` module is then loaded
+  from source bytes that are hashed again at load time; bytecode caches are
+  never read or written for it.
+- Before its own standard-library imports, `run_job.py` removes the run
+  directory from `sys.path`, so a file left there cannot shadow a module the
+  bootstrap imports before the check.
+- The Prepare runtime preflight runs that same `run_job.py` in preflight mode,
+  so a prepared attempt has already passed the check once on POWER.
+
+A mismatch stops the run before any package code executes and before VASP
+starts, with a `BMD_RUNTIME_PACKAGE_VERIFICATION_FAILED` report in the runner
+stderr log listing each missing, modified or unexpected file. The remedy is a
+new submission attempt; files in a prepared run directory are not meant to be
+edited.
+
+Attempts prepared before this check existed keep the `run_job.py` they were
+prepared with and run unverified, as before.
+
 ## Python Environment
 
 The preparation environment records:

@@ -52,6 +52,7 @@ from backend.provenance import build_submission_provenance
 from backend.runtime_package import (
     RUNTIME_PACKAGE_DIR,
     build_runtime_package_sources,
+    runtime_package_manifest_for_sources,
     runtime_package_relative_paths,
 )
 
@@ -66,6 +67,9 @@ REMOTE_BACKEND_INIT_FILENAME = "__init__.py"
 REMOTE_BACKEND_MODULE_FILENAMES = runtime_package_relative_paths()
 REMOTE_RUNTIME_PREFLIGHT_STEP = "Runtime import preflight"
 REMOTE_RUNTIME_PREFLIGHT_TIMEOUT_S = 60
+REMOTE_RUNTIME_PREFLIGHT_ARGUMENT = "--bmd-runtime-preflight"
+RUN_DIRECTORY_IMPORT_PATH_REMOVED = "_BMD_RUN_DIRECTORY_IMPORT_PATH_REMOVED"
+RUNTIME_PACKAGE_GUARD_MODULE = "runtime_package_guard.py"
 SUBMISSION_IDENTITY_VERSION = 1
 SUBMISSION_IDENTITY_SECRET_ENV = "BMD_SUBMISSION_IDENTITY_SECRET"
 RUN_TIMESTAMP_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}$")
@@ -412,19 +416,112 @@ def _submission_env_exports(submission_spec: dict) -> list[str]:
     ]
 
 
-def _run_job_launcher_python() -> str:
-    return r'''
+def _embedded_runtime_package_guard(sources: dict[str, str]) -> str:
+    """Return the guard source that the bootstrap runs before importing the package.
+
+    The text comes from the same source snapshot that is uploaded, but on POWER
+    it executes from the bootstrap script, never from the uploaded package.
+    """
+
+    return (
+        "# BMD Compute runtime package guard (embedded from "
+        f"{RUNTIME_PACKAGE_DIR}/{RUNTIME_PACKAGE_GUARD_MODULE}).\n"
+        f"{sources[RUNTIME_PACKAGE_GUARD_MODULE].strip()}\n"
+        "# End of embedded runtime package guard."
+    )
+
+
+def _python_manifest_literal(manifest: dict[str, str]) -> str:
+    return f"json.loads({json.dumps(dict(manifest), sort_keys=True)!r})"
+
+
+def _run_job_launcher_python(
+    *,
+    guard_source: str,
+    runtime_package_manifest: dict[str, str],
+    backend_package_dir: str,
+) -> str:
+    return (
+        f"""
+import sys
+
+# Python puts this script's directory, the run directory, first on sys.path, so
+# a file there could shadow any module imported below. Drop that entry before
+# importing anything else: the only code run from the run directory is this
+# script and the verified package. (The remote preflight drops it itself.)
+if (
+    not globals().get({RUN_DIRECTORY_IMPORT_PATH_REMOVED!r})
+    and not sys.flags.isolated
+    and not getattr(sys.flags, "safe_path", False)
+    and sys.path
+):
+    del sys.path[0]
+
 import json
 import os
-import sys
 import traceback
 
-from backend.execution import run_submission
+"""
+        + guard_source
+        + f"""
+
+
+_BMD_RUNTIME_PACKAGE_DIR = os.path.join(
+    os.path.dirname(os.path.realpath(__file__)),
+    {backend_package_dir!r},
+)
+_BMD_RUNTIME_PACKAGE_MANIFEST = {_python_manifest_literal(runtime_package_manifest)}
+
+# Verify the uploaded package against the manifest recorded when this attempt
+# was prepared before any of it is imported.
+try:
+    _bmd_manifest_sha256 = bmd_install_verified_runtime_package(
+        _BMD_RUNTIME_PACKAGE_DIR,
+        _BMD_RUNTIME_PACKAGE_MANIFEST,
+    )
+except BmdRuntimePackageVerificationError as exc:
+    print(str(exc), file=sys.stderr)
+    sys.exit(1)
+print(
+    "[runner] runtime package verified:",
+    len(_BMD_RUNTIME_PACKAGE_MANIFEST),
+    "files, manifest sha256",
+    _bmd_manifest_sha256,
+)
 
 
 spec_path = os.environ.get("BMD_SUBMISSION_SPEC")
 if not spec_path:
     spec_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "submission.json")
+
+# Remote preparation runs this script with {REMOTE_RUNTIME_PREFLIGHT_ARGUMENT!r} to check
+# the verified package imports and accepts the workflow, without running it.
+if sys.argv[1:] == [{REMOTE_RUNTIME_PREFLIGHT_ARGUMENT!r}]:
+    try:
+        import backend.execution
+        import backend.workflows
+        from backend.calculations.registry import (
+            validate_workflow_spec,
+            workflow_spec_from_flow_spec,
+        )
+
+        with open(spec_path, "r", encoding="utf-8") as handle:
+            spec = json.load(handle)
+        workflow_spec = workflow_spec_from_flow_spec(spec.get("flow_spec") or {{}})
+        validate_workflow_spec(workflow_spec)
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
+    print("BMD_RUNTIME_PREFLIGHT_OK=backend.execution,backend.workflows")
+    sys.exit(0)
+if sys.argv[1:]:
+    print("[runner] unexpected arguments:", sys.argv[1:], file=sys.stderr)
+    sys.exit(2)
+"""
+        + r'''
+from backend.execution import run_submission
+
+
 print("[runner] submission spec:", spec_path)
 with open(spec_path, "r", encoding="utf-8") as handle:
     spec = json.load(handle)
@@ -434,12 +531,39 @@ try:
 except Exception:
     traceback.print_exc(file=sys.stderr)
     sys.exit(1)
-'''.strip()
+'''
+    ).strip()
 
 
-def build_run_job_script(submission_spec: dict | None = None) -> str:
-    del submission_spec
-    return _run_job_launcher_python()
+def build_run_job_script(
+    submission_spec: dict | None = None,
+    *,
+    runtime_package_manifest: dict[str, str] | None = None,
+    runtime_package_sources: dict[str, str] | None = None,
+) -> str:
+    """Return run_job.py, which verifies the uploaded package before importing it.
+
+    ``runtime_package_manifest`` must describe the package files exactly as they
+    are uploaded; it defaults to the manifest of the current local package.
+    """
+
+    sources = (
+        dict(runtime_package_sources)
+        if runtime_package_sources is not None
+        else build_backend_module_sources()
+    )
+    if runtime_package_manifest is None:
+        runtime_package_manifest = (
+            _runtime_package_upload(submission_spec, sources)["manifest"]
+            if submission_spec is not None
+            else runtime_package_manifest_for_sources(sources)
+        )
+    runner = (submission_spec or {}).get("runner") or {}
+    return _run_job_launcher_python(
+        guard_source=_embedded_runtime_package_guard(sources),
+        runtime_package_manifest=runtime_package_manifest,
+        backend_package_dir=str(runner.get("backend_package_dir", REMOTE_BACKEND_PACKAGE_DIR)),
+    )
 
 
 def build_execution_module_source() -> str:
@@ -493,10 +617,13 @@ def _execution_module_path(submission_spec: dict) -> str:
     return posixpath.join(_remote_backend_dir(submission_spec), module_name)
 
 
-def _backend_module_paths(submission_spec: dict) -> dict[str, str]:
+def _backend_module_paths(
+    submission_spec: dict,
+    sources: dict[str, str] | None = None,
+) -> dict[str, str]:
     paths = {
         filename: posixpath.join(_remote_backend_dir(submission_spec), filename)
-        for filename in build_backend_module_sources()
+        for filename in (build_backend_module_sources() if sources is None else sources)
     }
     paths[REMOTE_EXECUTION_MODULE_FILENAME] = _execution_module_path(submission_spec)
     return paths
@@ -749,30 +876,78 @@ def build_submission_summary(submission_spec: dict) -> dict:
 
 
 def build_remote_runtime_preflight_source(submission_spec: dict) -> str:
-    submission_json_path = _submission_json_path(submission_spec)
+    """Return the preflight that runs the uploaded run_job.py in preflight mode.
+
+    The preflight therefore verifies the uploaded package with exactly the
+    bootstrap and manifest the job will use, then imports it and validates the
+    workflow, without starting any calculation.
+    """
+
     return f"""
-import json
 import sys
-import traceback
 
-try:
-    import backend.execution
-    import backend.workflows
-    from backend.calculations.registry import (
-        validate_workflow_spec,
-        workflow_spec_from_flow_spec,
-    )
+# `python -` puts the current directory, the run directory, first on sys.path;
+# drop it before importing anything else (see run_job.py).
+if sys.path and sys.path[0] == "":
+    del sys.path[0]
 
-    with open({submission_json_path!r}, "r", encoding="utf-8") as handle:
-        spec = json.load(handle)
-    workflow_spec = workflow_spec_from_flow_spec(spec.get("flow_spec") or {{}})
-    validate_workflow_spec(workflow_spec)
-except Exception:
-    traceback.print_exc(file=sys.stderr)
-    sys.exit(1)
+import os
+import runpy
 
-print("BMD_RUNTIME_PREFLIGHT_OK=backend.execution,backend.workflows")
+os.environ["BMD_SUBMISSION_SPEC"] = {_submission_json_path(submission_spec)!r}
+sys.argv = [{_run_job_path(submission_spec)!r}, {REMOTE_RUNTIME_PREFLIGHT_ARGUMENT!r}]
+runpy.run_path(
+    sys.argv[0],
+    init_globals={{{RUN_DIRECTORY_IMPORT_PATH_REMOVED!r}: True}},
+    run_name="__main__",
+)
 """.strip()
+
+
+def _recorded_runtime_package_manifest(submission_spec: dict) -> dict | None:
+    provenance = submission_spec.get("provenance") or {}
+    runtime_source = (provenance.get("bmd_compute") or {}).get("runtime_source") or {}
+    manifest = runtime_source.get("manifest")
+    return dict(manifest) if isinstance(manifest, dict) else None
+
+
+def _runtime_package_upload(submission_spec: dict, sources: dict[str, str]) -> dict:
+    """Return the package files to upload and the manifest of exactly those bytes.
+
+    The manifest is keyed by path relative to the remote package directory, which
+    is what the bootstrap verifies before importing anything from it.
+    """
+
+    backend_dir = _remote_backend_dir(submission_spec)
+    backend_module_paths = _backend_module_paths(submission_spec, sources)
+    files = [
+        {
+            "path": backend_module_paths[filename],
+            "text": sources[filename],
+            "mode": 0o640,
+        }
+        for filename in sorted(sources)
+    ]
+    backend_init_path = _backend_init_path(submission_spec)
+    if backend_init_path not in {item["path"] for item in files}:
+        files.insert(
+            0,
+            {
+                "path": backend_init_path,
+                "text": "",
+                "mode": 0o640,
+            },
+        )
+
+    uploaded: dict[str, str] = {}
+    for item in files:
+        relative_path = posixpath.relpath(item["path"], backend_dir)
+        if relative_path.startswith("../") or relative_path in {".", ".."}:
+            raise ValueError(
+                f"Runtime package file {item['path']} is outside {backend_dir}."
+            )
+        uploaded[relative_path] = item["text"]
+    return {"files": files, "manifest": runtime_package_manifest_for_sources(uploaded)}
 
 
 def remote_preparation_file_groups(submission_spec: dict) -> list[dict]:
@@ -783,27 +958,23 @@ def remote_preparation_file_groups(submission_spec: dict) -> list[dict]:
     inputs can be large for workflows such as hybrid band structures.
     """
 
+    # One snapshot of the package is uploaded, embedded into run_job.py as the
+    # expected manifest and compared with the recorded provenance, so all three
+    # describe the same bytes.
     backend_module_sources = build_backend_module_sources()
-    submission_script = build_submission_script_artifact(submission_spec)
-    backend_module_paths = _backend_module_paths(submission_spec)
-    execution_files = [
-        {
-            "path": backend_module_paths[filename],
-            "text": backend_module_sources[filename],
-            "mode": 0o640,
-        }
-        for filename in sorted(backend_module_sources)
-    ]
-    backend_init_path = _backend_init_path(submission_spec)
-    if backend_init_path not in {item["path"] for item in execution_files}:
-        execution_files.insert(
-            0,
-            {
-                "path": backend_init_path,
-                "text": "",
-                "mode": 0o640,
-            },
+    recorded_manifest = _recorded_runtime_package_manifest(submission_spec)
+    if (
+        recorded_manifest is not None
+        and recorded_manifest != runtime_package_manifest_for_sources(backend_module_sources)
+    ):
+        raise RuntimeError(
+            "The BMD Compute runtime package changed after this submission was "
+            "specified, so its recorded provenance no longer describes the code "
+            "that would be uploaded. Prepare the calculation again."
         )
+    submission_script = build_submission_script_artifact(submission_spec)
+    runtime_package = _runtime_package_upload(submission_spec, backend_module_sources)
+    execution_files = runtime_package["files"]
 
     return [
         {
@@ -827,7 +998,11 @@ def remote_preparation_file_groups(submission_spec: dict) -> list[dict]:
             "files": [
                 {
                     "path": _run_job_path(submission_spec),
-                    "text": build_run_job_script(submission_spec),
+                    "text": build_run_job_script(
+                        submission_spec,
+                        runtime_package_manifest=runtime_package["manifest"],
+                        runtime_package_sources=backend_module_sources,
+                    ),
                     "mode": 0o640,
                 },
             ],
@@ -856,7 +1031,16 @@ def build_submission_command(submission_spec: dict, *, dry_run: bool = False) ->
     backend_init_path = _backend_init_path(submission_spec)
     backend_module_paths = _backend_module_paths(submission_spec)
     backend_module_sources = build_backend_module_sources()
-    run_job_script = build_run_job_script(submission_spec)
+    # Each heredoc below writes its text followed by a newline, so the expected
+    # manifest describes those bytes.
+    run_job_script = build_run_job_script(
+        submission_spec,
+        runtime_package_manifest=_runtime_package_upload(
+            submission_spec,
+            {name: text + "\n" for name, text in backend_module_sources.items()},
+        )["manifest"],
+        runtime_package_sources=backend_module_sources,
+    )
     run_job_path = _run_job_path(submission_spec)
     sbatch_script = build_submission_script_artifact(submission_spec)["text"]
     pot_links = " ".join(shlex.quote(link) for link in potcar.get("symlink_targets", []))
