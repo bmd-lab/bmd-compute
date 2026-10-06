@@ -41,6 +41,16 @@ rules (section 7) apply. Custom workflows are never changed automatically; the
 automatic rules below are only offered as advice. Stage options may carry only
 supported treatment settings; free-form INCAR or KPOINTS values are rejected.
 
+### Structure constraints
+
+No workflow, Desired Output or Custom, runs with user-supplied atomic
+constraints. A structure carrying VASP selective-dynamics flags (a POSCAR
+`Selective dynamics` block with at least one `F`, or a `selective_dynamics` site
+property) is rejected with diagnostic code `selective_dynamics_unsupported`
+before any VASP input is generated; the flags are never stripped or passed on.
+An all-`T` block constrains nothing and is discarded by pymatgen when the POSCAR
+is parsed, so it is accepted as an ordinary structure.
+
 ## 2. Automatic treatments (Desired Outputs only)
 
 | Treatment | Trigger | Stages that receive it | Settings |
