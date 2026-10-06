@@ -23,6 +23,9 @@ inside `submission.json` versions the provenance block separately (see
   attempt is `SUBMITTING` or `SUBMITTED`, Prepare is rejected before anything is
   written, so `submission.json` and the rest of the run's execution package
   (uploaded `backend/` runtime, `run_job.py`, sbatch script) are immutable.
+  `run_job.py` enforces this for the `backend/` runtime: it refuses to import a
+  package that differs from the manifest recorded at Prepare (see
+  `provenance.md`, Runtime Package).
   Running the calculation again means a new submission attempt with its own
   run directory.
 - `job_<JOB_ID>.json` is a run-resolution record. It is written once, after
