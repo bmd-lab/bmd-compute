@@ -2061,7 +2061,7 @@ ul {
                 </div>
             </div>
 
-            {% if submission_spec %}
+            {% if monitor_state_json %}
             <form action="/monitor" method="post">
                 <textarea class="hidden-field" name="structure">{{ structure_text }}</textarea>
                 <textarea class="hidden-field" name="monitor_state_json">{{ monitor_state_json }}</textarea>
@@ -2087,7 +2087,7 @@ ul {
                 <button type="submit">Load Results</button>
             </form>
             {% endif %}
-            {% else %}
+            {% elif resume_job_id %}
             <form action="/resume" method="post">
                 <input type="hidden" name="job_id" value="{{ resume_job_id or monitoring_result.job_id }}">
                 <button type="submit">Refresh Queue Status</button>

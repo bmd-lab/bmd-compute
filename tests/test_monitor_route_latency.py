@@ -4,7 +4,11 @@ import re
 import main
 from backend.calculations.models import StageSpec, StageType, Theory, WorkflowSpec
 from backend.config import DEFAULT_REMOTE_HOST, DEFAULT_USERNAME
+from backend.submission import create_submission_identity_token
 from starlette.requests import Request
+
+
+ATTEMPT_ID = "12345678-1234-5678-9234-567812345678"
 
 
 def request():
@@ -57,6 +61,8 @@ def structure_input_is_open(response):
 def monitor_submission_spec():
     workflow = WorkflowSpec([StageSpec(StageType.STATIC, Theory.PBE)])
     return {
+        "schema": "bmd_compute.submission",
+        "schema_version": 1,
         "status": "pending",
         "run_name": "vasp_run_static-20260817-120000",
         "created_at": "20260817-120000",
@@ -113,7 +119,26 @@ def monitor_submission_spec():
         },
         "submission": {
             "reason": "submitted",
+            "attempt_id": ATTEMPT_ID,
+            "attempt_state": f"/bmd/logs/submission_attempts/{ATTEMPT_ID}.json",
+            "identity_token": create_submission_identity_token(
+                "20260817-120000",
+                ATTEMPT_ID,
+            ),
         },
+    }
+
+
+def authoritative_job_record():
+    spec = monitor_submission_spec()
+    return {
+        "schema": "bmd_compute.job_record",
+        "schema_version": 1,
+        "job_id": "123456",
+        "run_name": spec["run_name"],
+        "run_dir": spec["paths"]["run_dir"],
+        "attempt_id": ATTEMPT_ID,
+        "submission_spec": spec,
     }
 
 
@@ -170,7 +195,9 @@ def refresh_with_state(monkeypatch, *, state_summary):
 
     monitor_calls = []
 
-    def fake_monitor(job_id, *, submission_spec=None):
+    def fake_monitor(job_id, *, authenticated_attempt_id):
+        submission_spec = authoritative_job_record()["submission_spec"]
+        assert authenticated_attempt_id == ATTEMPT_ID
         monitor_calls.append(
             {
                 "job_id": job_id,
@@ -182,16 +209,19 @@ def refresh_with_state(monkeypatch, *, state_summary):
                 ),
             }
         )
-        return {
-            "status": "success",
-            "job_id": job_id,
-            "slurm_state": state_summary,
-            "summary": state_summary,
-            "exit_code": None,
-            "brief": f"{job_id}|{state_summary}",
-        }
+        return (
+            {
+                "status": "success",
+                "job_id": job_id,
+                "slurm_state": state_summary,
+                "summary": state_summary,
+                "exit_code": None,
+                "brief": f"{job_id}|{state_summary}",
+            },
+            authoritative_job_record(),
+        )
 
-    monkeypatch.setattr(main, "monitor_job", fake_monitor)
+    monkeypatch.setattr(main, "monitor_submitted_job", fake_monitor)
     monkeypatch.setattr(
         main,
         "load_results_for_completed_job",
@@ -251,21 +281,25 @@ def test_completed_monitor_is_monitoring_only_and_shows_load_results(monkeypatch
 
     monitor_calls = []
 
-    def fake_monitor(job_id, *, submission_spec=None):
+    def fake_monitor(job_id, *, authenticated_attempt_id):
         monitor_calls.append(job_id)
-        assert submission_spec["paths"]["run_dir"] == (
+        assert authenticated_attempt_id == ATTEMPT_ID
+        assert authoritative_job_record()["submission_spec"]["paths"]["run_dir"] == (
             "/bmd/flows/vasp_run_static-20260817-120000"
         )
-        return {
-            "status": "success",
-            "job_id": job_id,
-            "slurm_state": "COMPLETED",
-            "summary": "SUCCESS",
-            "exit_code": "0:0",
-            "brief": f"{job_id}|COMPLETED",
-        }
+        return (
+            {
+                "status": "success",
+                "job_id": job_id,
+                "slurm_state": "COMPLETED",
+                "summary": "SUCCESS",
+                "exit_code": "0:0",
+                "brief": f"{job_id}|COMPLETED",
+            },
+            authoritative_job_record(),
+        )
 
-    monkeypatch.setattr(main, "monitor_job", fake_monitor)
+    monkeypatch.setattr(main, "monitor_submitted_job", fake_monitor)
     monkeypatch.setattr(main, "load_results_for_completed_job", fail_results)
 
     response = main.refresh_monitoring(

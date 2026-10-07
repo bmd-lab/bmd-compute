@@ -6,6 +6,10 @@ from starlette.requests import Request
 import main
 from backend.calculations.models import StageSpec, StageType, Theory, WorkflowSpec
 from backend.config import bmd_debug_enabled
+from backend.submission import create_submission_identity_token
+
+
+ATTEMPT_ID = "12345678-1234-5678-9234-567812345678"
 
 
 def _request(path: str) -> Request:
@@ -26,6 +30,23 @@ def _html(response) -> str:
 def _workflow_spec_json() -> str:
     return json.dumps(
         WorkflowSpec([StageSpec(StageType.STATIC, Theory.PBE)]).to_dict(),
+        sort_keys=True,
+    )
+
+
+def _monitor_state_json() -> str:
+    return json.dumps(
+        {
+            "submission_spec": {
+                "submission": {
+                    "attempt_id": ATTEMPT_ID,
+                    "identity_token": create_submission_identity_token(
+                        "20260818-120000",
+                        ATTEMPT_ID,
+                    ),
+                }
+            }
+        },
         sort_keys=True,
     )
 
@@ -83,7 +104,11 @@ def test_bmd_debug_rejects_invalid_boolean(monkeypatch):
 
 def test_monitoring_traceback_hidden_when_debug_disabled(monkeypatch):
     monkeypatch.setenv("BMD_DEBUG", "false")
-    monkeypatch.setattr(main, "monitor_job", lambda *args, **kwargs: _failed_monitoring_result())
+    monkeypatch.setattr(
+        main,
+        "monitor_submitted_job",
+        lambda *args, **kwargs: (_failed_monitoring_result(), None),
+    )
 
     response = main.refresh_monitoring(
         _request("/monitor"),
@@ -99,7 +124,7 @@ def test_monitoring_traceback_hidden_when_debug_disabled(monkeypatch):
         created_at="20260818-120000",
         job_id="12345",
         submitted_at="2026-08-18 12:00:00",
-        monitor_state_json="",
+        monitor_state_json=_monitor_state_json(),
         workflow_spec_json=_workflow_spec_json(),
     )
 
@@ -114,7 +139,11 @@ def test_monitoring_traceback_hidden_when_debug_disabled(monkeypatch):
 
 def test_monitoring_traceback_visible_when_debug_enabled(monkeypatch):
     monkeypatch.setenv("BMD_DEBUG", "true")
-    monkeypatch.setattr(main, "monitor_job", lambda *args, **kwargs: _failed_monitoring_result())
+    monkeypatch.setattr(
+        main,
+        "monitor_submitted_job",
+        lambda *args, **kwargs: (_failed_monitoring_result(), None),
+    )
 
     response = main.refresh_monitoring(
         _request("/monitor"),
@@ -130,7 +159,7 @@ def test_monitoring_traceback_visible_when_debug_enabled(monkeypatch):
         created_at="20260818-120000",
         job_id="12345",
         submitted_at="2026-08-18 12:00:00",
-        monitor_state_json="",
+        monitor_state_json=_monitor_state_json(),
         workflow_spec_json=_workflow_spec_json(),
     )
 

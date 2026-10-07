@@ -29,6 +29,7 @@ def test_slurm_job_id_validation():
     assert not is_valid_slurm_job_id("")
     assert not is_valid_slurm_job_id("abc123")
     assert not is_valid_slurm_job_id("12345;rm")
+    assert not is_valid_slurm_job_id("１２３４５")
 
 
 def test_classify_slurm_state_matches_notebook_rules():
