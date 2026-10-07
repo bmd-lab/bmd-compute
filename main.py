@@ -60,7 +60,7 @@ from backend.calculations.registry import (
     workflow_spec_from_calculation_spec,
 )
 from backend.generated_inputs import preview_generated_inputs
-from backend.monitoring import monitor_job
+from backend.monitoring import monitor_job, monitor_submitted_job
 from backend.parser import StructureValidationError, parse_structure
 from backend.remote_preparation import prepare_remote_submission, remembered_successful_preparation
 from backend.remote_submission import remembered_successful_submission, submit_remote_workflow
@@ -101,6 +101,7 @@ def page_context(
     structure_error=None,
     calculation_error=None,
     collapse_structure_input: bool = False,
+    monitor_state_override: str | None = None,
 ):
     if selected_workflow is None:
         selected_workflow = (
@@ -130,11 +131,15 @@ def page_context(
         "workflow": calculation_summary,
         "generated_inputs": generated_inputs,
         "submission_spec": submission_spec,
-        "monitor_state_json": monitor_state_json(
-            summary=summary,
-            calculation_summary=calculation_summary,
-            generated_inputs=generated_inputs,
-            submission_spec=submission_spec,
+        "monitor_state_json": (
+            monitor_state_override
+            if monitor_state_override is not None
+            else monitor_state_json(
+                summary=summary,
+                calculation_summary=calculation_summary,
+                generated_inputs=generated_inputs,
+                submission_spec=submission_spec,
+            )
         ),
         "remote_preparation": remote_preparation,
         "submission_result": submission_result,
@@ -182,6 +187,27 @@ def _compact_submission_spec_for_monitor(submission_spec: dict) -> dict:
     return compact
 
 
+def _authenticated_monitor_retry_state_json(
+    *,
+    identity: dict,
+    identity_token: str,
+    summary=None,
+    calculation_summary=None,
+    generated_inputs=None,
+) -> str:
+    return monitor_state_json(
+        summary=summary,
+        calculation_summary=calculation_summary,
+        generated_inputs=generated_inputs,
+        submission_spec={
+            "submission": {
+                "attempt_id": identity["attempt_id"],
+                "identity_token": identity_token,
+            }
+        },
+    )
+
+
 def monitor_state_from_json(value: str | None) -> dict:
     if not value:
         return {}
@@ -193,54 +219,6 @@ def monitor_state_from_json(value: str | None) -> dict:
             suggestion="Rebuild the calculation, then refresh monitoring again.",
         ) from exc
     return payload if isinstance(payload, dict) else {}
-
-
-def lightweight_submission_spec_from_monitor_form(
-    *,
-    structure_text: str,
-    fmt: str,
-    workflow_spec: WorkflowSpec,
-    execution_resources: ExecutionResources,
-    calculation_summary=None,
-) -> dict:
-    calculation_spec = calculation_spec_from_workflow_spec(workflow_spec)
-    potcar_functional = (
-        legacy_potcar_functional_from_spec(calculation_spec)
-        if calculation_spec is not None
-        else "PBE_64"
-    )
-    legacy_workflow = (
-        legacy_workflow_from_spec(calculation_spec)
-        if calculation_spec is not None
-        else "custom_workflow"
-    )
-    flow_spec = {
-        "workflow_spec": workflow_spec.to_dict(),
-        "workflow": legacy_workflow,
-        "potcar_functional": potcar_functional,
-        "kpoints": None,
-        "incar": {},
-        "execution_resources": execution_resources.to_dict(),
-        "structure": {
-            "type": "pasted_text",
-            "format": fmt,
-            "text": structure_text,
-        },
-    }
-    if calculation_spec is not None:
-        flow_spec["calculation_spec"] = calculation_spec.to_dict()
-
-    return create_submission_spec(
-        flow_spec,
-        structure=None,
-        label=(calculation_summary or {}).get("flow_name", "vasp_run"),
-        nodes=execution_resources.nodes,
-        ntasks=execution_resources.cpus,
-        mem_gb=execution_resources.memory_gb,
-        walltime=execution_resources.walltime,
-        partition=execution_resources.queue,
-        account=execution_resources.account,
-    )
 
 
 def authoritative_submission_identity(
@@ -1519,19 +1497,21 @@ def refresh_monitoring(
         calculation_summary = monitor_state.get("calculation")
         generated_inputs = monitor_state.get("generated_inputs")
         submission_spec = monitor_state.get("submission_spec")
-        if not submission_spec:
-            submission_spec = lightweight_submission_spec_from_monitor_form(
-                structure_text=structure,
-                fmt=fmt,
-                workflow_spec=workflow_spec,
-                execution_resources=execution_resources,
-                calculation_summary=calculation_summary,
-            )
         if not isinstance(submission_spec, dict):
             raise CalculationValidationError(
                 "The saved submission state could not be read.",
                 suggestion="Rebuild the calculation, then refresh monitoring again.",
             )
+        submission = submission_spec.get("submission")
+        if not isinstance(submission, dict):
+            raise CalculationValidationError(
+                "The saved submission identity could not be read.",
+                suggestion="Rebuild the calculation, then refresh monitoring again.",
+            )
+        identity = authoritative_submission_identity(
+            submission.get("identity_token"),
+            submission.get("attempt_id"),
+        )
     except CalculationValidationError as exc:
         return calculation_error_response(
             request,
@@ -1552,13 +1532,46 @@ def refresh_monitoring(
             selected_resources=execution_resources,
             exc=exc,
         )
-    remote_preparation = remembered_successful_preparation(submission_spec)
-    submission_result = remembered_successful_submission(
-        submission_spec,
+    monitoring_result, authoritative_job_record = monitor_submitted_job(
         job_id,
-        submitted_at=submitted_at,
+        authenticated_attempt_id=identity["attempt_id"],
     )
-    monitoring_result = monitor_job(job_id, submission_spec=submission_spec)
+    authoritative_submission_spec = (
+        authoritative_job_record.get("submission_spec")
+        if authoritative_job_record is not None
+        else None
+    )
+    submission_spec = (
+        authoritative_submission_spec
+        if isinstance(authoritative_submission_spec, dict)
+        else None
+    )
+    remote_preparation = (
+        remembered_successful_preparation(submission_spec)
+        if submission_spec is not None
+        else None
+    )
+    submission_result = (
+        remembered_successful_submission(
+            submission_spec,
+            job_id,
+            submitted_at=submitted_at,
+        )
+        if submission_spec is not None
+        else None
+    )
+    monitor_state_override = None
+    if (
+        submission_spec is None
+        and monitoring_result.get("identity_retry_allowed") is True
+    ):
+        monitor_state_override = _authenticated_monitor_retry_state_json(
+            identity=identity,
+            identity_token=submission["identity_token"],
+            summary=summary,
+            calculation_summary=calculation_summary,
+            generated_inputs=generated_inputs,
+        )
 
     return templates.TemplateResponse(
         request=request,
@@ -1578,5 +1591,6 @@ def refresh_monitoring(
             monitoring_result=monitoring_result,
             results_summary=None,
             collapse_structure_input=True,
+            monitor_state_override=monitor_state_override,
         ),
     )

@@ -103,7 +103,7 @@ assert "desiredOutputs" in source
 assert "recipeSelect" not in source
 assert "recipes[index]" not in source
 assert "desiredOutputSelect.value !== \"custom\"" in source
-resume_monitoring_block = source[source.index('{% else %}\n            <form action="/resume"'):]
+resume_monitoring_block = source[source.index('{% elif resume_job_id %}\n            <form action="/resume"'):]
 assert 'name="load_results" value="true"' in resume_monitoring_block
 assert "Load Results" in resume_monitoring_block
 assert "Remote source bytes" in source

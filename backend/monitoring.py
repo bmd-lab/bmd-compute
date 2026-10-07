@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import posixpath
 import re
 import time
 import traceback
@@ -13,15 +15,21 @@ from backend.remote import (
     RemoteOperationBusy,
     RemoteRunner,
 )
-from backend.config import bmd_debug_enabled
+from backend.config import DEFAULT_LOGS_DIR, bmd_debug_enabled
 from backend.remote_runtime import (
     connected_remote_runner,
     connection_profile_from_submission_spec,
     default_connection_profile,
 )
+from backend.run_records import (
+    RunRecordContractError,
+    validate_job_record_v1,
+    validate_submission_record_v1,
+)
 
 
 LOGGER = logging.getLogger(__name__)
+MONITOR_JOB_RECORD_MAX_BYTES = 64 * 1024 * 1024
 
 
 class MonitoringStageError(RuntimeError):
@@ -82,7 +90,7 @@ def strip_job_id(job_id: str | None) -> str:
 
 def is_valid_slurm_job_id(job_id: str | None) -> bool:
     stripped_job_id = strip_job_id(job_id)
-    return bool(re.fullmatch(r"\d+(?:_\d+)?", stripped_job_id))
+    return bool(re.fullmatch(r"[0-9]+(?:_[0-9]+)?", stripped_job_id))
 
 
 def classify_slurm_state(state: str | None, exit_code: str | None = None) -> str:
@@ -256,7 +264,7 @@ def monitor_job(
         )
 
     is_resume = submission_spec is None
-    if is_resume and not is_valid_slurm_job_id(stripped_job_id):
+    if not is_valid_slurm_job_id(stripped_job_id):
         return _failure_result(
             "Job ID",
             "Malformed SLURM job ID.",
@@ -288,6 +296,129 @@ def monitor_job(
         return _unknown_job_result(status)
 
     return _success_result(status)
+
+
+def monitor_submitted_job(
+    job_id: str,
+    *,
+    authenticated_attempt_id: str,
+    runner_factory: Callable[[], RemoteRunner] | None = None,
+) -> tuple[dict, dict | None]:
+    """Monitor a submitted job after binding it to trusted remote state.
+
+    Caller-carried submission state is intentionally not accepted here. The
+    connection profile and job-record path are both derived from server policy.
+    """
+
+    stripped_job_id = strip_job_id(job_id)
+    if not is_valid_slurm_job_id(stripped_job_id):
+        return (
+            _failure_result(
+                "Job ID",
+                "Malformed SLURM job ID.",
+                "Use the numeric SLURM job ID returned by sbatch.",
+                exception_text=str(job_id or ""),
+            ),
+            None,
+        )
+
+    authoritative_record = None
+    try:
+        with connected_remote_runner(
+            profile=default_connection_profile(),
+            runner_factory=runner_factory,
+        ) as runner:
+            authoritative_record = _authenticated_job_record(
+                runner,
+                stripped_job_id,
+                authenticated_attempt_id,
+            )
+            status = runner.query_job(stripped_job_id)
+    except Exception as exc:
+        stage = "SSH Connection" if _looks_like_connection_failure(exc) else "Monitoring"
+        LOGGER.exception("Authenticated remote monitoring failed at %s.", stage)
+        result = _exception_result(exc, default_stage=stage)
+        result["job_id"] = stripped_job_id
+        result["identity_retry_allowed"] = (
+            authoritative_record is None
+            and (
+                isinstance(exc, RemoteOperationBusy)
+                or _looks_like_connection_failure(exc)
+            )
+        )
+        if not isinstance(exc, RemoteOperationBusy):
+            result["exception_debug"] = _exception_debug(exc)
+        return result, authoritative_record
+
+    return _success_result(status), authoritative_record
+
+
+def _authenticated_job_record(
+    runner: RemoteRunner,
+    job_id: str,
+    authenticated_attempt_id: str,
+) -> dict:
+    state_path = posixpath.join(DEFAULT_LOGS_DIR, f"job_{job_id}.json")
+    if not runner.is_file(state_path):
+        raise MonitoringStageError(
+            "Monitoring Authorization",
+            "The authoritative BMD job record is missing.",
+        )
+
+    try:
+        payload = json.loads(
+            runner.read_text(state_path, max_bytes=MONITOR_JOB_RECORD_MAX_BYTES)
+        )
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise MonitoringStageError(
+            "Monitoring Authorization",
+            "The authoritative BMD job record is malformed.",
+            exception=exc,
+        ) from exc
+
+    try:
+        validate_job_record_v1(payload)
+    except RunRecordContractError as exc:
+        raise MonitoringStageError(
+            "Monitoring Authorization",
+            "The authoritative BMD job record failed contract validation.",
+            exception=exc,
+        ) from exc
+
+    if strip_job_id(payload["job_id"]) != job_id:
+        raise MonitoringStageError(
+            "Monitoring Authorization",
+            "The authoritative BMD job record does not match the requested job.",
+        )
+    if payload["attempt_id"] != authenticated_attempt_id:
+        raise MonitoringStageError(
+            "Monitoring Authorization",
+            "The submitted job does not belong to the authenticated submission attempt.",
+        )
+
+    submission_spec = payload.get("submission_spec")
+    try:
+        validate_submission_record_v1(submission_spec)
+    except RunRecordContractError as exc:
+        raise MonitoringStageError(
+            "Monitoring Authorization",
+            "The authoritative submission record failed contract validation.",
+            exception=exc,
+        ) from exc
+
+    submission = submission_spec["submission"]
+    if submission["attempt_id"] != authenticated_attempt_id:
+        raise MonitoringStageError(
+            "Monitoring Authorization",
+            "The authoritative submission record has a different attempt identity.",
+        )
+    if submission_spec["paths"]["run_dir"] != payload["run_dir"]:
+        raise MonitoringStageError(
+            "Monitoring Authorization",
+            "The authoritative job and submission records disagree on the run directory.",
+        )
+
+    return payload
 
 
 def _success_result(status: RemoteJobStatus) -> dict:
@@ -515,6 +646,7 @@ __all__ = [
     "classify_slurm_state",
     "is_valid_slurm_job_id",
     "monitor_job",
+    "monitor_submitted_job",
     "MonitoringStageError",
     "parse_sacct_row",
     "parse_scontrol_output",
