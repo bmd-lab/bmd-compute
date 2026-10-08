@@ -1,7 +1,7 @@
 # Run Record Contracts
 
-BMD Compute writes two JSON records on POWER that later readers use to find and
-describe a run: BMD Agent, BMD Compute's own Resume path, and people. Each
+bmd-compute writes two JSON records on POWER that later readers use to find and
+describe a run: bmd-check, bmd-compute's own Resume path, and people. Each
 record carries a top-level `schema` and `schema_version`. The machine-readable
 definitions and validators live in `backend/run_records.py`.
 
@@ -16,8 +16,8 @@ inside `submission.json` versions the provenance block separately (see
 
 ## Authority
 
-- `submission.json` is the **Prepare-time submission specification**: what BMD
-  Compute prepared and asked the cluster to run. It is written during Prepare,
+- `submission.json` is the **Prepare-time submission specification**: what
+  bmd-compute prepared and asked the cluster to run. It is written during Prepare,
   before `sbatch`. A prepared-but-not-submitted attempt may be prepared again
   (only with identical calculation metadata), which rewrites the file. Once the
   attempt is `SUBMITTING` or `SUBMITTED`, Prepare is rejected before anything is
@@ -33,7 +33,7 @@ inside `submission.json` versions the provenance block separately (see
   submission attempt. Writing it is best-effort: a run may have no job record.
 - Status and state fields in these records (`status`, `submission.ready`,
   `submission.submitted`, `submission.reason`, the job record's `status`, and
-  the submission-attempt `state`) describe BMD Compute's own preparation or
+  the submission-attempt `state`) describe bmd-compute's own preparation or
   submission step when the file was written. They are
   **not scheduler lifecycle authority**. SLURM accounting and the VASP artifacts remain authoritative for
   what actually executed and how it ended.
@@ -80,7 +80,7 @@ infer stage order from key order.
 | `job_id` | the scheduler job ID returned by `sbatch` |
 | `run_name`, `run_dir` | the run this job belongs to; `run_dir/submission.json` is the submission specification |
 | `attempt_id` | submission attempt UUID; equals `submission.attempt_id` in `submission.json` |
-| `submitted_at` | optional; BMD Compute's clock when the record was created, not a scheduler time |
+| `submitted_at` | optional; bmd-compute's clock when the record was created, not a scheduler time |
 
 ## `bmd_compute.runtime_environment` v1
 
@@ -110,14 +110,14 @@ runner log, and they are not rewritten.
 
 ## Non-contractual fields
 
-Both files contain more than the contract. Those fields are BMD Compute
+Both files contain more than the contract. Those fields are bmd-compute
 internals and may change or disappear without a schema change. Examples:
 `status`, `label`, `modules`, `runner`, `potcar`, `preflight`, SSH connection
 details under `cluster`, `submission` fields other than `attempt_id` and
 `attempt_state`, `paths` entries not listed above, `flow_spec.workflow`,
 `flow_spec.calculation_spec`, and in the job record `status`, `raw_output`,
 `remote_script`, `log_paths`, `cluster`, `resources`, `submission_spec` and
-`remote_state_path`. BMD Compute's Resume path still reads the job record's
+`remote_state_path`. bmd-compute's Resume path still reads the job record's
 embedded `submission_spec` internally.
 
 ## Versioning and compatibility
@@ -141,7 +141,7 @@ temporary file is removed and the destination is left unchanged.
 `tests/fixtures/run_records/v1/` holds generated examples of both records for a
 single-stage static run, a PBE relax followed by HSE06 static with SOC, and a
 PBE double relaxation. `v1/SHA256SUMS` records the SHA-256 of every fixture
-file and is the fixtures' identity. The BMD Compute commit recorded inside each
+file and is the fixtures' identity. The bmd-compute commit recorded inside each
 fixture is generation provenance only; it may not be reachable from `main`
 (for example after a squash merge) and is never by itself a reason to
 regenerate. Regenerate with `python tests/run_record_fixtures.py` only when the

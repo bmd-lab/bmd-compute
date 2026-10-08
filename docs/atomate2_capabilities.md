@@ -1,18 +1,18 @@
 # atomate2 / pymatgen Capability Status
 
-The declared v1 methodology values live in `methodology.md`; this page maps BMD Compute stages to the upstream atomate2/pymatgen primitives they use.
+The declared v1 methodology values live in `methodology.md`; this page maps bmd-compute stages to the upstream atomate2/pymatgen primitives they use.
 
-This document records how the currently installed atomate2/pymatgen VASP surface maps to BMD Compute. It is not a promise that every upstream maker is exposed in the UI.
+This document records how the currently installed atomate2/pymatgen VASP surface maps to bmd-compute. It is not a promise that every upstream maker is exposed in the UI.
 
-BMD Compute exposes only reviewed scientific workflows. Upstream availability alone is not sufficient for student-facing support.
+bmd-compute exposes only reviewed scientific workflows. Upstream availability alone is not sufficient for student-facing support.
 
 ## Status Categories
 
 | Status | Meaning |
 | --- | --- |
-| Implemented and validated | Implemented in BMD Compute and validated by tests plus at least one reviewed/live calculation path where noted. |
+| Implemented and validated | Implemented in bmd-compute and validated by tests plus at least one reviewed/live calculation path where noted. |
 | Implemented, tests only | Implemented and covered locally, but not independently PowerSLURM-validated as a separate scientific claim. |
-| Deliberately unsupported | Upstream support may exist, but BMD Compute blocks it because the scientific or operational policy is not reviewed. |
+| Deliberately unsupported | Upstream support may exist, but bmd-compute blocks it because the scientific or operational policy is not reviewed. |
 | Future candidate | Upstream primitives exist and are plausible future work. |
 | Unavailable | No clear installed native atomate2/pymatgen path has been identified. |
 
@@ -143,7 +143,7 @@ Static Energy         - HSE06
 Band Structure        - HSE06
 ```
 
-The PBE relax supplies geometry. BMD Compute requires HSE06 Static Energy before HSE06 Band Structure. The band stage takes its structure, `NBANDS` and starting moments from that stage and recomputes the HSE06 ground state self-consistently. Atomate2 0.1.5 may physically copy `CHGCAR` from the previous directory, but the generated INCAR requests neither a fixed-charge-density nor a WAVECAR restart (`ICHARG` and `ISTART` are absent).
+The PBE relax supplies geometry. bmd-compute requires HSE06 Static Energy before HSE06 Band Structure. The band stage takes its structure, `NBANDS` and starting moments from that stage and recomputes the HSE06 ground state self-consistently. Atomate2 0.1.5 may physically copy `CHGCAR` from the previous directory, but the generated INCAR requests neither a fixed-charge-density nor a WAVECAR restart (`ICHARG` and `ISTART` are absent).
 
 Primary primitives:
 
@@ -182,7 +182,7 @@ The DOS stage is self-consistent on its uniform mesh (`ISMEAR = -5`, `NEDOS = 40
 
 Status: implemented for supported PBE/HSE06 stages where the registry allows the modifier. In Desired Output workflows it is applied automatically to every stage when the structure contains an element in the spin composition screen (see `methodology.md`).
 
-BMD Compute preserves pymatgen/atomate2 magnetic initialization where appropriate. SOC stages convert initial moments into vector `MAGMOM`.
+bmd-compute preserves pymatgen/atomate2 magnetic initialization where appropriate. SOC stages convert initial moments into vector `MAGMOM`.
 
 ### Van der Waals Correction (DFT-D3)
 
@@ -192,7 +192,7 @@ Status: implemented for PBE Geometry Optimisation and PBE Static Energy through 
 
 Status: implemented for supported PBE stages when the selected input set provides active U values.
 
-BMD Compute does not silently inherit DFT+U into ordinary PBE. If DFT+U is requested and no active U values are available, validation fails clearly.
+bmd-compute does not silently inherit DFT+U into ordinary PBE. If DFT+U is requested and no active U values are available, validation fails clearly.
 
 In BMD-managed Desired Output workflows, automatic DFT+U (policy `bmd_compute.dft_u` v1) adopts the pinned pymatgen `MPRelaxSet` GGA+U oxide/fluoride trigger and L/U/J/LDAUTYPE values unchanged (atomate2's generator table is the same table), adds a compound-level d0 gate over pymatgen oxidation-state guesses, and applies +U to PBE Relax/Static stages only. The values are passed to the atomate2 generator explicitly and the generated INCAR is checked against them, so upstream table changes cannot silently alter a prepared run. `LMAXMIX` is left to pymatgen's rule and recorded and verified rather than set.
 
@@ -233,7 +233,7 @@ These require separate scientific review before being exposed. PBE DOS and Band 
 
 Status: future candidate.
 
-Potential upstream primitives include MP2024/r2SCAN-oriented relax/static makers and pymatgen input sets, but BMD Compute has not selected or validated a lab policy.
+Potential upstream primitives include MP2024/r2SCAN-oriented relax/static makers and pymatgen input sets, but bmd-compute has not selected or validated a lab policy.
 
 ### Dielectric And Optics
 
@@ -249,7 +249,7 @@ These remain outside the introductory workflow surface and should not be added w
 
 ## Optional Dependency Notes
 
-Some atomate2 modules may require optional packages such as phonopy, seekpath, pymatgen-analysis-diffusion, or defect-analysis packages. BMD Compute should not expose workflows that require missing optional dependencies until the production environment is deliberately updated and tested.
+Some atomate2 modules may require optional packages such as phonopy, seekpath, pymatgen-analysis-diffusion, or defect-analysis packages. bmd-compute should not expose workflows that require missing optional dependencies until the production environment is deliberately updated and tested.
 
 ## Implementation Guidance
 

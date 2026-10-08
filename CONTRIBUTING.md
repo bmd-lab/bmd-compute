@@ -1,13 +1,13 @@
-# Contributing to BMD Compute
+# Contributing to bmd-compute
 
-BMD Compute is maintained as a focused research-software project. Keep changes
+bmd-compute is maintained as a focused research-software project. Keep changes
 small, reviewable, and supported by tests.
 
 ## Typical contribution
 
 ```bash
-git clone https://github.com/bmd-lab/bmd_compute.git
-cd bmd_compute
+git clone https://github.com/bmd-lab/bmd-compute.git
+cd bmd-compute
 conda env create -f environment.yml
 conda activate bmd-compute
 git switch -c your-name/short-change-name

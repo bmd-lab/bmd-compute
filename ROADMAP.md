@@ -1,4 +1,4 @@
-# BMD Compute Roadmap
+# bmd-compute Roadmap
 
 This roadmap tracks complete scientific and operational capabilities. It should reflect the current repository, not the original prototype state.
 
@@ -86,7 +86,7 @@ This roadmap tracks complete scientific and operational capabilities. It should 
 
 ### UI And Operational Polish
 
-- [x] BMD Lab-aligned light theme
+- [x] Burton Materials Discovery Lab-aligned light theme
 - [x] full-width stage-first Scientific Specification panel
 - [x] Execution Resources above Scientific Specification
 - [x] backend-defined CPU and memory selectors
@@ -119,7 +119,7 @@ This is acceptable for the current lab on-ramp deployment. It is not a public In
 
 ## Post-v1 Candidates
 
-These are possible future directions, not commitments; none is part of BMD Compute v1.
+These are possible future directions, not commitments; none is part of bmd-compute v1.
 
 - [ ] continuing a workflow across SLURM allocations or reusing completed stages
 - [ ] r2SCAN policy selection and validation

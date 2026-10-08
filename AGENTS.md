@@ -1,8 +1,8 @@
 # AGENTS.md
 
-# BMD Compute
+# bmd-compute
 
-This document defines the architectural philosophy of BMD Compute.
+This document defines the architectural philosophy of bmd-compute.
 
 It exists to keep human developers and coding agents aligned as the project evolves.
 
@@ -12,11 +12,11 @@ This document describes **how decisions should be made**, not merely how the pro
 
 # Project Goal
 
-BMD Compute is a browser-based interface for building, submitting, monitoring and retrieving VASP calculations using an Atomate2 / Jobflow / PowerSLURM backend.
+bmd-compute is a browser-based interface for building, submitting, monitoring and retrieving VASP calculations using an Atomate2 / Jobflow / PowerSLURM backend.
 
-The long-term goal is for BMD Compute to replace the existing Jupyter notebook as the primary user interface.
+The long-term goal is for bmd-compute to replace the existing Jupyter notebook as the primary user interface.
 
-The notebook is retained as historical/reference scientific material and validation context. It is not a competing live implementation authority for current BMD Compute behavior.
+The notebook is retained as historical/reference scientific material and validation context. It is not a competing live implementation authority for current bmd-compute behavior.
 
 ---
 
@@ -26,7 +26,7 @@ The browser interface is the product.
 
 Everything else exists to support it.
 
-Users should interact with BMD Compute through a browser rather than notebooks, SSH sessions or shell scripts.
+Users should interact with bmd-compute through a browser rather than notebooks, SSH sessions or shell scripts.
 
 ---
 
@@ -54,7 +54,7 @@ Do **not** rewrite notebook functionality directly inside FastAPI.
 
 Refactor behaviour into reusable backend modules.
 
-Current backend modules and producer contracts define currently implemented BMD Compute behavior. The notebook remains important historical/reference material to compare against when migrating or revising behavior, but it should not be treated as a separate live authority once behavior is implemented in BMD Compute.
+Current backend modules and producer contracts define currently implemented bmd-compute behavior. The notebook remains important historical/reference material to compare against when migrating or revising behavior, but it should not be treated as a separate live authority once behavior is implemented in bmd-compute.
 
 ---
 
@@ -295,7 +295,7 @@ The computational infrastructure should remain hidden behind a clean scientific 
 
 Whenever making an architectural decision, ask:
 
-> Does this move BMD Compute closer to replacing the notebook?
+> Does this move bmd-compute closer to replacing the notebook?
 
 If the answer is no, reconsider the design.
 
@@ -303,13 +303,13 @@ The objective is not merely to build a web interface.
 
 The objective is to build a maintainable scientific application that eventually renders the notebook unnecessary while preserving its validated scientific workflows.
 
-The reference notebook is treated as a source of validated scientific context and historical behavior. Current backend modules and producer contracts are the authority for currently implemented BMD Compute behavior. Backend modules should be extracted from or compared with the notebook in small, reviewable units rather than rewritten wholesale.
+The reference notebook is treated as a source of validated scientific context and historical behavior. Current backend modules and producer contracts are the authority for currently implemented bmd-compute behavior. Backend modules should be extracted from or compared with the notebook in small, reviewable units rather than rewritten wholesale.
 
 Notebook migration should occur one backend module at a time. Each extracted module should be independently testable before integration into the web interface.
 
 ## User Experience Philosophy
 
-BMD Compute should behave like a scientific workbench rather than a traditional website.
+bmd-compute should behave like a scientific workbench rather than a traditional website.
 
 The preferred interaction model is progressive disclosure:
 

@@ -1,6 +1,6 @@
 # Stage Task Sets (Phonopy M2a)
 
-Status: representation only. Nothing in BMD Compute builds, prepares, submits or
+Status: representation only. Nothing in bmd-compute builds, prepares, submits or
 executes a stage task set yet.
 
 ## Stages and tasks
