@@ -1,10 +1,12 @@
-# BMD Compute
+# bmd-compute
 
-BMD Compute is a browser-based on-ramp for Burton Materials Design Lab students and beginning computational users to build, submit, monitor, and inspect VASP calculations on TAU PowerSLURM.
+bmd-compute is a browser-based on-ramp for Burton Materials Discovery Lab
+students and beginning computational users at Tel Aviv University to build,
+submit, monitor, and inspect VASP calculations on TAU PowerSLURM.
 
-BMD Compute's canonical ecosystem role is the core VASP data-generation pipeline. It owns the authoritative implementation of decisions required to construct, validate, execute, and provenance BMD VASP calculations.
+bmd-compute's canonical ecosystem role is the core VASP data-generation pipeline. It owns the authoritative implementation of decisions required to construct, validate, execute, and provenance BMD VASP calculations.
 
-If a capability determines how BMD generates a VASP calculation, its authoritative implementation belongs in BMD Compute. If it provides supporting scientific data or tooling but is not part of the core VASP data-generation pipeline, it belongs in BMDex. BMD Agent consumes and coordinates these capabilities without duplicating their authority.
+If a capability determines how BMD generates a VASP calculation, its authoritative implementation belongs in bmd-compute. If it provides supporting scientific data or tooling but is not part of the core VASP data-generation pipeline, it belongs in bmd-store. bmd-check consumes exposed capabilities and evidence to inspect, diagnose, explain, and advise without duplicating their authority.
 
 It is intentionally not a replacement for normal SSH/SLURM cluster access for experienced computational researchers. Its job is to make the first scientific workflow visible and teachable: structure in, reviewed calculation plan, generated VASP inputs, remote submission, monitoring, and scientific results.
 
@@ -36,7 +38,7 @@ Students choose a Desired Output, or build a Custom workflow:
 
 Desired Outputs add spin polarisation, DFT-D3(BJ), SOC and DFT+U automatically when their rules trigger. If structure dimensionality analysis fails, a Desired Output fails closed before preview or remote work because BMD cannot safely decide whether DFT-D3(BJ) is required. Custom workflows use Spin Polarised, van der Waals correction, SOC and DFT+U only when selected.
 
-The authoritative declaration of BMD Compute's v1 executable methodology (workflows, automatic treatments, stage settings, k-points, POTCARs, starting moments, stage chaining and the execution model) is [`docs/methodology.md`](docs/methodology.md).
+The authoritative declaration of bmd-compute's v1 executable methodology (workflows, automatic treatments, stage settings, k-points, POTCARs, starting moments, stage chaining and the execution model) is [`docs/methodology.md`](docs/methodology.md).
 
 Validated or specifically reviewed examples include PBE Static + SOC on Si, PBE + DFT+U Static -> PBE + DFT+U + SOC Static on Fe2O3, and HSE06 Band Structure through the stage-first HSE static precursor path.
 
@@ -44,7 +46,7 @@ Deliberately unavailable or unreviewed combinations remain blocked by validation
 
 ## Scientific Policy Notes
 
-BMD Compute uses pymatgen and atomate2 as the default scientific implementation layer and applies small Burton Lab policies centrally.
+bmd-compute uses pymatgen and atomate2 as the default scientific implementation layer and applies small Burton Materials Discovery Lab policies centrally.
 
 Important current policies:
 
@@ -53,7 +55,7 @@ Important current policies:
 - PBE relax stages use the Burton Lab relax policy, including ENCUT 580 eV.
 - Static/final electronic stages use the Burton Lab final policy, including ENCUT 620 eV where applicable.
 - HSE06 policy is stage-specific: relax uses `PRECFOCK = Fast`, static uses `PRECFOCK = Accurate`, and HSE06 band structure uses the reviewed atomate2 HSE band path.
-- DFT+U in the standard Desired Output workflows follows the pinned pymatgen/Materials Project GGA+U oxide/fluoride rule and values (Co, Cr, Fe, Mn, Mo, Ni, V, W with O or F as the most electronegative element), suppressed only when every charge-balanced pymatgen oxidation-state guess puts every triggering element at d0. It is applied to PBE Relax/Static stages only, never to HSE06 stages, and does not turn on spin polarisation. Values are frozen at preparation and verified at run time. These are standard empirical MP values, not values fitted to a given material. Custom workflows use DFT+U only when selected, and BMD Compute never silently inherits Hubbard U into plain PBE.
+- DFT+U in the standard Desired Output workflows follows the pinned pymatgen/Materials Project GGA+U oxide/fluoride rule and values (Co, Cr, Fe, Mn, Mo, Ni, V, W with O or F as the most electronegative element), suppressed only when every charge-balanced pymatgen oxidation-state guess puts every triggering element at d0. It is applied to PBE Relax/Static stages only, never to HSE06 stages, and does not turn on spin polarisation. Values are frozen at preparation and verified at run time. These are standard empirical MP values, not values fitted to a given material. Custom workflows use DFT+U only when selected, and bmd-compute never silently inherits Hubbard U into plain PBE.
 - SOC/non-collinear stages route to `vasp_ncl` (Custodian `auto_gamma` is disabled for them so the command cannot be swapped for `vasp_gam`), keep `ISYM = 0`, suppress incompatible `LELF`, and omit `ISPIN`.
 - SOC starting moments: vector `MAGMOM` keeps the pymatgen/Materials Project starting moments when the structure contains an element in the spin method-consideration screen, or when the stage is explicitly Spin Polarised; otherwise SOC starts from zero vector moments.
 - In the standard Desired Output workflows SOC is BMD methodology, not advice: when the heavy-element SOC policy triggers, SOC is applied to every non-relaxation stage (PBE Static for Static Energy; HSE06 Static and HSE06 DOS or Band Structure for DOS and Band Structure). Relaxations stay non-SOC. Custom workflows are never changed automatically.
@@ -70,7 +72,7 @@ The current deployment model is:
 ```text
 authorized student
   -> TAU VPN / university network
-  -> BMD Compute
+  -> bmd-compute
   -> constrained shared bmdguest identity
   -> PowerSLURM
 ```
@@ -82,8 +84,8 @@ Current operational hardening includes allow-listed CPU/memory/queue values, fix
 ## Local Development
 
 ```bash
-git clone https://github.com/bmd-lab/bmd_compute.git
-cd bmd_compute
+git clone https://github.com/bmd-lab/bmd-compute.git
+cd bmd-compute
 conda env create -f environment.yml
 conda activate bmd-compute
 uvicorn main:app --reload
@@ -114,7 +116,7 @@ and the list of material that must never be committed.
 
 ## License and third-party software
 
-BMD Compute's repository-owned source code and documentation are released
+bmd-compute's repository-owned source code and documentation are released
 under the [MIT License](LICENSE). This does not license or redistribute VASP,
 POTCAR/PAW datasets, or third-party dependencies; those remain subject to their
 own licenses and access requirements.

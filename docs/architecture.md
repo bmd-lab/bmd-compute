@@ -1,8 +1,8 @@
-# BMD Compute Architecture
+# bmd-compute Architecture
 
-BMD Compute is a browser-based scientific workbench for introductory VASP workflows on TAU PowerSLURM. It is designed for BMD group project students and beginning computational users who need a guided path through DFT/VASP concepts before HPC operation becomes the main task.
+bmd-compute is a browser-based scientific workbench for introductory VASP workflows on TAU PowerSLURM. It is designed for BMD group project students and beginning computational users who need a guided path through DFT/VASP concepts before HPC operation becomes the main task.
 
-Experienced computational researchers should still use normal SSH, SLURM, and scripting when they need full control. BMD Compute deliberately exposes a constrained, reviewed workflow surface.
+Experienced computational researchers should still use normal SSH, SLURM, and scripting when they need full control. bmd-compute deliberately exposes a constrained, reviewed workflow surface.
 
 ## System Flow
 
@@ -22,9 +22,9 @@ The browser never talks directly to the cluster. FastAPI coordinates requests an
 
 ## Cross-Repository Authority
 
-BMD Compute is the authoritative implementation of the core BMD VASP generation pipeline: constructing, validating, executing, and provenancing BMD VASP calculations. It owns BMD's executable calculation methodology: the workflows, stages, settings and treatments it actually implements. BMDex supplies curated supporting scientific evidence, validation records, datasets, and non-core scientific tools outside that pipeline; it does not define BMD Compute methodology. BMD Agent observes exposed contracts, evidence, and infrastructure observations without duplicating their authority. Scientific validation and adoption of any methodology remain human judgment.
+bmd-compute is the authoritative implementation of the core BMD VASP generation pipeline: constructing, validating, executing, and provenancing BMD VASP calculations. It owns BMD's executable calculation methodology: the workflows, stages, settings and treatments it actually implements. bmd-store supplies curated supporting scientific evidence, validation records, datasets, and non-core scientific tools outside that pipeline; it does not define bmd-compute methodology. bmd-check observes exposed contracts, evidence, and infrastructure observations without duplicating their authority. Scientific validation and adoption of any methodology remain human judgment.
 
-If a capability determines how BMD generates a VASP calculation, its authoritative implementation belongs in BMD Compute. If it provides supporting scientific data or tooling but is not part of the core VASP data-generation pipeline, it belongs in BMDex.
+If a capability determines how BMD generates a VASP calculation, its authoritative implementation belongs in bmd-compute. If it provides supporting scientific data or tooling but is not part of the core VASP data-generation pipeline, it belongs in bmd-store.
 
 ## Main Layers
 
@@ -109,12 +109,12 @@ Current deployment policy:
 ```text
 authorized student
   -> TAU VPN / university network
-  -> BMD Compute
+  -> bmd-compute
   -> constrained shared bmdguest identity
   -> PowerSLURM
 ```
 
-There is currently no app-level authentication, SSO, CSRF protection, or private per-user job ownership model. This is acceptable only for a VPN-bound lab service. It is not safe to expose BMD Compute directly to the public Internet.
+There is currently no app-level authentication, SSO, CSRF protection, or private per-user job ownership model. This is acceptable only for a VPN-bound lab service. It is not safe to expose bmd-compute directly to the public Internet.
 
 Resume by SLURM job ID is a shared-service convenience, not an authorization boundary. Jobs submitted through the app should be treated as service/group calculations under the constrained shared identity.
 

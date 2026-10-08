@@ -1,6 +1,6 @@
 # Submission Provenance
 
-BMD Compute records a structured provenance block in `submission.json` when a calculation is prepared for remote execution.
+bmd-compute records a structured provenance block in `submission.json` when a calculation is prepared for remote execution.
 
 The file-level contract for `submission.json` and the job record is described in [run_records.md](run_records.md).
 
@@ -24,7 +24,7 @@ The top-level provenance sections are:
 
 All values are intended to be JSON-safe.
 
-## BMD Compute Source
+## bmd-compute Source
 
 The source section records best-effort Git metadata:
 

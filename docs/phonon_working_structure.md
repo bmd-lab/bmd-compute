@@ -1,6 +1,6 @@
 # Phonon Working Structure (Phonopy M2b)
 
-Status: provisional and not executable. Nothing in BMD Compute runs this yet.
+Status: provisional and not executable. Nothing in bmd-compute runs this yet.
 M2c will call it after Stage 1 completes.
 
 Under R2, the phonon displacement plan derives from the actual output of the

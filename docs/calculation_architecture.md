@@ -1,6 +1,6 @@
 # Calculation Architecture
 
-BMD Compute represents calculations as ordered scientific stages. The user chooses a scientific goal; the backend turns that into a validated stage plan and the corresponding pymatgen/atomate2 inputs.
+bmd-compute represents calculations as ordered scientific stages. The user chooses a scientific goal; the backend turns that into a validated stage plan and the corresponding pymatgen/atomate2 inputs.
 
 The v1 executable methodology itself (Desired Outputs, automatic treatments, stage settings, k-points, POTCARs and chaining) is declared in `methodology.md`. This page describes the objects and rules that implement it.
 
@@ -174,7 +174,7 @@ Automatic NCORE is stage-specific. For validated resource selections, eligible R
 
 ## Generated Input Previews
 
-Generated inputs are pre-submission policy previews. They show the INCAR, KPOINTS, POSCAR, POTCAR symbols, and SLURM/script policy BMD Compute intends to use before remote preparation.
+Generated inputs are pre-submission policy previews. They show the INCAR, KPOINTS, POSCAR, POTCAR symbols, and SLURM/script policy bmd-compute intends to use before remote preparation.
 
 Previews are generated for every stage from the submitted structure, without any previous-stage output. At runtime, stage 2 onwards is generated from the stage before it: its relaxed structure, its final magnetic moments (spin-polarised stages without SOC), k-points and band paths regenerated for the relaxed cell, `NBANDS` derived from it, the HSE06 DOS `SIGMA` that follows its band gap, and, for PBE DOS/Band Structure, its charge density. These are expected differences, not methodology deviations; see `methodology.md` section 7.
 
@@ -244,15 +244,15 @@ Not part of v1 (deliberately unsupported, or post-v1 candidates rather than comm
 
 ## Executable Capability JSON
 
-BMD Compute exposes its executable stage capability description through a small read-only JSON producer:
+bmd-compute exposes its executable stage capability description through a small read-only JSON producer:
 
 ```bash
 python -m backend.calculations.capabilities
 ```
 
-The command serializes the existing stage introspection layer (`list_stage_definitions()` and `describe_stage()`) and does not create a second capability registry. The payload is versioned with `schema_version = 1`, includes producer provenance when Git information is available, and is intended for internal BMD ecosystem consumers such as BMD Agent. Its additive `stage_modifier_support` field enumerates the complete modifier sets accepted by stage validation for each supported stage/theory pair; it is derived from the registry rather than maintained as a second support table. These are stage-local combinations, so workflow chaining, material-dependent settings and option validation still apply separately.
+The command serializes the existing stage introspection layer (`list_stage_definitions()` and `describe_stage()`) and does not create a second capability registry. The payload is versioned with `schema_version = 1`, includes producer provenance when Git information is available, and is intended for internal BMD ecosystem consumers such as bmd-check. Its additive `stage_modifier_support` field enumerates the complete modifier sets accepted by stage validation for each supported stage/theory pair; it is derived from the registry rather than maintained as a second support table. These are stage-local combinations, so workflow chaining, material-dependent settings and option validation still apply separately.
 
-The payload describes BMD Compute's executable calculation methodology: the stages, theories, settings and treatments this checkout implements and can execute. BMD Compute is the authority for that executable methodology. BMDex supplies curated supporting evidence, validation records, datasets and tools; it does not define BMD Compute methodology. The payload does not claim that any capability has been scientifically validated or adopted; that remains human judgment, recorded separately.
+The payload describes bmd-compute's executable calculation methodology: the stages, theories, settings and treatments this checkout implements and can execute. bmd-compute is the authority for that executable methodology. bmd-store supplies curated supporting evidence, validation records, datasets and tools; it does not define bmd-compute methodology. The payload does not claim that any capability has been scientifically validated or adopted; that remains human judgment, recorded separately.
 
 Consumers establish compatibility from the machine-readable fields `schema_version` and `source.repository` (`"bmd_compute"`). The `scope` strings are human-readable descriptions and may be reworded without a schema change; consumers must not compare them for equality. Schema-v1 consumers must ignore unknown additive object fields, which keeps the new modifier-support description compatible with existing consumers.
 

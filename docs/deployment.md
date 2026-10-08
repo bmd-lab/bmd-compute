@@ -1,19 +1,19 @@
 # Deployment And Operations
 
-This document describes the current BMD Compute operating model. It is documentation of the present deployment policy, not a complete production runbook.
+This document describes the current bmd-compute operating model. It is documentation of the present deployment policy, not a complete production runbook.
 
 ## Current Model
 
 ```text
 authorized student
   -> TAU VPN / university network
-  -> BMD Compute on TAU-hosted VM
+  -> bmd-compute on TAU-hosted VM
   -> Paramiko as constrained shared bmdguest identity
   -> PowerSLURM leeburton-pool partition
   -> VASP
 ```
 
-BMD Compute is currently intended to run as a lab-internal service reachable only from the TAU VPN or university network.
+bmd-compute is currently intended to run as a lab-internal service reachable only from the TAU VPN or university network.
 
 Do not expose the Uvicorn port directly to the public Internet.
 
@@ -30,7 +30,7 @@ If the app is later exposed outside the current VPN-bound model, authentication,
 
 ## SSH Host Trust
 
-Remote SSH connections fail closed. The service account running BMD Compute
+Remote SSH connections fail closed. The service account running bmd-compute
 must trust the POWER login host in an OpenSSH-compatible known-hosts file.
 The connection layer reads the resolved `UserKnownHostsFile`, the service
 account's standard `~/.ssh/known_hosts`, and system SSH known-hosts files.
@@ -40,13 +40,13 @@ host-key acceptance.
 
 For stable browser Prepare/Submit forms across service restarts or multiple
 workers, set `BMD_SUBMISSION_IDENTITY_SECRET` to the same high-entropy private
-value for every process. Without it, BMD Compute uses a process-local ephemeral
+value for every process. Without it, bmd-compute uses a process-local ephemeral
 key, which is secure but invalidates already-rendered forms after a restart.
 Neither value belongs in the repository.
 
 ## Uvicorn Process
 
-The app currently assumes a single BMD Compute Python/Uvicorn process unless an operator deliberately changes that deployment.
+The app currently assumes a single bmd-compute Python/Uvicorn process unless an operator deliberately changes that deployment.
 
 Important process-local state:
 

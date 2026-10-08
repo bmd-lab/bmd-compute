@@ -1,12 +1,12 @@
 # Reference Material
 
-This directory contains historical material used during the development of BMD Compute. These files are not part of the running application.
+This directory contains historical material used during the development of bmd-compute. These files are not part of the running application.
 
 ## workflow-selector-macandwindows.ipynb
 
-This notebook was the primary Atomate2/Jobflow/PowerSLURM interface before BMD Compute. It remains an important source of validated scientific behavior, especially for the original Burton Lab PBE relax/static workflow policy.
+This notebook was the primary Atomate2/Jobflow/PowerSLURM interface before bmd-compute. It remains an important source of validated scientific behavior, especially for the original Burton Lab PBE relax/static workflow policy.
 
-BMD Compute has now evolved beyond a direct notebook clone. The current application should be read as:
+bmd-compute has now evolved beyond a direct notebook clone. The current application should be read as:
 
 - preserved notebook policy where it remains valid
 - intentionally changed policy where implementation and PowerSLURM testing exposed a better or safer rule
@@ -23,7 +23,7 @@ Examples:
 When migrating or revising notebook behavior:
 
 1. understand the notebook behavior
-2. compare it with current PowerSLURM validation and BMD Compute policy
+2. compare it with current PowerSLURM validation and bmd-compute policy
 3. extract or update reusable backend modules
 4. test the backend independently
 5. connect it to the browser

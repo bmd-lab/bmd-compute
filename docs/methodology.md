@@ -1,13 +1,13 @@
-# BMD Compute v1 Executable Methodology
+# bmd-compute v1 Executable Methodology
 
-This page declares the executable calculation methodology BMD Compute v1
-implements and runs. BMD Compute is the authority for this executable
+This page declares the executable calculation methodology bmd-compute v1
+implements and runs. bmd-compute is the authority for this executable
 methodology. Scientific validation and adoption of any choice remain human
 judgment and are not claimed here.
 
 Values below are what the pinned scientific stack
-(`constraints/scientific-runtime.txt`) generates through BMD Compute's stage
-builders today. Some are set by BMD Compute itself; others come from the pinned
+(`constraints/scientific-runtime.txt`) generates through bmd-compute's stage
+builders today. Some are set by bmd-compute itself; others come from the pinned
 atomate2/pymatgen input sets and are adopted here deliberately, so that a
 future dependency change has to reproduce them on purpose rather than by
 accident. `tests/test_declared_methodology.py` checks the scientifically
@@ -66,7 +66,7 @@ screens, not proof that a treatment is required.
 
 If the dimensionality observation returns `analysis_failed`, a managed Desired
 Output fails closed before generated-input preview, preparation or submission.
-BMD Compute cannot safely decide whether automatic DFT-D3(BJ) is required in
+bmd-compute cannot safely decide whether automatic DFT-D3(BJ) is required in
 that state. The structured calculation error retains the failed observation and
 reason. Structure analysis remains observational and non-blocking, and Custom
 workflows remain user-managed and are not rejected by this automatic-treatment
@@ -79,7 +79,7 @@ SOC stages run `vasp_ncl` with `LSORBIT = True`, `LNONCOLLINEAR = True`,
 ## 3. Stage methodology
 
 Values marked (adopted) come from the pinned atomate2/pymatgen input sets
-rather than from BMD Compute's own stage settings. They are declared v1
+rather than from bmd-compute's own stage settings. They are declared v1
 methodology all the same: a dependency change must reproduce them
 deliberately.
 
