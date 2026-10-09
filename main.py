@@ -1,6 +1,7 @@
 import json
 import time
 from copy import deepcopy
+from dataclasses import dataclass
 
 from fastapi import FastAPI, Form, Request
 from fastapi.templating import Jinja2Templates
@@ -75,6 +76,7 @@ from backend.submission import (
 )
 from backend.summary import summarize_structure
 from backend.workflow_summary import summarize_workflow
+from compute_api.router import build_machine_api_router
 
 app = FastAPI()
 
@@ -1027,6 +1029,120 @@ def build_submission_state_from_structure(
     return summary, calculation_summary, generated_inputs, submission_spec
 
 
+@dataclass(frozen=True)
+class CalculationPlan:
+    """Everything the Build route resolves for one request, before any remote work."""
+
+    structure: object
+    workflow_spec: WorkflowSpec
+    default_treatment_resolution: ResolvedDefaultWorkflow | None
+    method_considerations: dict | None
+    execution_resources: ExecutionResources
+    summary: dict
+    generated_inputs: dict
+    submission_spec: dict
+
+
+def plan_calculation_request(
+    *,
+    structure_text: str,
+    fmt: str,
+    desired_output: str | None = None,
+    custom_workflow: dict | None = None,
+    resources: dict | None = None,
+) -> CalculationPlan:
+    """Resolve a calculation exactly as the Build route does, with no remote work.
+
+    This is the machine API's entry into BMD Compute's scientific resolution. It
+    calls the same module-level functions, in the same order, as
+    ``build_workflow``: request workflow, execution resources, structure
+    parsing, workflow resolution with automatic treatments, method
+    considerations, and ``build_submission_state_from_structure`` (which applies
+    the new-calculation admission policy and builds the submission
+    specification). It adds no methodology of its own.
+    """
+
+    if (desired_output is None) == (custom_workflow is None):
+        raise CalculationValidationError(
+            "Request exactly one of a Desired Output or a Custom workflow.",
+            suggestion="Send either a Desired Output identifier or a Custom workflow specification.",
+        )
+    if desired_output is not None and desired_output_workflow_spec(desired_output) is None:
+        raise CalculationValidationError(
+            "Unknown Desired Output.",
+            suggestion="Use one of the Desired Output identifiers offered by BMD Compute.",
+            diagnostic={"code": "unknown_desired_output"},
+        )
+    # The browser sends workflow="custom" together with the Custom workflow JSON.
+    workflow = desired_output if desired_output is not None else "custom"
+    try:
+        workflow_spec = workflow_spec_from_form(
+            workflow_spec_json=(
+                json.dumps(custom_workflow, sort_keys=True)
+                if custom_workflow is not None
+                else None
+            ),
+            workflow=workflow,
+        )
+    except CalculationValidationError:
+        raise
+    except ValueError as exc:
+        # Unknown stage type, theory or modifier names are raised as plain
+        # ValueError by the workflow models; classify them for machine callers.
+        raise CalculationValidationError(
+            "The Custom workflow names an unsupported stage type, theory or modifier.",
+            suggestion="Use the stage types, theories and modifiers offered by BMD Compute.",
+            diagnostic={"code": "unsupported_workflow_vocabulary"},
+        ) from exc
+    resources = dict(resources or {})
+    execution_resources = execution_resources_from_form(
+        cpus=resources.get("cpus"),
+        memory_gb=resources.get("memory_gb"),
+        walltime=resources.get("walltime"),
+        queue=resources.get("queue"),
+    )
+    try:
+        structure_obj = parse_structure(structure_text, fmt)
+    except StructureValidationError:
+        raise
+    except Exception as exc:
+        # parse_structure classifies POSCAR failures itself; CIF parser errors
+        # propagate from pymatgen. Machine callers get the same classification
+        # for both, without the parser's internal text.
+        raise StructureValidationError(
+            "The structure could not be read as a valid CIF file.",
+            suggestion="Check that the CIF file contains one complete crystal structure.",
+        ) from exc
+    workflow_spec, default_treatment_resolution = resolve_workflow_for_structure(
+        structure_obj,
+        workflow_spec,
+        workflow=workflow,
+    )
+    method_considerations = method_considerations_for_workflow_state(
+        structure_obj,
+        workflow=workflow_spec,
+        default_treatment_resolution=default_treatment_resolution,
+    )
+    summary, _calculation_summary, generated_inputs, submission_spec = build_submission_state_from_structure(
+        structure_obj=structure_obj,
+        structure_text=structure_text,
+        fmt=fmt,
+        workflow_spec=workflow_spec,
+        execution_resources=execution_resources,
+        default_treatment_resolution=default_treatment_resolution,
+    )
+    return CalculationPlan(
+        structure=structure_obj,
+        workflow_spec=workflow_spec,
+        default_treatment_resolution=default_treatment_resolution,
+        method_considerations=method_considerations,
+        execution_resources=execution_resources,
+        summary=summary,
+        generated_inputs=generated_inputs,
+        submission_spec=submission_spec,
+    )
+
+
 @app.get("/")
 def home(request: Request):
     return templates.TemplateResponse(
@@ -1620,3 +1736,8 @@ def refresh_monitoring(
             monitor_state_override=monitor_state_override,
         ),
     )
+
+
+# Authenticated machine API (planning only). It is a separate router with its
+# own authentication; the browser routes above are unchanged and do not use it.
+app.include_router(build_machine_api_router(planner=plan_calculation_request))

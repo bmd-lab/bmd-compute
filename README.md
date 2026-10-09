@@ -40,6 +40,8 @@ Desired Outputs add spin polarisation, DFT-D3(BJ), SOC and DFT+U automatically w
 
 The authoritative declaration of bmd-compute's v1 executable methodology (workflows, automatic treatments, stage settings, k-points, POTCARs, starting moments, stage chaining and the execution model) is [`docs/methodology.md`](docs/methodology.md).
 
+Machine clients such as bmd-run can request authenticated, planning-only JSON plans from the same scientific resolution path; see [`docs/machine_api.md`](docs/machine_api.md).
+
 Validated or specifically reviewed examples include PBE Static + SOC on Si, PBE + DFT+U Static -> PBE + DFT+U + SOC Static on Fe2O3, and HSE06 Band Structure through the stage-first HSE static precursor path.
 
 Deliberately unavailable or unreviewed combinations remain blocked by validation. Examples include r2SCAN, Dielectric, GW, general SOC relaxation, PBE DOS/Band Structure + SOC, HSE06 + SOC for new calculations, and arbitrary free-form INCAR or KPOINTS editing.
