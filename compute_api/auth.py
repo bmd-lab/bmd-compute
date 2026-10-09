@@ -41,8 +41,8 @@ SCOPE_READ = "read"
 SCOPE_PLAN = "plan"
 SCOPE_PREPARE = "prepare"
 SCOPE_SUBMIT = "submit"
-# The complete scope vocabulary. "prepare" and "submit" are reserved for later
-# milestones: no route accepts them yet, and holding them grants nothing today.
+# The complete scope vocabulary. "plan" never grants execution; "prepare" and
+# "submit" are checked independently by the attempt routes.
 KNOWN_SCOPES = frozenset({SCOPE_READ, SCOPE_PLAN, SCOPE_PREPARE, SCOPE_SUBMIT})
 
 PRINCIPAL_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")

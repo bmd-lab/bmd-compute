@@ -1050,6 +1050,8 @@ def plan_calculation_request(
     desired_output: str | None = None,
     custom_workflow: dict | None = None,
     resources: dict | None = None,
+    timestamp: str | None = None,
+    submission_attempt_id: str | None = None,
 ) -> CalculationPlan:
     """Resolve a calculation exactly as the Build route does, with no remote work.
 
@@ -1060,6 +1062,12 @@ def plan_calculation_request(
     considerations, and ``build_submission_state_from_structure`` (which applies
     the new-calculation admission policy and builds the submission
     specification). It adds no methodology of its own.
+
+    ``timestamp`` and ``submission_attempt_id`` are passed to
+    ``build_submission_state_from_structure`` exactly as the browser's Prepare
+    and Submit routes pass the values recovered from their signed submission
+    identity, so that a retried machine attempt rebuilds the identical
+    submission specification.
     """
 
     if (desired_output is None) == (custom_workflow is None):
@@ -1129,6 +1137,8 @@ def plan_calculation_request(
         fmt=fmt,
         workflow_spec=workflow_spec,
         execution_resources=execution_resources,
+        timestamp=timestamp,
+        submission_attempt_id=submission_attempt_id,
         default_treatment_resolution=default_treatment_resolution,
     )
     return CalculationPlan(

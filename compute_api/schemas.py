@@ -199,3 +199,72 @@ def _parse_custom_workflow(errors: list, value: Any) -> dict | None:
             }
         )
     return {"stages": parsed_stages}
+
+
+# --------------------------------------------------------------- execution
+
+EXECUTION_KEYS = frozenset({"expected_plan_digest", "submit", "labels"})
+LABEL_KEYS = frozenset({"campaign", "cell"})
+_PLAN_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+
+
+@dataclass(frozen=True)
+class ExecutionRequest:
+    plan: PlanRequest
+    expected_plan_digest: str
+    submit: bool
+    labels: dict[str, str]
+
+
+def parse_execution_request(document: Any) -> ExecutionRequest:
+    """Validate a ``PUT /api/v1/attempts/{id}`` body.
+
+    The body is a plan request (same fields and rules as ``POST /plans``) plus
+    ``expected_plan_digest`` (required), ``submit`` (required boolean) and
+    optional ``labels`` (``campaign`` and ``cell``, short identifiers).
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    for key in sorted(set(document) - TOP_LEVEL_KEYS - EXECUTION_KEYS, key=str):
+        _error(errors, str(key), "unknown_field")
+
+    expected = document.get("expected_plan_digest")
+    if "expected_plan_digest" not in document:
+        _error(errors, "expected_plan_digest", "required")
+    elif not isinstance(expected, str) or not _PLAN_DIGEST.fullmatch(expected):
+        _error(errors, "expected_plan_digest", "must_be_sha256_digest")
+
+    submit = document.get("submit")
+    if "submit" not in document:
+        _error(errors, "submit", "required")
+    elif not isinstance(submit, bool):
+        _error(errors, "submit", "must_be_boolean")
+
+    labels: dict[str, str] = {}
+    if "labels" in document and document["labels"] is not None:
+        label_object = _closed_object(errors, document["labels"], "labels", LABEL_KEYS)
+        if label_object is not None:
+            for key in sorted(LABEL_KEYS & set(label_object)):
+                value = label_object[key]
+                if not isinstance(value, str) or not _LABEL.fullmatch(value):
+                    _error(errors, f"labels.{key}", "must_be_label")
+                else:
+                    labels[key] = value
+
+    plan = None
+    try:
+        plan = parse_plan_request({key: document[key] for key in TOP_LEVEL_KEYS if key in document})
+    except PlanRequestError as exc:
+        errors.extend(exc.errors)
+
+    if errors:
+        raise PlanRequestError(errors)
+    return ExecutionRequest(
+        plan=plan,
+        expected_plan_digest=expected,
+        submit=submit,
+        labels=labels,
+    )
