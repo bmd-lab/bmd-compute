@@ -423,7 +423,9 @@ def test_heavy_element_hse06_desired_output_prepares_with_the_warning_visible(de
     rendered = response.template.render(response.context)
     assert HSE06_SOC_OMITTED_TITLE in rendered
     assert HSE06_SOC_OMITTED_MESSAGE in rendered
-    assert rendered.index("data-unsupported-omission") < rendered.index('action="/submit"')
+    card = 'data-method-consideration-presentation="unsupported"'
+    assert rendered.count(card) == 1
+    assert rendered.index(card) < rendered.index('action="/submit"')
 
 
 # --- 4. Browser prevention (backend remains authoritative) --------------------------

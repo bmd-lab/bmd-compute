@@ -66,11 +66,13 @@ def test_every_resolved_output_is_marked_and_nothing_else_is():
     # The selection itself and the structure are never hidden.
     for heading in ("<h2>Structure Summary</h2>", "<h2>Calculation Definition</h2>"):
         assert "data-built-output" not in section_opening(html, heading)
-    # Both pre-submission red warnings live inside hidden-together sections.
-    marker = 'data-unsupported-omission="soc_omitted_from_hse06_stages"'
-    for position in (html.index(marker), html.rindex(marker)):
-        section = html[html.rindex("<section", 0, position):position]
-        assert "data-built-output" in section[:60]
+    # The single red omission warning is a card in the (hidden-together)
+    # Method Considerations panel; no separate copies exist elsewhere.
+    assert html.count('data-method-consideration-presentation="unsupported"') == 1
+    assert html.index("<h3>Method Considerations</h3>") < html.index(
+        'data-method-consideration-presentation="unsupported"'
+    ) < html.index("<h2>Calculation Summary</h2>")
+    assert "data-unsupported-omission" not in html
     assert html.count('data-built-output-notice role="status"') == 1
 
 

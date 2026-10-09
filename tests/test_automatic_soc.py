@@ -445,16 +445,18 @@ def test_bi2se3_dos_and_band_keep_hse06_and_omit_soc_with_red_warning(desired_ou
     assert soc["browser_display_name"] == HSE06_SOC_OMITTED_TITLE
     assert soc["browser_summary"] == HSE06_SOC_OMITTED_MESSAGE
 
-    # The red warning is visible before submission: on the Method
-    # Consideration card and again directly above the Prepare/Submit forms.
+    # The red warning is shown exactly once, on the Method Consideration
+    # card below the Build button, before the Prepare/Submit forms.
     rendered = response.template.render(context)
-    assert 'class="method-consideration-card unsupported"' in rendered
-    assert 'data-method-consideration-presentation="unsupported"' in rendered
-    marker = f'data-unsupported-omission="{SOC_OMITTED_UNSUPPORTED_CODE}"'
-    assert rendered.count(marker) == 2
-    assert rendered.index(marker) < rendered.index('action="/prepare-remote"')
-    assert rendered.rindex(marker) < rendered.index('action="/prepare-remote"')
-    assert rendered.count(HSE06_SOC_OMITTED_TITLE) >= 3
+    card = 'data-method-consideration-presentation="unsupported"'
+    assert rendered.count('class="method-consideration-card unsupported"') == 1
+    assert rendered.count(card) == 1
+    assert rendered.count('role="alert"') == 1
+    assert rendered.count(HSE06_SOC_OMITTED_TITLE) == 1
+    assert rendered.count(HSE06_SOC_OMITTED_MESSAGE) == 1
+    assert rendered.index("data-build-calculation-button") < rendered.index(card)
+    assert rendered.index(card) < rendered.index('action="/prepare-remote"')
+    assert "data-unsupported-omission" not in rendered
     assert "Spin\u2013orbit coupling has been omitted from the HSE06 stages" in rendered
     assert "Spin-Orbit Coupling (SOC) has been included automatically" not in rendered
     assert (

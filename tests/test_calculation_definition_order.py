@@ -202,13 +202,20 @@ def test_red_and_yellow_presentation_and_text_are_unchanged():
         assert rule in TEMPLATE_SOURCE
 
 
-def test_pre_submission_red_warning_is_unchanged():
+def test_omission_warning_appears_once_after_build_and_before_submission():
     html = built_page(soc_cases.BI2SE3_POSCAR, "electronic_dos")
-    marker = 'data-unsupported-omission="soc_omitted_from_hse06_stages"'
+    card = 'data-method-consideration-presentation="unsupported"'
 
-    assert html.count(marker) == 2
-    assert html.index("<h2>Calculation Summary</h2>") < html.index(marker)
-    assert html.rindex(marker) < html.index('action="/prepare-remote"')
+    assert html.count(card) == 1
+    assert html.count("HSE06 + SOC is not currently supported by BMD Compute.") == 1
+    assert_in_order(
+        html,
+        ["data-build-calculation-button", card, "<h2>Calculation Summary</h2>",
+         "<h2>Ready for Submission</h2>", 'action="/prepare-remote"'],
+    )
+    # No duplicate blocks in Calculation Summary or Ready for Submission.
+    assert "data-unsupported-omission" not in html
+    assert 'class="unsupported-warning"' not in html
 
 
 def test_si_page_has_no_considerations_panel_after_build():

@@ -124,8 +124,9 @@ def test_successful_build_reveals_the_resolved_calculation():
 def test_successful_dos_build_reveals_the_red_omission_warning():
     page = markup(build(workflow="electronic_dos"))
 
-    assert 'data-method-consideration-presentation="unsupported"' in page
-    assert page.count('data-unsupported-omission="soc_omitted_from_hse06_stages"') == 2
+    assert page.count('data-method-consideration-presentation="unsupported"') == 1
+    assert page.count("HSE06 + SOC is not currently supported by BMD Compute.") == 1
+    assert "data-unsupported-omission" not in page
 
 
 # --- Failed Build / Prepare / Submit -------------------------------------------------

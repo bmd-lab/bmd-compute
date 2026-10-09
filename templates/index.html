@@ -240,31 +240,6 @@ h2 {
     color: var(--bmd-text);
 }
 
-.unsupported-warning {
-    background: var(--bmd-unsupported-soft);
-    border: 2px solid var(--bmd-unsupported);
-    border-radius: 8px;
-    margin: 0 0 18px;
-    padding: 14px 16px;
-}
-
-.unsupported-warning-title {
-    align-items: center;
-    color: var(--bmd-unsupported);
-    display: flex;
-    font-size: 15px;
-    font-weight: 700;
-    gap: 10px;
-    margin-bottom: 6px;
-}
-
-.unsupported-warning p {
-    color: var(--bmd-text);
-    font-size: 14px;
-    line-height: 1.5;
-    margin: 0;
-}
-
 .method-consideration-summary {
     color: var(--bmd-text-soft);
     font-size: 14px;
@@ -1020,17 +995,6 @@ ul {
 </head>
 
 <body>
-{% macro unsupported_omission_warnings(resolution) %}
-{% for omission in (resolution.omitted_treatments if resolution else []) %}
-<div class="unsupported-warning" role="alert" data-unsupported-omission="{{ omission.code }}">
-    <div class="unsupported-warning-title">
-        <span class="step-mark unsupported" aria-label="Unsupported combination">!</span>
-        <span>{{ omission.title }}</span>
-    </div>
-    <p>{{ omission.message }}</p>
-</div>
-{% endfor %}
-{% endmacro %}
 
 
 <div class="container">
@@ -1516,8 +1480,6 @@ ul {
                 </div>
             </div>
 
-            {{ unsupported_omission_warnings(default_treatment_resolution) }}
-
             <div class="submission-grid">
                 <div class="callout">
                     <div class="callout-title">Calculation Type</div>
@@ -1934,8 +1896,6 @@ ul {
                     {% endif %}
                 </div>
             </div>
-
-            {{ unsupported_omission_warnings(default_treatment_resolution) }}
 
             <div class="button-row">
                 <form action="/prepare-remote" method="post">
