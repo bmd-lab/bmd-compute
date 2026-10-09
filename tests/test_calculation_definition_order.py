@@ -288,21 +288,17 @@ def test_custom_workflow_keyboard_order_reaches_advanced_options_before_resource
 
 
 def test_considerations_are_hidden_when_the_selection_changes_after_build():
+    # The panel is one of the build outputs hidden together by the page
+    # script (behaviour: tests/test_built_output_freshness.py).
+    html = built_page(soc_cases.BI2SE3_POSCAR, "electronic_dos")
+    panel_open = html[html.rindex("<div", 0, html.index("<h3>Method Considerations</h3>")):]
+    assert "data-method-considerations" in panel_open[:250]
+    assert "data-built-output" in panel_open[:250]
     script = TEMPLATE_SOURCE[TEMPLATE_SOURCE.index("var unsupportedCombinations"):]
-
-    assert 'document.querySelector("[data-method-considerations]")' in script
-    sync = script[script.index("function syncConsiderationsFreshness()"):]
-    sync = sync[:sync.index("\n    }\n")]
-    assert "considerationsPanel.hidden = hiddenWorkflow.value !== builtWorkflowJson;" in sync
-    # Every selection change goes through updateHiddenWorkflow, which re-checks.
-    update = script[script.index("function updateHiddenWorkflow()"):]
-    update = update[:update.index("\n    }\n")]
-    assert update.rstrip().endswith("syncConsiderationsFreshness();")
-    # The built workflow is captured once, after the initial normalisation.
-    assert "updateHiddenWorkflow();\n    builtWorkflowJson = hiddenWorkflow.value;\n});" in script
+    assert 'document.querySelectorAll("[data-built-output]")' in script
     # The earlier dimmed "stale" presentation is gone.
     assert "data-method-considerations-stale-notice" not in TEMPLATE_SOURCE
-    assert 'data-stale' not in TEMPLATE_SOURCE
+    assert "data-stale" not in TEMPLATE_SOURCE
 
 
 def test_mobile_layout_stacks_the_calculation_panels():

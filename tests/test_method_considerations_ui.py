@@ -138,7 +138,7 @@ def render_response(response) -> str:
 
 def method_considerations_block(html: str) -> str:
     start = html.index('class="method-considerations ')
-    end = html.index('<section class="stage">', start)
+    end = html.index('<section class="stage"', start)
     return html[start:end]
 
 

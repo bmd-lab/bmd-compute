@@ -20,7 +20,6 @@ from backend.calculations.default_treatments import (
     AUTOMATIC_APPLICATION_APPLIED,
     AUTOMATIC_APPLICATION_NOT_APPLICABLE,
     AUTOMATIC_APPLICATION_OMITTED_UNSUPPORTED,
-    DIMENSIONALITY_FAILURE_DIAGNOSTIC_CODE,
     ResolvedDefaultWorkflow,
     resolve_default_treatments,
 )
@@ -1054,24 +1053,10 @@ def analyze(
         )
 
     summary = summarize_structure(structure_obj)
-    workflow_spec = default_workflow_spec()
-    default_treatment_resolution = None
-    try:
-        workflow_spec, default_treatment_resolution = resolve_workflow_for_structure(
-            structure_obj,
-            workflow_spec,
-            workflow="energy_only",
-        )
-    except CalculationValidationError as exc:
-        diagnostic = exc.diagnostic or {}
-        if diagnostic.get("code") != DIMENSIONALITY_FAILURE_DIAGNOSTIC_CODE:
-            raise
-    method_considerations = method_considerations_for_workflow_state(
-        structure_obj,
-        workflow=workflow_spec,
-        default_treatment_resolution=default_treatment_resolution,
-    )
-
+    # Before Build, show only the user's selection: the default Desired Output
+    # (Energy only) as its unresolved base recipe. Automatic treatments, Method
+    # Considerations, generated inputs and provenance are resolved and shown
+    # only by a successful Build Calculation.
     return templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -1079,9 +1064,7 @@ def analyze(
             structure_text=structure,
             fmt=fmt,
             summary=summary,
-            selected_workflow=workflow_spec,
-            method_considerations=method_considerations,
-            default_treatment_resolution=default_treatment_resolution,
+            selected_workflow=default_workflow_spec(),
         ),
     )
 
@@ -1131,6 +1114,9 @@ def build_workflow(
 ):
     calculation_spec = default_calculation_spec()
     workflow_spec = default_workflow_spec()
+    # The selection as requested, before automatic treatments: what a failed
+    # request redisplays, so it never looks like a resolved calculation.
+    requested_workflow_spec = workflow_spec
     execution_resources = default_execution_resources()
     method_considerations = None
     try:
@@ -1142,6 +1128,7 @@ def build_workflow(
             workflow=workflow,
             method=method,
         )
+        requested_workflow_spec = workflow_spec
         calculation_spec = (
             calculation_spec_from_workflow_spec(workflow_spec)
             or default_calculation_spec()
@@ -1180,8 +1167,8 @@ def build_workflow(
             request,
             structure_text=structure,
             fmt=fmt,
-            selected_spec=calculation_spec,
-            selected_workflow=workflow_spec,
+            selected_spec=None,
+            selected_workflow=requested_workflow_spec,
             selected_resources=execution_resources,
             exc=exc,
         )
@@ -1190,8 +1177,8 @@ def build_workflow(
             request,
             structure_text=structure,
             fmt=fmt,
-            selected_spec=calculation_spec,
-            selected_workflow=workflow_spec,
+            selected_spec=None,
+            selected_workflow=requested_workflow_spec,
             selected_resources=execution_resources,
             exc=exc,
         )
@@ -1239,6 +1226,9 @@ def prepare_remote(
     del created_at
     calculation_spec = default_calculation_spec()
     workflow_spec = default_workflow_spec()
+    # The selection as requested, before automatic treatments: what a failed
+    # request redisplays, so it never looks like a resolved calculation.
+    requested_workflow_spec = workflow_spec
     execution_resources = default_execution_resources()
     method_considerations = None
     try:
@@ -1254,6 +1244,7 @@ def prepare_remote(
             workflow=workflow,
             method=method,
         )
+        requested_workflow_spec = workflow_spec
         calculation_spec = (
             calculation_spec_from_workflow_spec(workflow_spec)
             or default_calculation_spec()
@@ -1294,8 +1285,8 @@ def prepare_remote(
             request,
             structure_text=structure,
             fmt=fmt,
-            selected_spec=calculation_spec,
-            selected_workflow=workflow_spec,
+            selected_spec=None,
+            selected_workflow=requested_workflow_spec,
             selected_resources=execution_resources,
             exc=exc,
         )
@@ -1304,8 +1295,8 @@ def prepare_remote(
             request,
             structure_text=structure,
             fmt=fmt,
-            selected_spec=calculation_spec,
-            selected_workflow=workflow_spec,
+            selected_spec=None,
+            selected_workflow=requested_workflow_spec,
             selected_resources=execution_resources,
             exc=exc,
         )
@@ -1360,6 +1351,9 @@ def submit_workflow(
     del created_at
     calculation_spec = default_calculation_spec()
     workflow_spec = default_workflow_spec()
+    # The selection as requested, before automatic treatments: what a failed
+    # request redisplays, so it never looks like a resolved calculation.
+    requested_workflow_spec = workflow_spec
     execution_resources = default_execution_resources()
     method_considerations = None
     try:
@@ -1375,6 +1369,7 @@ def submit_workflow(
             workflow=workflow,
             method=method,
         )
+        requested_workflow_spec = workflow_spec
         calculation_spec = (
             calculation_spec_from_workflow_spec(workflow_spec)
             or default_calculation_spec()
@@ -1415,8 +1410,8 @@ def submit_workflow(
             request,
             structure_text=structure,
             fmt=fmt,
-            selected_spec=calculation_spec,
-            selected_workflow=workflow_spec,
+            selected_spec=None,
+            selected_workflow=requested_workflow_spec,
             selected_resources=execution_resources,
             exc=exc,
         )
@@ -1425,8 +1420,8 @@ def submit_workflow(
             request,
             structure_text=structure,
             fmt=fmt,
-            selected_spec=calculation_spec,
-            selected_workflow=workflow_spec,
+            selected_spec=None,
+            selected_workflow=requested_workflow_spec,
             selected_resources=execution_resources,
             exc=exc,
         )
