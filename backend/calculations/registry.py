@@ -239,8 +239,8 @@ _MODIFIER_DISPLAY_NAMES = {
 _UNIMPLEMENTED_TOOLTIP = "Coming soon"
 _MODIFIER_TOOLTIPS = {
     Modifier.SOC: (
-        "SOC is available for PBE and HSE06 Static Energy stages and HSE06 "
-        "Density of States and Band Structure stages, and runs with vasp_ncl."
+        "SOC is available for PBE Static Energy stages and runs with vasp_ncl. "
+        "HSE06 + SOC is not currently supported for new calculations."
     ),
     Modifier.DFT_U: "DFT+U is applied only when explicitly selected.",
     Modifier.DISPERSION: "van der Waals correction for PBE Geometry Optimisation and Static Energy stages.",
@@ -1195,7 +1195,19 @@ def calculation_form_options() -> dict:
         ],
         "desired_outputs": list(_desired_output_options()),
         "recipes": list(_recommended_workflow_recipes()),
+        "unsupported_new_calculation_combinations": (
+            _unsupported_new_calculation_combinations()
+        ),
     }
+
+
+def _unsupported_new_calculation_combinations() -> list[dict]:
+    # Imported lazily: the admission policy builds on this module.
+    from backend.calculations.admission import (
+        unsupported_new_calculation_combinations_payload,
+    )
+
+    return unsupported_new_calculation_combinations_payload()
 
 
 def _theory_from_legacy_potcar(potcar_functional: str | None) -> Theory:

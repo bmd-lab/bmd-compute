@@ -57,7 +57,7 @@ is parsed, so it is accepted as an ordinary structure.
 | --- | --- | --- | --- |
 | Spin polarisation | the structure contains Ti, V, Cr, Mn, Fe, Co, Ni, Mo, Tc, Ru, Rh, Re, Os, Ir, a lanthanide Ce-Yb, or U, Np, Pu, Am, Cm, Bk, Cf | every stage | `ISPIN = 2` with the starting moments of section 6 |
 | van der Waals correction | pymatgen CrystalNN bonding plus Larsen dimensionality finds two-dimensional bonded connectivity | PBE Geometry Optimisation and PBE Static Energy | DFT-D3(BJ), `IVDW = 12` |
-| Spin-orbit coupling | the structure contains a 4d (Y-Cd) or 5d (Hf-Hg) transition metal, a lanthanide (La-Lu), an actinide (Ac-Lr), or Tl, Pb, Bi, Po | every stage except Geometry Optimisation | non-collinear, see below |
+| Spin-orbit coupling | the structure contains a 4d (Y-Cd) or 5d (Hf-Hg) transition metal, a lanthanide (La-Lu), an actinide (Ac-Lr), or Tl, Pb, Bi, Po | every PBE stage except Geometry Optimisation; never HSE06 (omitted with a red warning, see below) | non-collinear, see below |
 | DFT+U | policy `bmd_compute.dft_u` v1: O or F is the most electronegative element and Co, Cr, Fe, Mn, Mo, Ni, V or W is present, unless every charge-balanced pymatgen oxidation-state guess puts every such element at d0 | PBE Geometry Optimisation and PBE Static Energy; never HSE06 | pinned Materials Project/pymatgen GGA+U values unchanged (Dudarev, `LDAUTYPE = 2`, U on d states, J = 0), frozen at preparation and verified at run time |
 
 Treatments are decided independently: +U never switches on spin, and SOC, D3
@@ -75,6 +75,22 @@ policy.
 SOC stages run `vasp_ncl` with `LSORBIT = True`, `LNONCOLLINEAR = True`,
 `ISYM = 0`, `SAXIS = 0 0 1`, `GGA_COMPAT = False` and no `ISPIN`; Custodian's
 `auto_gamma` is disabled so the executable cannot switch to `vasp_gam`.
+
+HSE06 + SOC is not supported for new calculations (admission policy
+`bmd_compute.new_calculation_admission` v1). This is a product-support
+limitation: the combination can be exceptionally computationally expensive
+and may need system-specific convergence and resource settings. It is not a
+statement that HSE06 + SOC is scientifically invalid. When the heavy-element
+SOC trigger fires for Electronic density of states or Electronic band
+structure, BMD keeps the HSE06 workflow unchanged, omits SOC from its HSE06
+stages, records the omission in `automatic_treatments.omitted_treatments`, and
+shows a red warning before submission: SOC may significantly affect the
+predicted electronic structure of heavy-element materials, including band
+ordering and band gaps. No PBE + SOC DOS or Band Structure stage is
+substituted. Energy only keeps automatic PBE + SOC Static Energy. Explicit
+HSE06 + SOC requests (Custom workflows, legacy form fields) are rejected.
+Records of earlier HSE06 + SOC runs remain readable and keep their own
+runtime behaviour.
 
 ## 3. Stage methodology
 
@@ -150,8 +166,9 @@ reciprocal-lattice volume (pymatgen `automatic_density_by_vol`):
 | HSE06 Density of States | reciprocal density 100 |
 | HSE06 Band Structure | uniform reciprocal density 64 plus a zero-weight high-symmetry path at line density 40 |
 
-With SOC, HSE06 Band Structure lists every point of its uniform mesh with equal
-weight (because `ISYM = 0`), and HSE06 DOS keeps its automatic mesh, which VASP
+For historical HSE06 + SOC records (no longer accepted for new calculations),
+HSE06 Band Structure lists every point of its uniform mesh with equal weight
+(because `ISYM = 0`), and HSE06 DOS keeps its automatic mesh, which VASP
 expands over the full zone.
 
 ## 5. POTCARs

@@ -15,6 +15,13 @@ from backend.calculations.dft_u_policy import (
     POLICY_VERSION as DFT_U_POLICY_VERSION,
     PARAMETER_SOURCE as DFT_U_PARAMETER_SOURCE,
 )
+from backend.calculations.admission import (
+    ADMISSION_POLICY_ID,
+    ADMISSION_POLICY_VERSION,
+    HSE06_SOC_OMITTED_MESSAGE,
+    HSE06_SOC_OMITTED_TITLE,
+    modifier_is_admissible_for_new_theory,
+)
 from backend.calculations.models import Modifier, StageSpec, StageType, Theory, WorkflowSpec
 from backend.calculations.registry import (
     CalculationValidationError,
@@ -42,6 +49,11 @@ SOC_CONSIDERATION_ID = "soc.heavy_elements"
 AUTOMATIC_APPLICATION_APPLIED = "applied"
 AUTOMATIC_APPLICATION_ADVISORY = "advisory"
 AUTOMATIC_APPLICATION_NOT_APPLICABLE = "not_applicable"
+# A treatment the policy triggered but BMD Compute omitted from some stages
+# because the resulting combination is not supported for new calculations
+# (backend.calculations.admission). Presented as a red warning, never silently.
+AUTOMATIC_APPLICATION_OMITTED_UNSUPPORTED = "omitted_unsupported_combination"
+SOC_OMITTED_UNSUPPORTED_CODE = "soc_omitted_from_hse06_stages"
 SOC_EXCLUDED_STAGE_TYPES = frozenset({StageType.RELAX})
 SOC_NOT_APPLICABLE_REASON = (
     "BMD Compute keeps geometry optimisation stages non-SOC, and this Desired "
@@ -105,6 +117,7 @@ class ResolvedDefaultWorkflow:
     mode: str = "bmd_managed_desired_output"
     not_applicable_considerations: tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
     dft_u: Mapping[str, Any] | None = None
+    omitted_treatments: tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "base_workflow", validate_workflow_spec(self.base_workflow))
@@ -126,6 +139,11 @@ class ResolvedDefaultWorkflow:
         )
         if self.dft_u is not None:
             object.__setattr__(self, "dft_u", _json_safe_mapping(self.dft_u))
+        object.__setattr__(
+            self,
+            "omitted_treatments",
+            tuple(_json_safe_mapping(item) for item in self.omitted_treatments),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -143,6 +161,10 @@ class ResolvedDefaultWorkflow:
                 for item in self.not_applicable_considerations
             ],
             "dft_u": dict(self.dft_u) if self.dft_u is not None else None,
+            "omitted_treatments": [
+                dict(item)
+                for item in self.omitted_treatments
+            ],
             "source": IMPLEMENTATION_SOURCE,
         }
 
@@ -200,11 +222,14 @@ def resolve_default_treatments(
             applied.append(treatment)
 
     not_applicable: list[dict[str, Any]] = []
+    omitted: list[dict[str, Any]] = []
     if SOC_CONSIDERATION_ID in consideration_ids:
-        stages, treatment = _apply_soc(stages)
+        stages, treatment, omission = _apply_soc(stages)
         if treatment is not None:
             applied.append(treatment)
-        else:
+        if omission is not None:
+            omitted.append(omission)
+        if treatment is None and omission is None:
             not_applicable.append(
                 {
                     "consideration_id": SOC_CONSIDERATION_ID,
@@ -246,11 +271,13 @@ def resolve_default_treatments(
     )
     applied_ids = {treatment.consideration_id for treatment in applied}
     not_applicable_ids = {item["consideration_id"] for item in not_applicable}
+    omitted_ids = {item["consideration_id"] for item in omitted}
     advisory_ids = tuple(
         consideration_id
         for consideration_id in consideration_ids
         if consideration_id not in applied_ids
         and consideration_id not in not_applicable_ids
+        and consideration_id not in omitted_ids
     )
     return ResolvedDefaultWorkflow(
         base_workflow=normalized_base,
@@ -260,6 +287,7 @@ def resolve_default_treatments(
         desired_output=desired_output,
         not_applicable_considerations=tuple(not_applicable),
         dft_u=dft_u_evaluation,
+        omitted_treatments=tuple(omitted),
     )
 
 
@@ -308,10 +336,24 @@ def automatic_default_treatment_policy() -> dict[str, Any]:
                 "modifier": Modifier.SOC.value,
                 "display_name": modifier_display_name(Modifier.SOC),
                 "trigger_source": "backend.calculations.method_considerations",
-                "application": "every non-relaxation stage in the selected BMD-managed Desired Output workflow",
+                "application": (
+                    "every non-relaxation PBE stage in the selected BMD-managed "
+                    "Desired Output workflow"
+                ),
                 "excluded_stage_types": sorted(
                     stage_type.value for stage_type in SOC_EXCLUDED_STAGE_TYPES
                 ),
+                "omitted_theories": [Theory.HSE06.value],
+                "omission": {
+                    "application_state": AUTOMATIC_APPLICATION_OMITTED_UNSUPPORTED,
+                    "reason": (
+                        "HSE06 + SOC is not supported for new calculations "
+                        "(product-support limitation); SOC is omitted from HSE06 "
+                        "stages and the omission is recorded and shown as a red warning"
+                    ),
+                    "admission_policy_id": ADMISSION_POLICY_ID,
+                    "admission_policy_version": ADMISSION_POLICY_VERSION,
+                },
                 "executable": "vasp_ncl",
                 "initial_magnetic_moments": (
                     "zero vector MAGMOM unless the structure contains an element in "
@@ -409,12 +451,29 @@ def _apply_dispersion(
 
 def _apply_soc(
     stages: Iterable[StageSpec],
-) -> tuple[tuple[StageSpec, ...], AppliedDefaultTreatment | None]:
+) -> tuple[
+    tuple[StageSpec, ...],
+    AppliedDefaultTreatment | None,
+    dict[str, Any] | None,
+]:
+    """
+    Add SOC to every non-relaxation stage that may carry it in a new calculation.
+
+    Stages whose theory may not be combined with SOC in new calculations
+    (HSE06; see backend.calculations.admission) keep their existing modifiers
+    and are returned in an explicit omission record, never dropped silently.
+    """
+
     resolved_stages: list[StageSpec] = []
     stage_applications: list[dict[str, Any]] = []
+    omitted_stages: list[dict[str, Any]] = []
     for index, stage in enumerate(stages, start=1):
         if stage.stage_type in SOC_EXCLUDED_STAGE_TYPES:
             resolved_stages.append(stage)
+            continue
+        if not modifier_is_admissible_for_new_theory(stage.theory, Modifier.SOC):
+            resolved_stages.append(stage)
+            omitted_stages.append(_stage_application(index, stage))
             continue
         resolved = _stage_with_modifier(stage, Modifier.SOC)
         _validate_automatic_stage(
@@ -437,7 +496,24 @@ def _apply_soc(
             ),
             stage_applications=tuple(stage_applications),
         )
-    return tuple(resolved_stages), treatment
+    omission = None
+    if omitted_stages:
+        omission = {
+            "consideration_id": SOC_CONSIDERATION_ID,
+            "modifier": Modifier.SOC.value,
+            "display_name": modifier_display_name(Modifier.SOC),
+            "application_state": AUTOMATIC_APPLICATION_OMITTED_UNSUPPORTED,
+            "code": SOC_OMITTED_UNSUPPORTED_CODE,
+            "severity": "unsupported",
+            "stage_indices": [stage["stage_index"] for stage in omitted_stages],
+            "omitted_stages": omitted_stages,
+            "title": HSE06_SOC_OMITTED_TITLE,
+            "message": HSE06_SOC_OMITTED_MESSAGE,
+            "admission_policy_id": ADMISSION_POLICY_ID,
+            "admission_policy_version": ADMISSION_POLICY_VERSION,
+            "source": IMPLEMENTATION_SOURCE,
+        }
+    return tuple(resolved_stages), treatment, omission
 
 
 def _dft_u_evaluation(payload: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -583,6 +659,8 @@ __all__ = [
     "AUTOMATIC_APPLICATION_ADVISORY",
     "AUTOMATIC_APPLICATION_APPLIED",
     "AUTOMATIC_APPLICATION_NOT_APPLICABLE",
+    "AUTOMATIC_APPLICATION_OMITTED_UNSUPPORTED",
+    "SOC_OMITTED_UNSUPPORTED_CODE",
     "AppliedDefaultTreatment",
     "DFT_U_CONSIDERATION_ID",
     "DFT_U_NO_STAGE_REASON",

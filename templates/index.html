@@ -25,6 +25,8 @@
     --bmd-advisory-soft: #fff8df;
     --bmd-warning: #ea6020;
     --bmd-danger: #c94001;
+    --bmd-unsupported: #b42318;
+    --bmd-unsupported-soft: #fef3f2;
     --bmd-code-bg: #f7f9fc;
     --bmd-code-text: #101418;
     --bmd-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
@@ -203,6 +205,44 @@ h2 {
     font-size: 16px;
     font-weight: 700;
     gap: 10px;
+}
+
+.method-consideration-card.unsupported {
+    background: var(--bmd-unsupported-soft);
+    border: 2px solid var(--bmd-unsupported);
+}
+
+.method-consideration-card.unsupported .method-consideration-title {
+    color: var(--bmd-unsupported);
+}
+
+.method-consideration-card.unsupported .method-consideration-summary {
+    color: var(--bmd-text);
+}
+
+.unsupported-warning {
+    background: var(--bmd-unsupported-soft);
+    border: 2px solid var(--bmd-unsupported);
+    border-radius: 8px;
+    margin: 0 0 18px;
+    padding: 14px 16px;
+}
+
+.unsupported-warning-title {
+    align-items: center;
+    color: var(--bmd-unsupported);
+    display: flex;
+    font-size: 15px;
+    font-weight: 700;
+    gap: 10px;
+    margin-bottom: 6px;
+}
+
+.unsupported-warning p {
+    color: var(--bmd-text);
+    font-size: 14px;
+    line-height: 1.5;
+    margin: 0;
 }
 
 .method-consideration-summary {
@@ -821,6 +861,16 @@ ul {
     color: var(--bmd-danger);
 }
 
+.step-mark.unsupported {
+    background: var(--bmd-unsupported);
+    border-color: var(--bmd-unsupported);
+    color: #ffffff;
+}
+
+.modifier-option.unsupported-combination {
+    color: var(--bmd-unsupported);
+}
+
 .step-mark.advisory {
     background: var(--bmd-advisory-soft);
     border-color: var(--bmd-advisory);
@@ -950,6 +1000,18 @@ ul {
 </head>
 
 <body>
+{% macro unsupported_omission_warnings(resolution) %}
+{% for omission in (resolution.omitted_treatments if resolution else []) %}
+<div class="unsupported-warning" role="alert" data-unsupported-omission="{{ omission.code }}">
+    <div class="unsupported-warning-title">
+        <span class="step-mark unsupported" aria-label="Unsupported combination">!</span>
+        <span>{{ omission.title }}</span>
+    </div>
+    <p>{{ omission.message }}</p>
+</div>
+{% endfor %}
+{% endmacro %}
+
 
 <div class="container">
 
@@ -1166,12 +1228,19 @@ ul {
                 <h3>Method Considerations</h3>
 
                 {% for consideration in method_considerations.considerations %}
+                {% set is_unsupported = consideration.presentation == "unsupported" %}
                 <div
-                    class="method-consideration-card"
-                    data-method-consideration-id="{{ consideration.id }}">
+                    class="method-consideration-card{% if is_unsupported %} unsupported{% endif %}"
+                    data-method-consideration-id="{{ consideration.id }}"
+                    data-method-consideration-presentation="{{ consideration.presentation or 'advisory' }}"
+                    {% if is_unsupported %}role="alert"{% endif %}>
                     <div class="method-consideration-header">
                         <div class="method-consideration-title">
+                            {% if is_unsupported %}
+                            <span class="step-mark unsupported" aria-label="Unsupported combination">!</span>
+                            {% else %}
                             <span class="step-mark advisory" aria-label="Advisory">!</span>
+                            {% endif %}
                             <span>{{ consideration.browser_display_name }}</span>
                         </div>
                     </div>
@@ -1413,6 +1482,8 @@ ul {
                     {% if calculation.ready_for_submission %}<span class="pill ready">Ready</span>{% else %}<span class="pill">Pending</span>{% endif %}
                 </div>
             </div>
+
+            {{ unsupported_omission_warnings(default_treatment_resolution) }}
 
             <div class="submission-grid">
                 <div class="callout">
@@ -1830,6 +1901,8 @@ ul {
                     {% endif %}
                 </div>
             </div>
+
+            {{ unsupported_omission_warnings(default_treatment_resolution) }}
 
             <div class="button-row">
                 <form action="/prepare-remote" method="post">
@@ -2639,6 +2712,10 @@ document.addEventListener("DOMContentLoaded", function () {
     var theories = options.theories || [];
     var modifiers = options.modifiers || [];
     var desiredOutputs = options.desired_outputs || [];
+    // Theory/modifier pairs closed to new calculations (HSE06 + SOC). The
+    // backend admission check is authoritative; this only prevents selecting
+    // them in a Custom workflow stage.
+    var unsupportedCombinations = options.unsupported_new_calculation_combinations || [];
 
     function escapeHtml(value) {
         return String(value || "")
@@ -2779,7 +2856,69 @@ document.addEventListener("DOMContentLoaded", function () {
         );
     }
 
+    function unsupportedCombination(theory, modifier) {
+        for (var index = 0; index < unsupportedCombinations.length; index += 1) {
+            var item = unsupportedCombinations[index];
+            if (item.theory === theory && item.modifier === modifier) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    function applyUnsupportedCombinations() {
+        Array.prototype.forEach.call(
+            stageList.querySelectorAll("[data-workflow-stage]"),
+            function (card) {
+                var theorySelect = card.querySelector("[data-stage-theory]");
+                var theory = theorySelect ? theorySelect.value : "pbe";
+                Array.prototype.forEach.call(
+                    card.querySelectorAll("[data-stage-modifier]"),
+                    function (input) {
+                        var label = input.closest("label");
+                        var blocked = unsupportedCombination(theory, input.value);
+                        if (blocked) {
+                            if (!input.hasAttribute("data-unsupported-disabled")) {
+                                input.setAttribute(
+                                    "data-unsupported-disabled",
+                                    input.disabled ? "was-disabled" : "was-enabled"
+                                );
+                                if (label) {
+                                    input.setAttribute("data-original-title", label.getAttribute("title") || "");
+                                }
+                            }
+                            input.checked = false;
+                            input.disabled = true;
+                            if (label) {
+                                label.classList.add("unavailable", "unsupported-combination");
+                                label.setAttribute("title", blocked.message);
+                            }
+                        } else if (input.hasAttribute("data-unsupported-disabled")) {
+                            var wasDisabled = input.getAttribute("data-unsupported-disabled") === "was-disabled";
+                            input.disabled = wasDisabled;
+                            if (label) {
+                                label.classList.remove("unsupported-combination");
+                                if (!wasDisabled) {
+                                    label.classList.remove("unavailable");
+                                }
+                                var originalTitle = input.getAttribute("data-original-title") || "";
+                                if (originalTitle) {
+                                    label.setAttribute("title", originalTitle);
+                                } else {
+                                    label.removeAttribute("title");
+                                }
+                            }
+                            input.removeAttribute("data-unsupported-disabled");
+                            input.removeAttribute("data-original-title");
+                        }
+                    }
+                );
+            }
+        );
+    }
+
     function updateHiddenWorkflow() {
+        applyUnsupportedCombinations();
         updateStageNumbers();
         if (addStageButton) {
             addStageButton.hidden = !isCustomWorkflow();

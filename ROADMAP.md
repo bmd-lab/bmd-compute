@@ -41,7 +41,7 @@ This roadmap tracks complete scientific and operational capabilities. It should 
 - [x] Desired Outputs: Energy only, Relaxed structure, Electronic density of states, Electronic band structure
 - [x] Spin Polarised modifier, applied automatically in Desired Outputs by composition screen
 - [x] DFT-D3 / DFT-D3(BJ) van der Waals correction, DFT-D3(BJ) applied automatically for two-dimensional bonded connectivity
-- [x] SOC for PBE/HSE06 Static and HSE06 DOS/Band Structure, applied automatically for heavy elements
+- [x] SOC for PBE Static, applied automatically for heavy elements (HSE06 + SOC closed to new calculations; historical records remain readable)
 - [x] DFT+U: explicit in Custom workflows; automatic MP/pymatgen oxide/fluoride policy `bmd_compute.dft_u` v1 in Desired Outputs
 - [x] declared v1 executable methodology (`docs/methodology.md`) with regression tests
 

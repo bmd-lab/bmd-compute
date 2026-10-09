@@ -169,7 +169,7 @@ def test_bi_containing_structure_renders_method_considerations_after_summary():
     assert response.status_code == 200
     assert response.context["summary"]["reduced_formula"] == "Bi2Se3"
     assert response.context["summary"]["natoms"] == 15
-    assert response.context["method_considerations"]["policy_version"] == 5
+    assert response.context["method_considerations"]["policy_version"] == 6
     assert "Method Considerations" in html
     assert html.index("Structure Summary") < html.index("Method Considerations")
     assert html.index("Method Considerations") < html.index("Calculation Definition")

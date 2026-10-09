@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from backend.calculations.admission import stage_is_admissible_for_new_calculation
 from backend.calculations.models import Modifier, StageSpec, StageType, Theory, WorkflowSpec
 from backend.calculations.registry import (
     CalculationValidationError,
@@ -37,7 +38,7 @@ not modify workflows, generated inputs, or execution state.
 """
 
 
-POLICY_VERSION = 5
+POLICY_VERSION = 6
 DFT_U_CONSIDERATION_ID = DFT_U_POLICY_CONSIDERATION_ID
 DFT_U_RECOMMENDED_STATUS = "recommended_for_consideration"
 DFT_U_SUPPRESSED_STATUS = "suppressed_by_d0_gate"
@@ -718,11 +719,19 @@ def _selected_stage_indices(workflow: WorkflowSpec, modifier: Modifier) -> list[
 
 
 def _stage_is_supported(stage: StageSpec) -> bool:
+    """
+    Whether BMD Compute can run this stage as a new calculation.
+
+    Method considerations advise on new calculations, so a combination that is
+    structurally valid but closed to new calculations (HSE06 + SOC; see
+    backend.calculations.admission) is never offered as a supported option.
+    """
+
     try:
         validate_stage_spec(stage)
     except CalculationValidationError:
         return False
-    return True
+    return stage_is_admissible_for_new_calculation(stage)
 
 
 def _coerce_workflow_spec(

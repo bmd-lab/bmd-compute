@@ -14,10 +14,12 @@ from backend.calculations.models import (
     Theory,
     WorkflowSpec,
 )
+from backend.calculations.admission import require_admissible_new_calculation
 from backend.calculations.default_treatments import (
     AUTOMATIC_APPLICATION_ADVISORY,
     AUTOMATIC_APPLICATION_APPLIED,
     AUTOMATIC_APPLICATION_NOT_APPLICABLE,
+    AUTOMATIC_APPLICATION_OMITTED_UNSUPPORTED,
     DIMENSIONALITY_FAILURE_DIAGNOSTIC_CODE,
     ResolvedDefaultWorkflow,
     resolve_default_treatments,
@@ -584,9 +586,22 @@ def method_considerations_context(
             else ()
         )
     }
+    omitted_by_id = {
+        str(item.get("consideration_id")): dict(item)
+        for item in (
+            default_treatment_resolution.omitted_treatments
+            if default_treatment_resolution is not None
+            else ()
+        )
+    }
     for consideration in rendered.get("considerations", []):
         automatic_application = applied_by_id.get(consideration.get("id"))
-        if automatic_application is not None:
+        unsupported_omission = omitted_by_id.get(consideration.get("id"))
+        # An omission takes precedence for presentation: even when the
+        # treatment reached other stages, the red warning must be shown.
+        if unsupported_omission is not None:
+            application_state = AUTOMATIC_APPLICATION_OMITTED_UNSUPPORTED
+        elif automatic_application is not None:
             application_state = AUTOMATIC_APPLICATION_APPLIED
         elif consideration.get("id") in not_applicable_by_id:
             application_state = AUTOMATIC_APPLICATION_NOT_APPLICABLE
@@ -594,6 +609,10 @@ def method_considerations_context(
             application_state = AUTOMATIC_APPLICATION_ADVISORY
         consideration["automatic_application_state"] = application_state
         consideration["automatic_application"] = automatic_application
+        consideration["unsupported_omission"] = unsupported_omission
+        consideration["presentation"] = (
+            "unsupported" if unsupported_omission is not None else "advisory"
+        )
         consideration["automatic_not_applicable"] = not_applicable_by_id.get(
             consideration.get("id")
         )
@@ -649,6 +668,9 @@ def method_considerations_context(
 
 
 def _method_consideration_browser_name(consideration: dict) -> str:
+    omission = consideration.get("unsupported_omission")
+    if omission is not None:
+        return str(omission.get("title") or "Unsupported combination")
     if consideration.get("automatic_application_state") == AUTOMATIC_APPLICATION_APPLIED:
         if consideration.get("id") == DISPERSION_TWO_DIMENSIONAL_CONNECTIVITY_CONSIDERATION_ID:
             return "van der Waals correction applied"
@@ -671,6 +693,9 @@ def _method_consideration_browser_name(consideration: dict) -> str:
 
 def _method_consideration_browser_summary(consideration: dict) -> str:
     consideration_id = consideration.get("id")
+    omission = consideration.get("unsupported_omission")
+    if omission is not None:
+        return str(omission.get("message") or "")
     is_applied = (
         consideration.get("automatic_application_state")
         == AUTOMATIC_APPLICATION_APPLIED
@@ -923,6 +948,12 @@ def build_submission_state_from_structure(
             "The automatic treatment record does not match the workflow being prepared.",
             suggestion="Rebuild the calculation, then try again.",
         )
+    # New-calculation admission boundary. Every route that builds, prepares or
+    # submits a new calculation reaches this point after automatic treatments
+    # are resolved, whatever form the request took (Desired Output, Custom
+    # workflow JSON, legacy purpose/theory/modifiers). Structural validators,
+    # which also read historical records, are deliberately left unchanged.
+    workflow_spec = require_admissible_new_calculation(workflow_spec)
     calculation_spec = calculation_spec_from_workflow_spec(workflow_spec)
     summary = summarize_structure(structure_obj)
     potcar_functional = (

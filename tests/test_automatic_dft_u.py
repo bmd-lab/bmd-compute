@@ -477,13 +477,20 @@ def test_soc_u_and_d3_coexist_on_one_pbe_static(monkeypatch):
     assert incar_value(preview["incar"], "LDAU") == "True"
 
 
-def test_hse_stages_never_receive_u_even_when_soc_is_applied_there():
+def test_hse_stages_never_receive_u_when_the_soc_policy_also_triggers():
+    # W triggers the heavy-element SOC policy; HSE06 + SOC is closed to new
+    # calculations, so SOC is omitted from the HSE06 stages (and recorded).
+    # Neither +U nor SOC reaches them.
     resolution = resolve("electronic_band_structure", WO2)
     assert signature(resolution.resolved_workflow) == [
         ("relax", "pbe", ("dft_u",)),
-        ("static", "hse06", ("soc",)),
-        ("band_structure", "hse06", ("soc",)),
+        ("static", "hse06", ()),
+        ("band_structure", "hse06", ()),
     ]
+    assert [item["consideration_id"] for item in resolution.omitted_treatments] == [
+        "soc.heavy_elements",
+    ]
+    assert resolution.omitted_treatments[0]["stage_indices"] == [2, 3]
 
 
 # --- Custom workflows -------------------------------------------------------------

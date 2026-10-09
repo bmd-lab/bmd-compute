@@ -185,8 +185,9 @@ def detection_id(symbol: str) -> str:
     return f"element.{symbol.lower()}.present"
 
 
-def test_policy_v5_membership_is_explicit_and_centralized():
-    assert POLICY_VERSION == 5
+def test_policy_v6_membership_is_explicit_and_centralized():
+    # v6: SOC capabilities follow new-calculation admission (no HSE06 + SOC).
+    assert POLICY_VERSION == 6
     assert SOC_TRIGGER_CLASSES == {
         "4d_transition_metals": ("Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd"),
         "5d_transition_metals": ("Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg"),
@@ -363,26 +364,10 @@ def test_heavy_element_detection_produces_single_conservative_soc_consideration(
     assert consideration.trigger_elements == ("Bi",)
     assert consideration.trigger_classes == ("heavy_p_block",)
     assert consideration.selection_state == WORKFLOW_NOT_PROVIDED
-    assert consideration.applicable_stage_types == ("band_structure", "dos", "static")
+    # HSE06 + SOC is structurally valid but closed to new calculations, so it
+    # is never offered as a supported SOC capability.
+    assert consideration.applicable_stage_types == ("static",)
     assert consideration.bmd_compute_support["supported_stage_capabilities"] == [
-        {
-            "stage_type": "band_structure",
-            "stage_label": "Band Structure",
-            "theory": "hse06",
-            "theory_label": "HSE06",
-        },
-        {
-            "stage_type": "dos",
-            "stage_label": "Density of States",
-            "theory": "hse06",
-            "theory_label": "HSE06",
-        },
-        {
-            "stage_type": "static",
-            "stage_label": "Static Energy",
-            "theory": "hse06",
-            "theory_label": "HSE06",
-        },
         {
             "stage_type": "static",
             "stage_label": "Static Energy",
@@ -402,7 +387,7 @@ def test_heavy_element_detection_produces_single_conservative_soc_consideration(
     assert "may be important" in reason
     for forbidden in ("required", "necessary", "mandatory", "invalid"):
         assert forbidden not in reason
-    assert consideration.policy_source["policy_version"] == 5
+    assert consideration.policy_source["policy_version"] == 6
     assert consideration.policy_source["rule_id"] == SOC_HEAVY_ELEMENTS_CONSIDERATION_ID
     assert "composition-based screening" in consideration.limitations[0]
 
@@ -445,7 +430,7 @@ def test_spin_screen_detection_produces_single_conservative_spin_consideration()
     assert "consider enabling spin polarised" in reason
     for forbidden in ("is magnetic", "required", "necessary", "mandatory"):
         assert forbidden not in reason
-    assert consideration.policy_source["policy_version"] == 5
+    assert consideration.policy_source["policy_version"] == 6
     assert consideration.policy_source["rule_id"] == SPIN_COMPOSITION_CONSIDERATION_ID
     assert "does not establish that the material is magnetic" in consideration.limitations[0]
 
@@ -491,7 +476,7 @@ def test_sns2_dimensionality_observation_produces_dispersion_consideration():
     assert "Consider enabling a dispersion correction" in consideration.reason
     for forbidden in ("definitely", "required", "D3(BJ) is scientifically correct", "vdW material"):
         assert forbidden.lower() not in consideration.reason.lower()
-    assert consideration.policy_source["policy_version"] == 5
+    assert consideration.policy_source["policy_version"] == 6
     assert consideration.policy_source["rule_id"] == (
         DISPERSION_TWO_DIMENSIONAL_CONNECTIVITY_CONSIDERATION_ID
     )
@@ -803,19 +788,41 @@ def test_spin_consideration_workflow_statuses_are_stage_local_and_non_mutating()
 
 
 def test_heavy_element_compatible_workflow_without_soc_is_not_selected():
-    for workflow in (
-        pbe_static_workflow(),
-        WorkflowSpec([StageSpec(StageType.STATIC, Theory.HSE06)]),
-    ):
-        consideration = only_consideration(
-            bi2se3_structure(),
-            workflow=workflow,
-        )
+    consideration = only_consideration(
+        bi2se3_structure(),
+        workflow=pbe_static_workflow(),
+    )
 
-        assert consideration.selection_state == NOT_SELECTED
-        assert consideration.bmd_compute_support["workflow"]["provided"] is True
-        assert consideration.bmd_compute_support["workflow"]["supported_stage_indices"] == [1]
-        assert consideration.bmd_compute_support["workflow"]["selected_stage_indices"] == []
+    assert consideration.selection_state == NOT_SELECTED
+    assert consideration.bmd_compute_support["workflow"]["provided"] is True
+    assert consideration.bmd_compute_support["workflow"]["supported_stage_indices"] == [1]
+    assert consideration.bmd_compute_support["workflow"]["selected_stage_indices"] == []
+
+
+def test_heavy_element_hse06_workflow_is_not_offered_soc():
+    # HSE06 + SOC is closed to new calculations: an HSE06 workflow has no
+    # stage to which the SOC advisory may suggest adding SOC.
+    consideration = only_consideration(
+        bi2se3_structure(),
+        workflow=WorkflowSpec([StageSpec(StageType.STATIC, Theory.HSE06)]),
+    )
+
+    assert consideration.selection_state == UNSUPPORTED_FOR_WORKFLOW
+    assert consideration.bmd_compute_support["workflow"]["supported_stage_indices"] == []
+    assert consideration.bmd_compute_support["workflow"]["selected_stage_indices"] == []
+
+
+def test_heavy_element_hse06_soc_selection_is_reported_unsupported_not_selected():
+    workflow = WorkflowSpec([StageSpec(StageType.STATIC, Theory.HSE06, {Modifier.SOC})])
+    before = workflow.to_dict()
+
+    consideration = only_consideration(bi2se3_structure(), workflow=workflow)
+
+    assert consideration.selection_state == UNSUPPORTED_FOR_WORKFLOW
+    support = consideration.bmd_compute_support["workflow"]
+    assert support["selected_stage_indices"] == []
+    assert support["unsupported_selected_stage_indices"] == [1]
+    assert workflow.to_dict() == before
 
 
 def test_heavy_element_compatible_workflow_with_soc_is_already_selected():
