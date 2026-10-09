@@ -112,6 +112,30 @@ def reconstructed_runtime_stage_incar(structure_text, workflow_spec, stage_index
         workflow_spec=workflow_spec,
         timestamp="20260814-120000",
     )
+    return _runtime_stage_incar(submission_spec, stage_index)
+
+
+def historical_runtime_stage_incar(structure_text, workflow_spec, stage_index):
+    """Runtime INCAR of a run prepared before HSE06 + SOC was closed to new
+    calculations: built below the admission boundary, as its record is."""
+
+    from backend.submission import create_submission_spec
+
+    submission_spec = create_submission_spec(
+        {
+            "workflow_spec": workflow_spec.to_dict(),
+            "potcar_functional": "PBE_64",
+            "structure": {"type": "pasted_text", "format": "poscar", "text": structure_text},
+        },
+        structure=parse_structure(structure_text, "poscar"),
+        label="historical_hse06_soc",
+        timestamp="20260814-120000",
+        env={},
+    )
+    return _runtime_stage_incar(submission_spec, stage_index)
+
+
+def _runtime_stage_incar(submission_spec, stage_index):
     runtime_structure = structure_from_spec(submission_spec["flow_spec"]["structure"])
     flow = build_atomate2_flow_from_spec(
         runtime_structure,
@@ -258,7 +282,7 @@ hse_soc_workflow = WorkflowSpec(
     [StageSpec(StageType.STATIC, Theory.HSE06, {Modifier.SOC})],
     recipe="custom",
 )
-hse_soc_runtime_incar = reconstructed_runtime_stage_incar(
+hse_soc_runtime_incar = historical_runtime_stage_incar(
     poscar,
     hse_soc_workflow,
     stage_index=0,
@@ -788,7 +812,7 @@ calculation_definition = template_source[
 ]
 resource_panel = calculation_definition[
     calculation_definition.index("<h3>Execution Resources</h3>"):
-    calculation_definition.index("<h3>Scientific Specification</h3>")
+    calculation_definition.index("data-build-calculation-button")
 ]
 queue_label_index = resource_panel.index("<label>Queue</label>")
 queue_select_index = resource_panel.index('<select name="queue">')

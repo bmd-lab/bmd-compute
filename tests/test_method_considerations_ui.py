@@ -137,13 +137,39 @@ def render_response(response) -> str:
 
 
 def method_considerations_block(html: str) -> str:
-    start = html.index('class="method-considerations"')
-    end = html.index('<section class="stage">', start)
+    start = html.index('class="method-considerations ')
+    end = html.index('<section class="stage"', start)
     return html[start:end]
 
 
 def analyze_poscar(poscar: str):
     return main.analyze(request(), structure=poscar, fmt="poscar")
+
+
+def build_energy_only(poscar: str):
+    """Build the default Desired Output that /analyze resolves (Energy only).
+
+    Method Considerations describe a successfully built calculation, so they
+    are rendered on the built page, not on the analysed page.
+    """
+
+    response = main.build_workflow(
+        request("/build-calculation"),
+        structure=poscar,
+        fmt="poscar",
+        purpose=None,
+        theory=None,
+        modifiers=None,
+        cpus=None,
+        memory_gb=None,
+        walltime=None,
+        queue=None,
+        workflow_spec_json=None,
+        workflow="energy_only",
+        method=None,
+    )
+    assert response.status_code == 200
+    return response
 
 
 def workflow_spec_json(stage_type: str, *, modifiers=None) -> str:
@@ -162,18 +188,26 @@ def workflow_spec_json(stage_type: str, *, modifiers=None) -> str:
     return json.dumps(workflow.to_dict(), sort_keys=True)
 
 
-def test_bi_containing_structure_renders_method_considerations_after_summary():
-    response = analyze_poscar(BI2SE3_POSCAR)
-    html = render_response(response)
+def test_bi_containing_structure_renders_method_considerations_only_after_build():
+    analyzed = analyze_poscar(BI2SE3_POSCAR)
+    analyzed_html = render_response(analyzed)
 
-    assert response.status_code == 200
-    assert response.context["summary"]["reduced_formula"] == "Bi2Se3"
-    assert response.context["summary"]["natoms"] == 15
-    assert response.context["method_considerations"]["policy_version"] == 5
-    assert "Method Considerations" in html
-    assert html.index("Structure Summary") < html.index("Method Considerations")
-    assert html.index("Method Considerations") < html.index("Calculation Definition")
+    assert analyzed.status_code == 200
+    assert analyzed.context["summary"]["reduced_formula"] == "Bi2Se3"
+    assert analyzed.context["summary"]["natoms"] == 15
+    # Analysis alone has not built a calculation: nothing is rendered.
+    assert "Method Considerations" not in analyzed_html
+    assert "<h3>Method Considerations</h3>" not in analyzed_html
+    assert 'class="method-consideration-card' not in analyzed_html
 
+    built = build_energy_only(BI2SE3_POSCAR)
+    html = render_response(built)
+    assert built.context["method_considerations"]["policy_version"] == 6
+    assert html.index("Structure Summary") < html.index("Calculation Definition")
+    assert html.index('id="desired-output-select"') < html.index("<h3>Execution Resources</h3>")
+    assert html.index("<h3>Execution Resources</h3>") < html.index("data-build-calculation-button")
+    assert html.index("data-build-calculation-button") < html.index("<h3>Method Considerations</h3>")
+    assert html.index("<h3>Method Considerations</h3>") < html.index("<h2>Calculation Summary</h2>")
 
 def test_method_consideration_visual_state_uses_advisory_not_success_or_error():
     source = main.templates.get_template("index.html").render(main.page_context())
@@ -186,7 +220,7 @@ def test_method_consideration_visual_state_uses_advisory_not_success_or_error():
     assert ".pill.failed" in source
     assert "var(--bmd-danger)" in source
 
-    response = analyze_poscar(SNS2_POSCAR)
+    response = build_energy_only(SNS2_POSCAR)
     block = method_considerations_block(render_response(response))
     assert 'class="step-mark advisory"' in block
     assert "pill ready" not in block
@@ -194,7 +228,7 @@ def test_method_consideration_visual_state_uses_advisory_not_success_or_error():
 
 
 def test_real_style_bi2se3_renders_independent_dispersion_and_soc_considerations():
-    response = analyze_poscar(BI2SE3_POSCAR)
+    response = build_energy_only(BI2SE3_POSCAR)
     html = render_response(response)
     considerations = response.context["method_considerations"]["considerations"]
 
@@ -225,7 +259,7 @@ def test_real_style_bi2se3_renders_independent_dispersion_and_soc_considerations
 
 
 def test_pt_containing_structure_renders_soc_consideration_with_5d_trigger():
-    response = analyze_poscar(PT_SE_POSCAR)
+    response = build_energy_only(PT_SE_POSCAR)
     html = render_response(response)
     consideration = response.context["method_considerations"]["considerations"][0]
 
@@ -239,7 +273,7 @@ def test_pt_containing_structure_renders_soc_consideration_with_5d_trigger():
 
 
 def test_multi_trigger_bi_pt_se_renders_one_consideration_and_actual_triggers_only():
-    response = analyze_poscar(BI_PT_SE_POSCAR)
+    response = build_energy_only(BI_PT_SE_POSCAR)
     html = render_response(response)
     payload = response.context["method_considerations"]
 
@@ -272,7 +306,7 @@ def test_si_does_not_render_empty_method_considerations_section():
 
 
 def test_sns2_renders_dispersion_consideration_with_structural_trigger():
-    response = analyze_poscar(SNS2_POSCAR)
+    response = build_energy_only(SNS2_POSCAR)
     html = render_response(response)
     considerations = response.context["method_considerations"]["considerations"]
 
@@ -332,7 +366,7 @@ def test_dimensionality_failure_does_not_block_analyze_or_render_dispersion(monk
 
 
 def test_fe_structure_renders_spin_polarisation_consideration_only():
-    response = analyze_poscar(FE_POSCAR)
+    response = build_energy_only(FE_POSCAR)
     html = render_response(response)
     considerations = response.context["method_considerations"]["considerations"]
 
@@ -354,7 +388,7 @@ def test_eu_and_ir_render_independent_spin_and_soc_cards():
         (EU_POSCAR, "Eu", "lanthanide spin-screening element", "lanthanide"),
         (IR_POSCAR, "Ir", "5d spin-screening element", "5d transition metal"),
     ):
-        response = analyze_poscar(poscar)
+        response = build_energy_only(poscar)
         html = render_response(response)
         considerations = response.context["method_considerations"]["considerations"]
 
@@ -375,7 +409,7 @@ def test_eu_and_ir_render_independent_spin_and_soc_cards():
 
 
 def test_backend_reason_limitations_and_support_remain_structured_but_not_rendered():
-    response = analyze_poscar(BI2SE3_POSCAR)
+    response = build_energy_only(BI2SE3_POSCAR)
     html = render_response(response)
     consideration = response.context["method_considerations"]["considerations"][0]
     block = method_considerations_block(html)

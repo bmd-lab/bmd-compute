@@ -52,6 +52,32 @@ def _submission_state(workflow_spec: WorkflowSpec):
     )
 
 
+def _historical_submission_spec(workflow_spec: WorkflowSpec) -> dict:
+    """A record prepared before HSE06 + SOC was closed to new calculations.
+
+    New requests are refused at ``main.build_submission_state_from_structure``;
+    an existing record's submission spec is rendered below that boundary.
+    """
+
+    from backend.parser import parse_structure
+
+    return submission.create_submission_spec(
+        {
+            "workflow_spec": workflow_spec.to_dict(),
+            "potcar_functional": "PBE_64",
+            "structure": {"type": "pasted_text", "format": "poscar", "text": POSCAR},
+        },
+        structure=parse_structure(POSCAR, "poscar"),
+        label="historical",
+        timestamp="20260922-120000",
+        ntasks=48,
+        mem_gb=256,
+        walltime="12:00:00",
+        env={},
+        submission_attempt_id="12345678-1234-5678-1234-567812345678",
+    )
+
+
 def _uploaded_script(submission_spec: dict) -> str:
     group = next(
         group
@@ -200,11 +226,12 @@ def test_soc_submission_summary_reports_vasp_ncl():
 
 
 def test_hse06_soc_submission_summary_uses_authoritative_stage_provenance():
+    # Historical HSE06 + SOC records still summarise from their own provenance.
     workflow = WorkflowSpec([
         StageSpec(StageType.STATIC, Theory.HSE06, {Modifier.SOC}),
     ])
-    _, _, generated_inputs, _ = _submission_state(workflow)
-    stage = generated_inputs["submission_summary"]["execution"]["stages"][0]
+    summary = build_submission_summary(_historical_submission_spec(workflow))
+    stage = summary["execution"]["stages"][0]
 
     assert stage["display_name"] == "HSE06 Static Energy + Spin-Orbit Coupling (SOC)"
     assert stage["executable"] == "vasp_ncl"
@@ -223,7 +250,11 @@ def test_pedagogical_script_uses_authoritative_stage_executable(
     theory, modifiers, expected_executable
 ):
     workflow = WorkflowSpec([StageSpec(StageType.STATIC, theory, modifiers)])
-    _, _, _, submission_spec = _submission_state(workflow)
+    if theory is Theory.HSE06 and Modifier.SOC in modifiers:
+        # Closed to new calculations; historical records still render.
+        submission_spec = _historical_submission_spec(workflow)
+    else:
+        _, _, _, submission_spec = _submission_state(workflow)
     submission_spec["environment"]["VASP_CMD"] = "mpirun -n $SLURM_NTASKS wrong_global"
 
     script = build_standalone_slurm_example(submission_spec)["text"]

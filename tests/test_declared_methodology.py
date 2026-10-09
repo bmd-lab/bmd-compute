@@ -139,17 +139,21 @@ def test_two_dimensional_structure_gets_automatic_d3_bj_on_pbe_relax_and_static_
     assert "IVDW" not in dos["input_set"].incar
 
 
-def test_heavy_element_gets_automatic_soc_on_non_relaxation_stages_only():
+def test_heavy_element_gets_automatic_soc_on_pbe_non_relaxation_stages_only():
     structure = parse_structure(BI_POSCAR)
 
+    # HSE06 + SOC is closed to new calculations: the HSE06 stages keep HSE06
+    # and omit SOC (recorded and shown as a red warning).
     relax, hse_static, band = _resolved_previews(structure, "electronic_band_structure")
     assert "LSORBIT" not in relax["input_set"].incar
     for preview in (hse_static, band):
-        assert preview["input_set"].incar["LSORBIT"] is True
-        assert preview["vasp_executable"] == "vasp_ncl"
+        assert "LSORBIT" not in preview["input_set"].incar
+        assert preview["input_set"].incar["LHFCALC"] is True
+        assert preview["vasp_executable"] == "vasp_std"
 
     (static,) = _resolved_previews(structure, "energy_only")
     assert static["input_set"].incar["LSORBIT"] is True
+    assert static["vasp_executable"] == "vasp_ncl"
 
 
 def test_d3_bj_is_ivdw_12_and_d3_zero_damping_is_ivdw_11():

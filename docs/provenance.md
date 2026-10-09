@@ -99,7 +99,7 @@ The actual argv passed to Custodian is still determined at runtime from the sbat
 The execution section records:
 
 - serialized `WorkflowSpec`
-- for BMD-managed Desired Output workflows, the automatic treatment record (`automatic_treatments`): base recipe, resolved workflow, which treatments were applied to which stages, and any consideration with no applicable stage
+- for BMD-managed Desired Output workflows, the automatic treatment record (`automatic_treatments`): base recipe, resolved workflow, which treatments were applied to which stages, any consideration with no applicable stage, and (`omitted_treatments`) any triggered treatment BMD omitted from stages because the combination is closed to new calculations (SOC on HSE06 stages), with the omitted stage indices and the admission policy id/version. Records written before this field existed simply lack it
 - when the automatic DFT+U rule triggers, `automatic_treatments.dft_u`: policy id/version, rule id, deciding anion, triggering elements, every pymatgen oxidation-state guess and the derived d counts, the d0 gate result and reason, the decision, the frozen L/U/J/LDAUTYPE parameters and their source, the `MPRelaxSet.yaml` SHA-256, the `atomate2`/`pymatgen`/`pymatgen-core` versions, and, per +U stage, the generated `LDAU`/`LDAUTYPE`/`LDAUL`/`LDAUU`/`LDAUJ`/`LMAXMIX` with POSCAR species order and POTCAR symbols. Runtime regenerates each +U stage from the frozen values and stops if any of these differ
 - stage order
 - per-stage Custodian policy (`execution.custodian.stages`), including the unsuccessful-stage policy `stop_children_kwargs = {"handle_unsuccessful": "error"}` that makes an unconverged stage fail the workflow

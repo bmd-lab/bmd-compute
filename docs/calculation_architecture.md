@@ -95,13 +95,14 @@ Modifiers are validated by stage and theory. They are not free-form INCAR fragme
 
 Important rules:
 
-- SOC is available for PBE and HSE06 Static Energy stages and HSE06 DOS and Band Structure stages, and uses `vasp_ncl` with Custodian `auto_gamma` disabled.
+- SOC is available for new calculations on PBE Static Energy stages and uses `vasp_ncl` with Custodian `auto_gamma` disabled.
+- HSE06 + SOC remains structurally valid in the registry (so historical HSE06 Static, DOS and Band Structure + SOC records stay readable and executable), but is closed to new calculations by `backend.calculations.admission` (policy `bmd_compute.new_calculation_admission` v1). The admission check runs once, in `main.build_submission_state_from_structure`, after automatic treatments are resolved, so it covers Desired Output, Custom workflow JSON and legacy purpose/theory/modifiers requests on `/build-calculation`, `/prepare-remote` and `/submit`. It never runs when reading records, monitoring or loading results.
 - SOC and van der Waals correction may be combined on PBE Static Energy.
 - In BMD-managed Desired Output workflows Spin Polarised is applied automatically to every stage when the spin composition screen triggers, and DFT-D3(BJ) to PBE Relax/Static stages when two-dimensional bonded connectivity is detected (see `methodology.md`).
 - A failed dimensionality observation makes managed Desired Output resolution fail closed before preview, preparation or submission because automatic DFT-D3(BJ) applicability is then unknown. Custom workflows remain user-managed and unaffected.
 - A stage that restarts from the previous fixed charge density (`ICHARG = 11`), or whose generator sizes `NBANDS` from the previous run (PBE and HSE06 DOS/Band Structure), must use the same SOC setting as that stage.
-- HSE06 DOS + SOC keeps the automatic uniform Gamma mesh; with `ISYM = 0` VASP expands it over the full zone.
-- In BMD-managed Desired Output workflows SOC is applied automatically to every non-relaxation stage when the heavy-element SOC policy triggers; relaxations remain non-SOC.
+- Historical HSE06 DOS + SOC keeps the automatic uniform Gamma mesh; with `ISYM = 0` VASP expands it over the full zone.
+- In BMD-managed Desired Output workflows SOC is applied automatically to every non-relaxation PBE stage when the heavy-element SOC policy triggers; relaxations remain non-SOC. SOC is omitted from HSE06 stages; the omission is recorded in `automatic_treatments.omitted_treatments` and shown as a red unsupported-combination warning before submission.
 - In BMD-managed Desired Output workflows DFT+U follows automatic policy `bmd_compute.dft_u` v1: the pinned pymatgen/Materials Project GGA+U oxide/fluoride rule (O or F is the most electronegative element and a Co, Cr, Fe, Mn, Mo, Ni, V or W is present) with the unchanged MP L/U/J/LDAUTYPE values. It is suppressed only when every charge-balanced pymatgen oxidation-state guess puts every triggering element at d0; with no guess the MP rule applies. It is placed on PBE Relax and PBE Static stages only (Static Energy: the PBE Static; Relaxed Structure: both PBE relaxations; DOS/Band Structure: the PBE relaxation, never the HSE06 stages). It does not change the spin decision and may coexist with SOC and D3 on PBE stages. Parameters are frozen at preparation and verified at run time.
 - A stage that restarts from the previous fixed charge density (`ICHARG = 11`) must use the same DFT+U setting as that stage.
 - In Custom workflows DFT+U is explicit and is applied only when selected; it is never added or removed automatically.
@@ -235,6 +236,7 @@ Supported now:
 Not part of v1 (deliberately unsupported, or post-v1 candidates rather than commitments):
 
 - SOC relaxation and PBE DOS/Band Structure + SOC
+- HSE06 + SOC for new calculations (historical records remain readable)
 - r2SCAN
 - Dielectric/optics
 - GW

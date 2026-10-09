@@ -7,10 +7,16 @@ from pymatgen.io.vasp.inputs import Kpoints
 from starlette.requests import Request
 
 import main
+from backend.calculations.admission import (
+    HSE06_SOC_OMITTED_MESSAGE,
+    HSE06_SOC_OMITTED_TITLE,
+)
 from backend.calculations.default_treatments import (
     AUTOMATIC_APPLICATION_ADVISORY,
     AUTOMATIC_APPLICATION_APPLIED,
     AUTOMATIC_APPLICATION_NOT_APPLICABLE,
+    AUTOMATIC_APPLICATION_OMITTED_UNSUPPORTED,
+    SOC_OMITTED_UNSUPPORTED_CODE,
     DISPERSION_CONSIDERATION_ID,
     SOC_CONSIDERATION_ID,
     SPIN_CONSIDERATION_ID,
@@ -35,6 +41,7 @@ from backend.calculations.vasp_stage_definitions import (
 )
 from backend.generated_inputs import preview_generated_inputs
 from backend.parser import parse_structure, structure_from_spec
+from backend.submission import create_submission_spec
 from backend.workflows import (
     build_atomate2_flow_from_spec,
     build_band_structure_input_set_generator,
@@ -212,6 +219,37 @@ def job_maker(job):
     return maker
 
 
+def historical_hse06_soc_workflow(terminal: StageType) -> WorkflowSpec:
+    """The Bi2Se3 DOS/Band Structure workflow BMD Compute resolved before HSE06 + SOC
+    was closed to new calculations. Records of this shape must stay executable."""
+
+    return WorkflowSpec(
+        [
+            StageSpec(StageType.RELAX, Theory.PBE, {Modifier.DISPERSION}),
+            StageSpec(StageType.STATIC, Theory.HSE06, {Modifier.SOC}),
+            StageSpec(terminal, Theory.HSE06, {Modifier.SOC}),
+        ]
+    )
+
+
+def historical_submission_spec(poscar: str, workflow_spec: WorkflowSpec) -> dict:
+    """A submission spec produced below the new-calculation admission boundary,
+    as an already prepared or submitted historical run carries it."""
+
+    flow_spec = {
+        "workflow_spec": workflow_spec.to_dict(),
+        "potcar_functional": "PBE_64",
+        "structure": {"type": "pasted_text", "format": "poscar", "text": poscar},
+    }
+    return create_submission_spec(
+        flow_spec,
+        structure=parse_structure(poscar),
+        label="historical_hse06_soc",
+        timestamp="20260928-120000",
+        env={},
+    )
+
+
 def runtime_input_set(submission_spec: dict, stage_index: int):
     runtime_structure, jobs = runtime_jobs(submission_spec)
     generator = job_maker(jobs[stage_index]).input_set_generator
@@ -350,54 +388,77 @@ def test_layered_heavy_element_static_energy_combines_soc_and_d3_on_one_stage():
     ("desired_output", "terminal"),
     [("electronic_dos", "dos"), ("electronic_band_structure", "band_structure")],
 )
-def test_bi2se3_dos_and_band_apply_soc_to_hse_stages_only(desired_output, terminal):
+def test_bi2se3_dos_and_band_keep_hse06_and_omit_soc_with_red_warning(desired_output, terminal):
+    # HSE06 + SOC is closed to new calculations. The heavy-element SOC policy
+    # still triggers, but BMD Compute keeps the HSE06 workflow, omits SOC from
+    # its HSE06 stages, records the omission and shows a red warning.
     resolution = resolve(desired_output, BI2SE3_POSCAR)
 
     assert signature(resolution.resolved_workflow) == [
         ("relax", "pbe", ("dispersion",)),
-        ("static", "hse06", ("soc",)),
-        (terminal, "hse06", ("soc",)),
+        ("static", "hse06", ()),
+        (terminal, "hse06", ()),
     ]
-    soc_treatment = next(
-        treatment
-        for treatment in resolution.applied_treatments
-        if treatment.consideration_id == SOC_CONSIDERATION_ID
-    )
-    assert soc_treatment.stage_indices == (2, 3)
+    assert SOC_CONSIDERATION_ID not in {
+        treatment.consideration_id for treatment in resolution.applied_treatments
+    }
+    assert SOC_CONSIDERATION_ID not in {
+        item["consideration_id"] for item in resolution.not_applicable_considerations
+    }
     assert resolution.advisory_consideration_ids == ()
+    (omission,) = resolution.omitted_treatments
+    assert omission["consideration_id"] == SOC_CONSIDERATION_ID
+    assert omission["application_state"] == AUTOMATIC_APPLICATION_OMITTED_UNSUPPORTED
+    assert omission["code"] == SOC_OMITTED_UNSUPPORTED_CODE
+    assert omission["stage_indices"] == [2, 3]
+    assert [stage["theory"] for stage in omission["omitted_stages"]] == ["hse06", "hse06"]
+    assert omission["title"] == HSE06_SOC_OMITTED_TITLE
+    assert omission["message"] == HSE06_SOC_OMITTED_MESSAGE
 
     response = build_route(BI2SE3_POSCAR, workflow=desired_output)
     context = response.context
     assert response.status_code == 200
     assert [stage["modifiers"] for stage in context["selected_workflow"]["stages"]] == [
         ["dispersion"],
-        ["soc"],
-        ["soc"],
+        [],
+        [],
     ]
 
     generated = context["generated_inputs"]
     assert [item["executable"] for item in generated["vasp_executables"]] == [
         "vasp_std",
-        "vasp_ncl",
-        "vasp_ncl",
+        "vasp_std",
+        "vasp_std",
     ]
     relax, static, analysis = stage_sections(generated["incar"])
-    assert "LSORBIT" not in relax
-    assert "ISPIN = 1" in relax
     assert "IVDW = 12" in relax
+    for section in (relax, static, analysis):
+        assert "LSORBIT" not in section
+        assert "vasp_ncl" not in section
     for section in (static, analysis):
-        assert "# VASP executable - vasp_ncl" in section
         assert "LHFCALC = True" in section
-        assert "LSORBIT = True" in section
-        assert "ISYM = 0" in section
-        assert "ISPIN =" not in section
         assert "IVDW" not in section
-        assert magmom_components(section) == [0.0] * (3 * 15)
 
     soc = considerations_by_id(context)[SOC_CONSIDERATION_ID]
-    assert soc["automatic_application_state"] == AUTOMATIC_APPLICATION_APPLIED
+    assert soc["automatic_application_state"] == AUTOMATIC_APPLICATION_OMITTED_UNSUPPORTED
+    assert soc["presentation"] == "unsupported"
+    assert soc["browser_display_name"] == HSE06_SOC_OMITTED_TITLE
+    assert soc["browser_summary"] == HSE06_SOC_OMITTED_MESSAGE
+
+    # The red warning is shown exactly once, on the Method Consideration
+    # card below the Build button, before the Prepare/Submit forms.
     rendered = response.template.render(context)
-    assert "in the HSE06 Static Energy and HSE06" in rendered
+    card = 'data-method-consideration-presentation="unsupported"'
+    assert rendered.count('class="method-consideration-card unsupported"') == 1
+    assert rendered.count(card) == 1
+    assert rendered.count('role="alert"') == 1
+    assert rendered.count(HSE06_SOC_OMITTED_TITLE) == 1
+    assert rendered.count(HSE06_SOC_OMITTED_MESSAGE) == 1
+    assert rendered.index("data-build-calculation-button") < rendered.index(card)
+    assert rendered.index(card) < rendered.index('action="/prepare-remote"')
+    assert "data-unsupported-omission" not in rendered
+    assert "Spin\u2013orbit coupling has been omitted from the HSE06 stages" in rendered
+    assert "Spin-Orbit Coupling (SOC) has been included automatically" not in rendered
     assert (
         "The van der Waals correction has been included automatically in the "
         "PBE Geometry Optimisation stage."
@@ -406,7 +467,57 @@ def test_bi2se3_dos_and_band_apply_soc_to_hse_stages_only(desired_output, termin
     submission_spec = context["submission_spec"]
     flow_spec = submission_spec["flow_spec"]
     assert flow_spec["automatic_treatments"]["resolved_workflow"] == flow_spec["workflow_spec"]
+    assert flow_spec["automatic_treatments"]["omitted_treatments"] == [omission]
     assert submission_spec["provenance"]["execution"]["automatic_treatments"] == flow_spec["automatic_treatments"]
+    vasp_stages = submission_spec["provenance"]["vasp"]["stages"]
+    assert [stage["executable"] for stage in vasp_stages] == ["vasp_std", "vasp_std", "vasp_std"]
+    assert [stage["custodian_vasp_job_kwargs"] for stage in vasp_stages] == [{}, {}, {}]
+
+    _, jobs = runtime_jobs(submission_spec)
+    for job in jobs:
+        kwargs = job_maker(job).run_vasp_kwargs
+        assert "vasp_cmd" not in kwargs
+        assert "vasp_job_kwargs" not in kwargs
+
+
+@pytest.mark.parametrize(
+    ("desired_output", "terminal"),
+    [("electronic_dos", "dos"), ("electronic_band_structure", "band_structure")],
+)
+def test_bi2se3_soc_omission_leaves_hse06_inputs_identical_to_plain_hse06(desired_output, terminal):
+    # Omitting SOC must leave exactly the inputs of the non-SOC HSE06 workflow:
+    # same stages, INCAR, KPOINTS and executables, with no SOC residue.
+    structure = parse_structure(BI2SE3_POSCAR)
+    resolved = resolve(desired_output, BI2SE3_POSCAR).resolved_workflow
+    # The plain HSE06 workflow: the resolved PBE relaxation (which carries the
+    # automatic van der Waals correction; Bi2Se3 is layered) followed by the
+    # Desired Output's own, untreated HSE06 stages.
+    base = desired_output_workflow_spec(desired_output)
+    assert [(stage.stage_type.value, stage.theory.value) for stage in base.stages] == [
+        ("relax", "pbe"),
+        ("static", "hse06"),
+        (terminal, "hse06"),
+    ]
+    assert all(not stage.modifiers for stage in base.stages[1:])
+    plain = WorkflowSpec(
+        [resolved.stages[0], *base.stages[1:]],
+        recipe=base.recipe,
+        label=base.label,
+    )
+    assert resolved.to_dict() == validate_workflow_spec(plain).to_dict()
+    assert preview_generated_inputs(structure, resolved) == preview_generated_inputs(structure, plain)
+
+
+@pytest.mark.parametrize("terminal", [StageType.DOS, StageType.BAND_STRUCTURE])
+def test_historical_hse06_soc_records_still_build_their_immutable_runtime(terminal):
+    # A run prepared or submitted before HSE06 + SOC was closed to new
+    # calculations carries its workflow in flow_spec. Everything below the
+    # admission boundary (structural validation, submission records,
+    # provenance, runtime flow construction) must keep accepting it unchanged.
+    workflow = historical_hse06_soc_workflow(terminal)
+    submission_spec = historical_submission_spec(BI2SE3_POSCAR, workflow)
+
+    assert submission_spec["flow_spec"]["workflow_spec"] == validate_workflow_spec(workflow).to_dict()
     vasp_stages = submission_spec["provenance"]["vasp"]["stages"]
     assert [stage["executable"] for stage in vasp_stages] == ["vasp_std", "vasp_ncl", "vasp_ncl"]
     assert [stage["custodian_vasp_job_kwargs"] for stage in vasp_stages] == [
@@ -418,19 +529,25 @@ def test_bi2se3_dos_and_band_apply_soc_to_hse_stages_only(desired_output, termin
     runtime_structure, jobs = runtime_jobs(submission_spec)
     run_kwargs = [job_maker(job).run_vasp_kwargs for job in jobs]
     assert "vasp_cmd" not in run_kwargs[0]
-    assert "vasp_job_kwargs" not in run_kwargs[0]
     for kwargs in run_kwargs[1:]:
         assert kwargs["vasp_cmd"].endswith("vasp_ncl")
         assert kwargs["vasp_job_kwargs"] == {"auto_gamma": False}
 
-    # The terminal stage's structure is only known at run time; its SOC
-    # starting moments must still be written, and must match the preview.
+    preview = preview_generated_inputs(parse_structure(BI2SE3_POSCAR), workflow)
+    _, static, analysis = stage_sections(preview["incar"])
+    for section in (static, analysis):
+        assert "# VASP executable - vasp_ncl" in section
+        assert "LHFCALC = True" in section
+        assert "LSORBIT = True" in section
+        assert "ISYM = 0" in section
+        assert magmom_components(section) == [0.0] * (3 * 15)
+
     terminal_runtime = job_maker(jobs[2]).input_set_generator.get_input_set(
         runtime_structure,
         potcar_spec=True,
     )
-    assert magmom_components(str(terminal_runtime.incar)) == magmom_components(analysis)
     assert "LSORBIT = True" in str(terminal_runtime.incar)
+    assert magmom_components(str(terminal_runtime.incar)) == magmom_components(analysis)
 
 
 def test_relaxed_structure_keeps_relaxations_non_soc_and_reports_it():
@@ -461,15 +578,20 @@ def test_custom_workflow_is_not_given_automatic_soc():
     assert "automatic_treatments" not in response.context["submission_spec"]["flow_spec"]
 
 
-def test_spin_and_soc_compose_on_hse_stages_for_magnetic_heavy_elements():
+def test_spin_applies_and_soc_is_omitted_on_hse_stages_for_magnetic_heavy_elements():
     resolution = resolve("electronic_band_structure", FEPT_POSCAR)
     stage_modifiers = [set(item[2]) for item in signature(resolution.resolved_workflow)]
     assert "soc" not in stage_modifiers[0]
     assert "spin_polarized" in stage_modifiers[0]
-    assert stage_modifiers[1] == {"soc", "spin_polarized"}
-    assert stage_modifiers[2] == {"soc", "spin_polarized"}
+    assert stage_modifiers[1] == {"spin_polarized"}
+    assert stage_modifiers[2] == {"spin_polarized"}
     applied = {treatment.consideration_id for treatment in resolution.applied_treatments}
-    assert {SPIN_CONSIDERATION_ID, SOC_CONSIDERATION_ID} <= applied
+    assert SPIN_CONSIDERATION_ID in applied
+    assert SOC_CONSIDERATION_ID not in applied
+    assert [item["consideration_id"] for item in resolution.omitted_treatments] == [
+        SOC_CONSIDERATION_ID,
+    ]
+    assert resolution.omitted_treatments[0]["stage_indices"] == [2, 3]
 
 
 # --- Custodian auto_gamma --------------------------------------------------------
@@ -551,11 +673,14 @@ def test_hse_band_soc_weighted_mesh_spans_full_zone_and_keeps_zero_weight_path(p
 
 
 def test_hse_band_soc_preview_runtime_and_reference_share_full_zone_kpoints():
-    response = build_route(BI2SE3_POSCAR, workflow="electronic_band_structure")
-    submission_spec = response.context["submission_spec"]
+    # Historical HSE06 Band Structure + SOC records must keep regenerating the
+    # same full-zone k-points at run time and in the input reference.
+    workflow = historical_hse06_soc_workflow(StageType.BAND_STRUCTURE)
+    submission_spec = historical_submission_spec(BI2SE3_POSCAR, workflow)
 
     runtime_kpoints = runtime_input_set(submission_spec, 2).kpoints
-    terminal_preview = stage_sections(response.context["generated_inputs"]["kpoints"])[2]
+    preview = preview_generated_inputs(parse_structure(BI2SE3_POSCAR), workflow)
+    terminal_preview = stage_sections(preview["kpoints"])[2]
     assert "BMD full-zone weighted mesh for SOC" in str(runtime_kpoints)
     assert "BMD full-zone weighted mesh for SOC" in terminal_preview
     for line in str(runtime_kpoints).splitlines()[1:]:
@@ -744,10 +869,11 @@ def test_hse_dos_soc_keeps_an_automatic_uniform_mesh(poscar, expected_mesh):
 
 
 def test_hse_dos_soc_runtime_kpoints_match_preview():
-    response = build_route(BI2SE3_POSCAR, workflow="electronic_dos")
-    submission_spec = response.context["submission_spec"]
+    workflow = historical_hse06_soc_workflow(StageType.DOS)
+    submission_spec = historical_submission_spec(BI2SE3_POSCAR, workflow)
     runtime_kpoints = runtime_input_set(submission_spec, 2).kpoints
-    terminal_preview = stage_sections(response.context["generated_inputs"]["kpoints"])[2]
+    preview = preview_generated_inputs(parse_structure(BI2SE3_POSCAR), workflow)
+    terminal_preview = stage_sections(preview["kpoints"])[2]
 
     assert runtime_kpoints.num_kpts == 0
     assert tuple(int(value) for value in runtime_kpoints.kpts[0]) == (7, 7, 1)
