@@ -174,6 +174,22 @@ h2 {
     padding-top: 20px;
 }
 
+.configuration-grid .method-considerations {
+    margin-top: 0;
+    padding-top: 16px;
+}
+
+.method-considerations-stale {
+    color: var(--bmd-text-muted);
+    font-size: 13px;
+    line-height: 1.5;
+    margin: -6px 0 12px;
+}
+
+.method-considerations[data-stale="true"] .method-consideration-card {
+    opacity: 0.6;
+}
+
 .method-considerations h3 {
     color: var(--bmd-text);
     font-size: 16px;
@@ -1223,36 +1239,6 @@ ul {
 
             </div>
 
-            {% if method_considerations and method_considerations.considerations %}
-            <div class="method-considerations" data-method-considerations>
-                <h3>Method Considerations</h3>
-
-                {% for consideration in method_considerations.considerations %}
-                {% set is_unsupported = consideration.presentation == "unsupported" %}
-                <div
-                    class="method-consideration-card{% if is_unsupported %} unsupported{% endif %}"
-                    data-method-consideration-id="{{ consideration.id }}"
-                    data-method-consideration-presentation="{{ consideration.presentation or 'advisory' }}"
-                    {% if is_unsupported %}role="alert"{% endif %}>
-                    <div class="method-consideration-header">
-                        <div class="method-consideration-title">
-                            {% if is_unsupported %}
-                            <span class="step-mark unsupported" aria-label="Unsupported combination">!</span>
-                            {% else %}
-                            <span class="step-mark advisory" aria-label="Advisory">!</span>
-                            {% endif %}
-                            <span>{{ consideration.browser_display_name }}</span>
-                        </div>
-                    </div>
-
-                    <p class="method-consideration-summary">
-                        {{ consideration.browser_summary }}
-                    </p>
-                </div>
-                {% endfor %}
-            </div>
-            {% endif %}
-
         </section>
 
         <section class="stage">
@@ -1264,7 +1250,7 @@ ul {
                         <h2>Calculation Definition</h2>
                     </div>
                     <div class="summary-line">
-                        Configure the scientific specification and execution resources.
+                        Choose the workflow, review its method considerations, then set execution resources.
                     </div>
                 </div>
                 <div class="stage-status">
@@ -1282,56 +1268,6 @@ ul {
 
                 <div class="calculation-layout">
                     <div class="configuration-grid">
-                        <div class="configuration-panel">
-                            <h3>Execution Resources</h3>
-                            <div class="resource-grid">
-                                <div>
-                                    <label>CPUs</label>
-                                    <select name="cpus">
-                                        {% for cpu_count in selected_resources.allowed_cpu_counts %}
-                                        <option
-                                            value="{{ cpu_count }}"
-                                            {% if selected_resources.cpus == cpu_count %}selected{% endif %}>
-                                            {{ cpu_count }}
-                                        </option>
-                                        {% endfor %}
-                                    </select>
-                                </div>
-                                <div>
-                                    <label>Memory (GB)</label>
-                                    <select name="memory_gb">
-                                        {% for memory_gb in selected_resources.allowed_memory_gb %}
-                                        <option
-                                            value="{{ memory_gb }}"
-                                            {% if selected_resources.memory_gb == memory_gb %}selected{% endif %}>
-                                            {{ memory_gb }} GB
-                                        </option>
-                                        {% endfor %}
-                                    </select>
-                                </div>
-                                <div>
-                                    <label>Walltime</label>
-                                    <input name="walltime" value="{{ selected_resources.walltime }}">
-                                </div>
-                                <div>
-                                    <label>Queue</label>
-                                    <select name="queue">
-                                        {% for queue in selected_resources.allowed_queues %}
-                                        <option
-                                            value="{{ queue }}"
-                                            {% if selected_resources.queue == queue %}selected{% endif %}>
-                                            {{ queue }}
-                                        </option>
-                                        {% endfor %}
-                                    </select>
-                                </div>
-                                <input
-                                    type="hidden"
-                                    name="nodes"
-                                    value="{{ selected_resources.nodes }}">
-                            </div>
-                        </div>
-
                         <div class="configuration-panel">
                             <h3>Scientific Specification</h3>
                             <input
@@ -1431,6 +1367,92 @@ ul {
                                 <div class="workflow-controls">
                                     <button type="button" class="secondary-button" id="add-workflow-stage" {% if not is_custom_workflow %}hidden{% endif %}>Add Stage</button>
                                 </div>
+                            </div>
+                        </div>
+
+                        {% if method_considerations and method_considerations.considerations %}
+                        <div
+                            class="method-considerations configuration-panel"
+                            data-method-considerations
+                            aria-live="polite">
+                            <h3>Method Considerations</h3>
+                            <p class="method-considerations-stale" data-method-considerations-stale-notice hidden>
+                                These considerations describe the workflow last built. Build or update the calculation to refresh them for the current selection.
+                            </p>
+
+                            {% for consideration in method_considerations.considerations %}
+                            {% set is_unsupported = consideration.presentation == "unsupported" %}
+                            <div
+                                class="method-consideration-card{% if is_unsupported %} unsupported{% endif %}"
+                                data-method-consideration-id="{{ consideration.id }}"
+                                data-method-consideration-presentation="{{ consideration.presentation or 'advisory' }}"
+                                {% if is_unsupported %}role="alert"{% endif %}>
+                                <div class="method-consideration-header">
+                                    <div class="method-consideration-title">
+                                        {% if is_unsupported %}
+                                        <span class="step-mark unsupported" aria-label="Unsupported combination">!</span>
+                                        {% else %}
+                                        <span class="step-mark advisory" aria-label="Advisory">!</span>
+                                        {% endif %}
+                                        <span>{{ consideration.browser_display_name }}</span>
+                                    </div>
+                                </div>
+
+                                <p class="method-consideration-summary">
+                                    {{ consideration.browser_summary }}
+                                </p>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+
+                        <div class="configuration-panel">
+                            <h3>Execution Resources</h3>
+                            <div class="resource-grid">
+                                <div>
+                                    <label>CPUs</label>
+                                    <select name="cpus">
+                                        {% for cpu_count in selected_resources.allowed_cpu_counts %}
+                                        <option
+                                            value="{{ cpu_count }}"
+                                            {% if selected_resources.cpus == cpu_count %}selected{% endif %}>
+                                            {{ cpu_count }}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label>Memory (GB)</label>
+                                    <select name="memory_gb">
+                                        {% for memory_gb in selected_resources.allowed_memory_gb %}
+                                        <option
+                                            value="{{ memory_gb }}"
+                                            {% if selected_resources.memory_gb == memory_gb %}selected{% endif %}>
+                                            {{ memory_gb }} GB
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label>Walltime</label>
+                                    <input name="walltime" value="{{ selected_resources.walltime }}">
+                                </div>
+                                <div>
+                                    <label>Queue</label>
+                                    <select name="queue">
+                                        {% for queue in selected_resources.allowed_queues %}
+                                        <option
+                                            value="{{ queue }}"
+                                            {% if selected_resources.queue == queue %}selected{% endif %}>
+                                            {{ queue }}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <input
+                                    type="hidden"
+                                    name="nodes"
+                                    value="{{ selected_resources.nodes }}">
                             </div>
                         </div>
                     </div>
@@ -2716,6 +2738,29 @@ document.addEventListener("DOMContentLoaded", function () {
     // backend admission check is authoritative; this only prevents selecting
     // them in a Custom workflow stage.
     var unsupportedCombinations = options.unsupported_new_calculation_combinations || [];
+    // The considerations panel is rendered by the server for the workflow last
+    // built. When the selection changes in the browser they are marked as
+    // describing the previous build until the calculation is built again.
+    var considerationsPanel = form.querySelector("[data-method-considerations]");
+    var considerationsStaleNotice = considerationsPanel
+        ? considerationsPanel.querySelector("[data-method-considerations-stale-notice]")
+        : null;
+    var builtWorkflowJson = null;
+
+    function syncConsiderationsFreshness() {
+        if (!considerationsPanel || builtWorkflowJson === null) {
+            return;
+        }
+        var stale = hiddenWorkflow.value !== builtWorkflowJson;
+        if (stale) {
+            considerationsPanel.setAttribute("data-stale", "true");
+        } else {
+            considerationsPanel.removeAttribute("data-stale");
+        }
+        if (considerationsStaleNotice) {
+            considerationsStaleNotice.hidden = !stale;
+        }
+    }
 
     function escapeHtml(value) {
         return String(value || "")
@@ -2928,6 +2973,7 @@ document.addEventListener("DOMContentLoaded", function () {
             label: null,
             recipe: desiredOutputSelect && desiredOutputSelect.value !== "custom" ? desiredOutputSelect.value : null
         });
+        syncConsiderationsFreshness();
     }
 
     function renderStages(stages) {
@@ -2978,6 +3024,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
     form.addEventListener("submit", updateHiddenWorkflow);
     updateHiddenWorkflow();
+    builtWorkflowJson = hiddenWorkflow.value;
 });
 </script>
 

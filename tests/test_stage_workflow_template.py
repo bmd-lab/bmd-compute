@@ -34,10 +34,12 @@ structure_details_block = source[
 assert "details-wide" in structure_details_block
 assert "{% if not collapse_structure_input %}open{% endif %}" in structure_details_block
 calculation_definition = source[source.index('<form\n                id="calculation-review-form"'):]
-assert calculation_definition.index("<h3>Execution Resources</h3>") < calculation_definition.index("<h3>Scientific Specification</h3>")
+# Workflow choice first, then its Method Considerations, then Execution Resources.
+assert calculation_definition.index("<h3>Scientific Specification</h3>") < calculation_definition.index("<h3>Method Considerations</h3>")
+assert calculation_definition.index("<h3>Method Considerations</h3>") < calculation_definition.index("<h3>Execution Resources</h3>")
 resource_panel = calculation_definition[
     calculation_definition.index("<h3>Execution Resources</h3>"):
-    calculation_definition.index("<h3>Scientific Specification</h3>")
+    calculation_definition.index("data-build-calculation-button")
 ]
 assert resource_panel.index('name="cpus"') < resource_panel.index('name="memory_gb"')
 assert resource_panel.index('name="memory_gb"') < resource_panel.index('name="walltime"')

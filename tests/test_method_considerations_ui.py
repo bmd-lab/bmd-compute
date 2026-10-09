@@ -137,8 +137,8 @@ def render_response(response) -> str:
 
 
 def method_considerations_block(html: str) -> str:
-    start = html.index('class="method-considerations"')
-    end = html.index('<section class="stage">', start)
+    start = html.index('class="method-considerations ')
+    end = html.index("<h3>Execution Resources</h3>", start)
     return html[start:end]
 
 
@@ -162,7 +162,7 @@ def workflow_spec_json(stage_type: str, *, modifiers=None) -> str:
     return json.dumps(workflow.to_dict(), sort_keys=True)
 
 
-def test_bi_containing_structure_renders_method_considerations_after_summary():
+def test_bi_containing_structure_renders_method_considerations_after_workflow_choice():
     response = analyze_poscar(BI2SE3_POSCAR)
     html = render_response(response)
 
@@ -171,8 +171,10 @@ def test_bi_containing_structure_renders_method_considerations_after_summary():
     assert response.context["summary"]["natoms"] == 15
     assert response.context["method_considerations"]["policy_version"] == 6
     assert "Method Considerations" in html
-    assert html.index("Structure Summary") < html.index("Method Considerations")
-    assert html.index("Method Considerations") < html.index("Calculation Definition")
+    assert html.index("Structure Summary") < html.index("Calculation Definition")
+    assert html.index("Calculation Definition") < html.index('id="desired-output-select"')
+    assert html.index('id="desired-output-select"') < html.index("<h3>Method Considerations</h3>")
+    assert html.index("<h3>Method Considerations</h3>") < html.index("<h3>Execution Resources</h3>")
 
 
 def test_method_consideration_visual_state_uses_advisory_not_success_or_error():

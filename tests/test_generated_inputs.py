@@ -812,7 +812,7 @@ calculation_definition = template_source[
 ]
 resource_panel = calculation_definition[
     calculation_definition.index("<h3>Execution Resources</h3>"):
-    calculation_definition.index("<h3>Scientific Specification</h3>")
+    calculation_definition.index("data-build-calculation-button")
 ]
 queue_label_index = resource_panel.index("<label>Queue</label>")
 queue_select_index = resource_panel.index('<select name="queue">')
