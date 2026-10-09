@@ -1,9 +1,10 @@
 """Presentation order of the calculation page.
 
-Required order: structure input and analysis; Desired Output / Custom workflow
-selection; Method Considerations; Execution Resources; Calculation Summary and
-Generated Inputs; Prepare / Submit / Monitor. Moving the panels must not change
-any form field, identifier or request contract.
+Required order: structure input and Structure Summary; Desired Output / Custom
+workflow selection; Execution Resources; the Build Calculation button; Method
+Considerations (only for a successfully built calculation); Calculation
+Summary; Generated Inputs; Prepare / Submit / Monitor / Results. Moving the
+panels must not change any form field, identifier or request contract.
 """
 
 from __future__ import annotations
@@ -82,6 +83,29 @@ def controls(fragment: str) -> _Controls:
 # --- Page order ---------------------------------------------------------------
 
 
+def considerations_panel(html: str) -> str:
+    start = html.index("<h3>Method Considerations</h3>")
+    return html[start:html.index("<h2>Calculation Summary</h2>", start)]
+
+
+def test_analyzed_structure_without_a_build_shows_no_method_considerations():
+    html = analyzed_page(soc_cases.BI2SE3_POSCAR)
+
+    assert "<h3>Method Considerations</h3>" not in html
+    assert 'class="method-consideration-card' not in html
+    assert "HSE06 + SOC is not currently supported by BMD Compute." not in html
+    assert_in_order(
+        html,
+        [
+            "<h2>Structure Summary</h2>",
+            "<h2>Calculation Definition</h2>",
+            'id="desired-output-select"',
+            "<h3>Execution Resources</h3>",
+            "data-build-calculation-button",
+        ],
+    )
+
+
 def test_built_page_follows_the_required_section_order():
     html = built_page(soc_cases.BI2SE3_POSCAR, "electronic_dos")
 
@@ -93,10 +117,10 @@ def test_built_page_follows_the_required_section_order():
             "<h2>Calculation Definition</h2>",
             'id="desired-output-select"',
             'id="workflow-stage-list"',
-            "<h3>Method Considerations</h3>",
             "<h3>Execution Resources</h3>",
             'name="cpus"',
             "data-build-calculation-button",
+            "<h3>Method Considerations</h3>",
             "<h2>Calculation Summary</h2>",
             "<h2>Generated Inputs</h2>",
             "<h2>Ready for Submission</h2>",
@@ -104,58 +128,97 @@ def test_built_page_follows_the_required_section_order():
             'action="/submit"',
         ],
     )
-    # Nothing about method considerations remains in the structure analysis.
+    # One panel, outside the build form, and nothing in the structure analysis.
+    assert html.count("<h3>Method Considerations</h3>") == 1
+    form_end = html.index("</form>", html.index('id="calculation-review-form"'))
+    assert form_end < html.index("<h3>Method Considerations</h3>")
     structure_analysis = html[
         html.index("<h2>Structure Summary</h2>"):html.index("<h2>Calculation Definition</h2>")
     ]
-    assert "method-consideration" not in structure_analysis
     assert "Method Considerations" not in structure_analysis
+    assert 'class="method-consideration-card' not in structure_analysis
 
 
-def test_analyzed_page_shows_considerations_after_workflow_choice_and_before_resources():
-    html = analyzed_page(soc_cases.BI2SE3_POSCAR)
+def test_considerations_match_the_resolved_workflow_returned_by_the_backend():
+    response = soc_cases.build_route(soc_cases.BI2SE3_POSCAR, workflow="electronic_dos")
+    html = response.template.render(response.context)
+    panel = considerations_panel(html)
+    omitted = response.context["submission_spec"]["flow_spec"]["automatic_treatments"]["omitted_treatments"]
 
-    assert_in_order(
-        html,
-        [
-            "<h2>Structure Summary</h2>",
-            "<h2>Calculation Definition</h2>",
-            "<h3>Scientific Specification</h3>",
-            'id="desired-output-select"',
-            "<h3>Method Considerations</h3>",
-            "<h3>Execution Resources</h3>",
-            "data-build-calculation-button",
-        ],
+    rendered_ids = re.findall(r'data-method-consideration-id="([^"]+)"', panel)
+    assert rendered_ids == [item["id"] for item in response.context["method_considerations"]["considerations"]]
+    assert [item["consideration_id"] for item in omitted] == ["soc.heavy_elements"]
+    assert 'data-method-consideration-id="soc.heavy_elements"' in panel
+    assert 'data-method-consideration-presentation="unsupported"' in panel
+
+
+def test_rebuilding_renders_the_considerations_of_the_new_workflow():
+    energy = considerations_panel(built_page(soc_cases.BI2SE3_POSCAR, "energy_only"))
+    dos = considerations_panel(built_page(soc_cases.BI2SE3_POSCAR, "electronic_dos"))
+
+    # Energy only applies PBE + SOC: no red card.
+    assert 'data-method-consideration-presentation="unsupported"' not in energy
+    assert "Spin-orbit coupling (SOC) has been included automatically" in energy
+    # DOS omits SOC from the HSE06 stages: red card.
+    assert 'data-method-consideration-presentation="unsupported"' in dos
+    assert "Spin-orbit coupling (SOC) has been included automatically" not in dos
+
+
+def test_failed_build_shows_no_method_considerations():
+    custom = soc_cases.WorkflowSpec(
+        [soc_cases.StageSpec(soc_cases.StageType.STATIC, soc_cases.Theory.HSE06, {soc_cases.Modifier.SOC})],
+        recipe="custom",
     )
+    response = soc_cases.build_route(soc_cases.BI2SE3_POSCAR, workflow="custom", workflow_spec=custom)
+    html = response.template.render(response.context)
+
+    assert response.status_code == 400
+    assert "Calculation Validation Failed" in html
+    assert "<h3>Method Considerations</h3>" not in html
+    assert 'class="method-consideration-card' not in html
+    assert "<h2>Calculation Summary</h2>" not in html
 
 
-def test_red_and_yellow_presentation_survive_the_move():
+def test_red_and_yellow_presentation_and_text_are_unchanged():
     html = built_page(soc_cases.BI2SE3_POSCAR, "electronic_dos")
-    panel = html[html.index("<h3>Method Considerations</h3>"):html.index("<h3>Execution Resources</h3>")]
+    panel = considerations_panel(html)
 
-    # Red HSE06 + SOC omission card, with its alert role and text.
+    # Red HSE06 + SOC omission card, with its alert role and exact text.
     assert 'class="method-consideration-card unsupported"' in panel
     assert 'data-method-consideration-presentation="unsupported"' in panel
     assert 'role="alert"' in panel
     assert '<span class="step-mark unsupported" aria-label="Unsupported combination">!</span>' in panel
     assert "HSE06 + SOC is not currently supported by BMD Compute." in panel
+    assert (
+        "Spin\u2013orbit coupling has been omitted from the HSE06 stages of this workflow. "
+        "For materials containing heavy elements, this may significantly affect the predicted "
+        "electronic structure, including band ordering and band gaps."
+    ) in panel
     # Yellow advisory card (van der Waals correction applied for layered Bi2Se3).
     assert 'data-method-consideration-presentation="advisory"' in panel
     assert '<span class="step-mark advisory" aria-label="Advisory">!</span>' in panel
-    # The red warning above the Prepare/Submit forms is unchanged.
-    assert html.count('data-unsupported-omission="soc_omitted_from_hse06_stages"') == 2
-    # Styles are unchanged.
+    assert "The van der Waals correction has been included automatically" in panel
     for rule in (".method-consideration-card.unsupported {", ".step-mark.unsupported {", ".step-mark.advisory {"):
         assert rule in TEMPLATE_SOURCE
 
 
-def test_si_page_has_no_considerations_panel_but_keeps_resource_order():
-    html = analyzed_page(soc_cases.SI_POSCAR)
+def test_pre_submission_red_warning_is_unchanged():
+    html = built_page(soc_cases.BI2SE3_POSCAR, "electronic_dos")
+    marker = 'data-unsupported-omission="soc_omitted_from_hse06_stages"'
+
+    assert html.count(marker) == 2
+    assert html.index("<h2>Calculation Summary</h2>") < html.index(marker)
+    assert html.rindex(marker) < html.index('action="/prepare-remote"')
+
+
+def test_si_page_has_no_considerations_panel_after_build():
+    html = built_page(soc_cases.SI_POSCAR, "energy_only")
 
     assert "<h3>Method Considerations</h3>" not in html
     assert_in_order(
         html,
-        ["<h3>Scientific Specification</h3>", "<h3>Execution Resources</h3>", "data-build-calculation-button"],
+        ["<h3>Scientific Specification</h3>", "<h3>Execution Resources</h3>",
+         "data-build-calculation-button", "<h2>Calculation Summary</h2>"],
     )
 
 
@@ -184,17 +247,16 @@ def test_form_fields_identifiers_and_request_contract_are_unchanged():
     for field in ("cpus", "memory_gb", "walltime", "queue"):
         assert parsed.names.count(field) == 1
     assert re.search(r'type="hidden"\s+name="nodes"', form)
+    assert "Method Considerations" not in form
 
 
 def test_considerations_panel_adds_no_form_controls_or_focus_stops():
-    html = built_page(soc_cases.BI2SE3_POSCAR, "electronic_dos")
-    form = calculation_form(html)
-    panel = form[form.index('class="method-considerations '):form.index("<h3>Execution Resources</h3>")]
+    panel = considerations_panel(built_page(soc_cases.BI2SE3_POSCAR, "electronic_dos"))
     parsed = controls(panel)
 
     assert parsed.names == []
     assert parsed.focus_order == []
-    assert 'aria-live="polite"' in panel
+    assert parsed.tabindexes == []
 
 
 def test_keyboard_order_follows_the_visual_order():
@@ -222,33 +284,25 @@ def test_custom_workflow_keyboard_order_reaches_advanced_options_before_resource
     assert order[-5:] == ["cpus", "memory_gb", "walltime", "queue", "build"]
 
 
-# --- Considerations follow workflow changes; responsive layout ----------------
+# --- Selection changes after Build; responsive layout -------------------------
 
 
-def test_considerations_are_marked_stale_when_the_selection_changes():
+def test_considerations_are_hidden_when_the_selection_changes_after_build():
     script = TEMPLATE_SOURCE[TEMPLATE_SOURCE.index("var unsupportedCombinations"):]
 
-    assert "data-method-considerations-stale-notice" in TEMPLATE_SOURCE
-    assert 'form.querySelector("[data-method-considerations]")' in script
-    assert "function syncConsiderationsFreshness()" in script
+    assert 'document.querySelector("[data-method-considerations]")' in script
+    sync = script[script.index("function syncConsiderationsFreshness()"):]
+    sync = sync[:sync.index("\n    }\n")]
+    assert "considerationsPanel.hidden = hiddenWorkflow.value !== builtWorkflowJson;" in sync
     # Every selection change goes through updateHiddenWorkflow, which re-checks.
     update = script[script.index("function updateHiddenWorkflow()"):]
     update = update[:update.index("\n    }\n")]
     assert update.rstrip().endswith("syncConsiderationsFreshness();")
     # The built workflow is captured once, after the initial normalisation.
     assert "updateHiddenWorkflow();\n    builtWorkflowJson = hiddenWorkflow.value;\n});" in script
-    assert '.method-considerations[data-stale="true"] .method-consideration-card {' in TEMPLATE_SOURCE
-
-
-def test_a_rebuilt_workflow_renders_its_own_considerations():
-    # Considerations are recomputed by the server for each built workflow:
-    # Bi2Se3 Energy only applies SOC (no red card); DOS omits it (red card).
-    energy = built_page(soc_cases.BI2SE3_POSCAR, "energy_only")
-    dos = built_page(soc_cases.BI2SE3_POSCAR, "electronic_dos")
-
-    assert 'data-method-consideration-presentation="unsupported"' not in energy
-    assert "Spin-orbit coupling (SOC) has been included automatically" in energy
-    assert 'data-method-consideration-presentation="unsupported"' in dos
+    # The earlier dimmed "stale" presentation is gone.
+    assert "data-method-considerations-stale-notice" not in TEMPLATE_SOURCE
+    assert 'data-stale' not in TEMPLATE_SOURCE
 
 
 def test_mobile_layout_stacks_the_calculation_panels():
