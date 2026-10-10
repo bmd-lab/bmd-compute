@@ -1,4 +1,4 @@
-"""Routes of the authenticated machine API (``/api/v1``), planning only.
+"""Routes of the authenticated machine API (``/api/v1``).
 
 Every route runs the same fixed sequence before doing any work:
 
@@ -8,9 +8,12 @@ Every route runs the same fixed sequence before doing any work:
 3. authenticate the bearer token and check the route's scope;
 4. only then read and validate the request body.
 
-No route here prepares, submits, monitors or resumes anything, and none
-contacts POWER. The planner is injected by the web application so that the
-machine API uses exactly the browser's scientific resolution path.
+``/identity`` and ``/plans`` never contact POWER. ``PUT /attempts/{id}``
+prepares, or prepares and submits, one calculation and ``GET /attempts/{id}``
+reads its state, both through Compute's existing remote machinery and
+server-owned connection profiles (see ``compute_api.execution``). The planner
+is injected by the web application so that the machine API uses exactly the
+browser's scientific resolution path.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from backend.calculations.capabilities import SCHEMA_VERSION as CAPABILITY_SCHEMA_VERSION
 from backend.calculations.registry import CalculationValidationError
@@ -29,14 +33,29 @@ from backend.parser import StructureValidationError
 from backend.provenance import source_metadata
 
 from compute_api import API_VERSION
-from compute_api.auth import SCOPE_PLAN, ApiAuthError, Principal, authenticate
+from compute_api.auth import (
+    SCOPE_PLAN,
+    SCOPE_PREPARE,
+    SCOPE_READ,
+    SCOPE_SUBMIT,
+    ApiAuthError,
+    Principal,
+    authenticate,
+)
+from compute_api.execution import ExecutionError, execute_attempt, lookup_attempt
+from compute_api.ledger import canonical_attempt_id
 from compute_api.plan_digest import PLAN_DIGEST_VERSION
 from compute_api.projection import (
     PLAN_REQUEST_SCHEMA_VERSION,
     PLAN_RESPONSE_SCHEMA_VERSION,
     plan_response,
 )
-from compute_api.schemas import MAX_REQUEST_BYTES, PlanRequestError, parse_plan_request
+from compute_api.schemas import (
+    MAX_REQUEST_BYTES,
+    PlanRequestError,
+    parse_execution_request,
+    parse_plan_request,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -164,7 +183,7 @@ def build_machine_api_router(*, planner: Planner) -> APIRouter:
         except (_ApiError, ApiAuthError) as exc:
             return _error_response(exc)
 
-        try:
+        def build_plan() -> dict:
             plan = planner(
                 structure_text=plan_request.structure_text,
                 fmt=plan_request.structure_format,
@@ -172,33 +191,92 @@ def build_machine_api_router(*, planner: Planner) -> APIRouter:
                 custom_workflow=plan_request.custom_workflow,
                 resources=plan_request.resources,
             )
-            response = plan_response(plan, plan_request)
-        except StructureValidationError as exc:
-            return _error_response(
-                _ApiError(
-                    422,
-                    "structure_invalid",
-                    _bounded(exc.message) or "The structure could not be read.",
-                    suggestion=_bounded(exc.suggestion),
-                )
+            return plan_response(plan, plan_request)
+
+        try:
+            # Scientific resolution is CPU-bound; keep it off the event loop.
+            response = await run_in_threadpool(build_plan)
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            return _error_response(_scientific_error(exc, "plan generation", "plan_failed", "BMD Compute could not generate this plan."))
+        return _json(200, response)
+
+    @router.put("/attempts/{attempt_id}")
+    async def put_attempt(attempt_id: str, request: Request):
+        try:
+            principal = _authorize(request, scope=None)
+            if not principal.scopes & {SCOPE_PREPARE, SCOPE_SUBMIT}:
+                raise ApiAuthError(403, "insufficient_scope", "This token cannot prepare or submit calculations.")
+            canonical = _canonical_attempt_id(attempt_id)
+            document = await _read_json_body(request)
+            try:
+                execution_request = parse_execution_request(document)
+            except PlanRequestError as exc:
+                raise _ApiError(422, "invalid_request", "The attempt request is invalid.", fields=exc.errors) from None
+            principal.require(SCOPE_SUBMIT if execution_request.submit else SCOPE_PREPARE)
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+
+        try:
+            response = await run_in_threadpool(
+                execute_attempt,
+                planner=planner,
+                principal=principal.principal,
+                attempt_id=canonical,
+                request=execution_request,
             )
-        except CalculationValidationError as exc:
-            diagnostic = exc.diagnostic or {}
-            diagnostic_code = diagnostic.get("code")
-            return _error_response(
-                _ApiError(
-                    422,
-                    "calculation_invalid",
-                    _bounded(exc.message) or "The calculation request is not valid.",
-                    suggestion=_bounded(exc.suggestion),
-                    diagnostic_code=diagnostic_code if isinstance(diagnostic_code, str) else None,
-                )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            return _error_response(_scientific_error(exc, "attempt execution", "attempt_failed", "BMD Compute could not process this attempt."))
+        return _json(200, response)
+
+    @router.get("/attempts/{attempt_id}")
+    async def get_attempt(attempt_id: str, request: Request):
+        try:
+            principal = _authorize(request, scope=SCOPE_READ)
+            canonical = _canonical_attempt_id(attempt_id)
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+        try:
+            response = await run_in_threadpool(
+                lookup_attempt,
+                principal=principal.principal,
+                attempt_id=canonical,
             )
-        except Exception as exc:  # noqa: BLE001 - nothing internal is returned to the caller
-            LOGGER.error("Machine API plan generation failed (%s).", type(exc).__name__, exc_info=True)
-            return _error_response(
-                _ApiError(500, "plan_failed", "BMD Compute could not generate this plan.")
-            )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.error("Machine API attempt lookup failed (%s).", type(exc).__name__, exc_info=True)
+            return _error_response(_ApiError(500, "lookup_failed", "BMD Compute could not read this attempt."))
         return _json(200, response)
 
     return router
+
+
+def _canonical_attempt_id(value: str) -> str:
+    canonical = canonical_attempt_id(value)
+    if canonical is None:
+        raise _ApiError(422, "invalid_attempt_id", "The attempt ID must be a canonical lowercase UUID.")
+    return canonical
+
+
+def _scientific_error(exc: Exception, context: str, fallback_code: str, fallback_message: str) -> _ApiError:
+    if isinstance(exc, StructureValidationError):
+        return _ApiError(
+            422,
+            "structure_invalid",
+            _bounded(exc.message) or "The structure could not be read.",
+            suggestion=_bounded(exc.suggestion),
+        )
+    if isinstance(exc, CalculationValidationError):
+        diagnostic = exc.diagnostic or {}
+        diagnostic_code = diagnostic.get("code")
+        return _ApiError(
+            422,
+            "calculation_invalid",
+            _bounded(exc.message) or "The calculation request is not valid.",
+            suggestion=_bounded(exc.suggestion),
+            diagnostic_code=diagnostic_code if isinstance(diagnostic_code, str) else None,
+        )
+    LOGGER.error("Machine API %s failed (%s).", context, type(exc).__name__, exc_info=True)
+    return _ApiError(500, fallback_code, fallback_message)
