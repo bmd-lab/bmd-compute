@@ -240,8 +240,8 @@ never accepted from the client.
 ### Attempt binding and idempotency
 
 The first PUT for an attempt ID resolves the plan, checks that its digest
-equals `expected_plan_digest`, applies the [execution limits](#execution-limits)
-and then atomically creates a ledger record binding the attempt ID to:
+equals `expected_plan_digest`, and then atomically creates a ledger record
+binding the attempt ID to:
 
 - the authenticated principal;
 - the SHA-256 of the validated request (structure, workflow, resources,
@@ -267,7 +267,7 @@ The remote attempt state on POWER stays the authority. The PUT then:
 3. if it is PREPARED: refuses (409 `runtime_package_changed`) when the
    prepared runtime package differs from the running service's, because a
    prepared attempt is never re-prepared or replaced; returns `prepared` when
-   `submit` is false; otherwise reserves a submission against the caps and
+   `submit` is false; otherwise atomically records submission intent and
    calls `submit_remote_workflow`;
 4. if it is SUBMITTED: returns the recorded job, without submitting again;
 5. if it is SUBMITTING: answers 409 `submission_uncertain`.
@@ -286,26 +286,17 @@ happened.
 | `sbatch` outcome unknown | 409 `submission_uncertain`; never resubmitted |
 | Outcome could not be read back | 503 `submission_outcome_unconfirmed`; GET or repeat the PUT |
 
-### Execution limits
+### Resource policy
 
-Initial API limits (not the POWER allocation), enforced on the effective
-resources of every attempt, before any remote activity:
+Machine plans and attempts use the same `ExecutionResources` validation as
+the browser. CPU and memory values must be among the browser's offered
+choices, walltime uses the same accepted value, and partition and account are
+always Compute's server-owned values. The API does not add separate CPU,
+memory, walltime, active-job, submission-rate or attempt-rate ceilings; POWER
+and SLURM remain responsible for allocation limits, scheduling and fair share.
 
-- at most 96 CPUs, 128 GB memory and a requested walltime of 72:00:00;
-- one node; partition and account are always Compute's own.
-
-Violations are 422 `resource_limit_exceeded`. Per principal, from the durable
-ledger:
-
-- at most 2 active jobs (reserved, submitted or uncertain and not known to be
-  finished; before refusing, Compute refreshes the principal's other jobs from
-  SLURM): 429 `active_job_cap_exceeded`;
-- at most 5 submissions in any rolling 24 hours: 429 `submission_cap_exceeded`;
-- at most 20 new attempts in any rolling 24 hours: 429 `attempt_cap_exceeded`.
-
-Caps are decided under an exclusive file lock and survive restarts.
-Repeating a PUT for an attempt that already holds a reservation does not
-count again.
+The ledger still records submission intent under its exclusive lock. This is
+part of retry and exactly-once submission semantics, not a job quota.
 
 ### Execution errors
 
@@ -314,9 +305,8 @@ In addition to the planning errors: 403 `attempt_forbidden`; 404
 `plan_digest`), `attempt_request_mismatch`, `plan_changed`,
 `attempt_fingerprint_mismatch`, `runtime_package_changed`,
 `attempt_in_progress`, `submission_not_started`, `submission_uncertain` (with
-the attempt projection) and `remote_state_invalid`; 422 `invalid_attempt_id`
-and `resource_limit_exceeded`; 429 cap errors; 502 `prepare_failed` and
-`submit_failed`; 503 `execution_not_configured`, `remote_busy`,
+the attempt projection) and `remote_state_invalid`; 422 `invalid_attempt_id`;
+502 `prepare_failed` and `submit_failed`; 503 `execution_not_configured`, `remote_busy`,
 `remote_unavailable`, `remote_state_unconfirmed` and
 `submission_outcome_unconfirmed`. No error contains remote output, paths,
 tracebacks or credentials.
