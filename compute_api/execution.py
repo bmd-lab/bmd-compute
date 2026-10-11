@@ -14,8 +14,8 @@ calculation through BMD Compute's existing machinery:
 
 What this module adds is the binding the remote record cannot hold (see
 ``compute_api.ledger``): which principal owns a client-chosen attempt UUID,
-which request and plan digest it is bound to, which run timestamp rebuilds its
-submission specification, and the durable per-principal submission caps.
+which request and plan digest it is bound to, and which run timestamp rebuilds
+its submission specification.
 
 No caller-supplied SSH target, remote path or job ID is ever used. Remote
 connections use the server's connection profiles; remote paths come from the
@@ -27,8 +27,6 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass
-from datetime import timedelta
 from typing import Any, Callable, Mapping
 
 from backend.monitoring import monitor_submitted_job
@@ -47,7 +45,6 @@ from compute_api.ledger import (
     AttemptLedger,
     LedgerUnavailable,
     isoformat,
-    parse_isoformat,
     utc_now,
 )
 from compute_api.plan_digest import compute_plan_digest
@@ -92,23 +89,6 @@ _LOCAL_TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2
 _JOB_ID = re.compile(r"^[0-9]{1,20}(?:_[0-9]{1,10})?$")
 
 
-@dataclass(frozen=True)
-class ExecutionPolicy:
-    """Conservative initial API execution limits (not the POWER allocation limits)."""
-
-    max_active_jobs: int = 2
-    max_submissions_per_window: int = 5
-    max_new_attempts_per_window: int = 20
-    window: timedelta = timedelta(hours=24)
-    max_cpus: int = 96
-    max_memory_gb: int = 128
-    max_walltime_seconds: int = 72 * 3600
-    max_nodes: int = 1
-
-
-POLICY = ExecutionPolicy()
-
-
 class ExecutionError(Exception):
     def __init__(self, status_code: int, code: str, message: str, **details: Any):
         super().__init__(message)
@@ -145,42 +125,6 @@ def request_sha256(request: ExecutionRequest) -> str:
             }
         )
     )
-
-
-def _walltime_seconds(value: str) -> int | None:
-    match = re.fullmatch(r"([0-9]{1,3}):([0-5][0-9]):([0-5][0-9])", str(value or ""))
-    if not match:
-        return None
-    hours, minutes, seconds = (int(part) for part in match.groups())
-    return hours * 3600 + minutes * 60 + seconds
-
-
-def enforce_resource_policy(submission_spec: Mapping[str, Any], policy: ExecutionPolicy = None) -> None:
-    policy = policy or POLICY
-    resources = submission_spec["resources"]
-    problems = []
-    if int(resources["nodes"]) > policy.max_nodes:
-        problems.append({"field": "resources.nodes", "problem": "exceeds_api_limit"})
-    if int(resources["ntasks"]) > policy.max_cpus:
-        problems.append({"field": "resources.cpus", "problem": "exceeds_api_limit"})
-    if int(resources["mem_gb"]) > policy.max_memory_gb:
-        problems.append({"field": "resources.memory_gb", "problem": "exceeds_api_limit"})
-    walltime = _walltime_seconds(resources["walltime"])
-    if walltime is None or walltime > policy.max_walltime_seconds:
-        problems.append({"field": "resources.walltime", "problem": "exceeds_api_limit"})
-    if problems:
-        raise ExecutionError(
-            422,
-            "resource_limit_exceeded",
-            "The effective resources exceed the machine API execution limits.",
-            fields=problems,
-            limits={
-                "nodes": policy.max_nodes,
-                "cpus": policy.max_cpus,
-                "memory_gb": policy.max_memory_gb,
-                "walltime_hours": policy.max_walltime_seconds // 3600,
-            },
-        )
 
 
 def current_runtime_digest() -> str:
@@ -300,81 +244,19 @@ def _record_remote_state(ledger: AttemptLedger, attempt_id: str, state: Mapping[
             submission["job_id"] = _remote_job_id(state)
             submission["submitted_at"] = _remote_submitted_at(state)
             if not submission.get("reserved_at"):
-                # Submitted by an earlier request whose reservation was lost; count it.
+                # Preserve when submission completed before its local reservation was recorded.
                 submission["reserved_at"] = isoformat(utc_now())
 
     return _update_record(ledger, attempt_id, mutate)
 
 
-def _is_active(record: Mapping[str, Any]) -> bool:
-    submission = record["submission"]
-    if submission["status"] not in {SUBMISSION_RESERVED, SUBMISSION_SUBMITTED, SUBMISSION_UNCERTAIN}:
-        return False
-    return not (record.get("scheduler") or {}).get("terminal", False)
-
-
-def _counts_toward_window(record: Mapping[str, Any], since) -> bool:
-    submission = record["submission"]
-    if submission["status"] == SUBMISSION_RELEASED:
-        return False
-    reserved_at = parse_isoformat(submission.get("reserved_at"))
-    return reserved_at is not None and reserved_at >= since
-
-
-def _refresh_active_records(ledger: AttemptLedger, principal: str, exclude: str) -> None:
-    """Update scheduler/terminal state of the principal's other active attempts."""
-
-    for record in ledger.records():
-        if record["principal"] != principal or record["attempt_id"] == exclude or not _is_active(record):
-            continue
-        submission = record["submission"]
-        try:
-            if submission["status"] in {SUBMISSION_RESERVED, SUBMISSION_UNCERTAIN}:
-                state = read_remote_attempt_state(record)
-                if state is not None and state.get("state") == "SUBMITTED":
-                    _require_state_matches(state, record)
-                    record = _record_remote_state(ledger, record["attempt_id"], state)
-            if record["submission"].get("job_id"):
-                _refresh_scheduler(ledger, record)
-        except ExecutionError:
-            # An unverifiable attempt stays counted as active (fail closed).
-            continue
-
-
-def _reserve_submission(ledger: AttemptLedger, attempt_id: str, principal: str, policy: ExecutionPolicy) -> None:
-    def over_caps() -> tuple[bool, bool]:
-        records = [record for record in ledger.records() if record["principal"] == principal]
-        since = utc_now() - policy.window
-        window_count = sum(1 for record in records if _counts_toward_window(record, since))
-        active_count = sum(1 for record in records if _is_active(record))
-        return window_count >= policy.max_submissions_per_window, active_count >= policy.max_active_jobs
+def _reserve_submission(ledger: AttemptLedger, attempt_id: str) -> None:
+    """Atomically record submission intent without imposing a Compute job quota."""
 
     with ledger.locked():
         record = ledger.read(attempt_id)
         if record["submission"]["status"] in {SUBMISSION_RESERVED, SUBMISSION_SUBMITTED, SUBMISSION_UNCERTAIN}:
             return
-        window_full, active_full = over_caps()
-    if active_full and not window_full:
-        _refresh_active_records(ledger, principal, exclude=attempt_id)
-
-    with ledger.locked():
-        record = ledger.read(attempt_id)
-        if record["submission"]["status"] in {SUBMISSION_RESERVED, SUBMISSION_SUBMITTED, SUBMISSION_UNCERTAIN}:
-            return
-        window_full, active_full = over_caps()
-        if window_full:
-            raise ExecutionError(
-                429,
-                "submission_cap_exceeded",
-                f"This principal has reached {policy.max_submissions_per_window} submissions in "
-                f"{int(policy.window.total_seconds() // 3600)} hours.",
-            )
-        if active_full:
-            raise ExecutionError(
-                429,
-                "active_job_cap_exceeded",
-                f"This principal already has {policy.max_active_jobs} active jobs.",
-            )
         record["submission"]["status"] = SUBMISSION_RESERVED
         record["submission"]["reserved_at"] = isoformat(utc_now())
         record["updated_at"] = isoformat(utc_now())
@@ -523,7 +405,7 @@ def _authorize_record(record: Mapping[str, Any], principal: str) -> None:
         raise ExecutionError(403, "attempt_forbidden", "This attempt belongs to another principal.")
 
 
-def _bind_attempt(ledger, planner, attempt_id, principal, request, policy):
+def _bind_attempt(ledger, planner, attempt_id, principal, request):
     """Return ``(record, plan)`` for an attempt bound to this principal and request."""
 
     request_digest = request_sha256(request)
@@ -563,8 +445,6 @@ def _bind_attempt(ledger, planner, attempt_id, principal, request, policy):
                 "The resolved plan does not match expected_plan_digest.",
                 plan_digest=plan_digest,
             )
-        enforce_resource_policy(spec, policy)
-
         if record is not None:
             if record["plan_digest"] != plan_digest:
                 raise ExecutionError(
@@ -588,20 +468,6 @@ def _bind_attempt(ledger, planner, attempt_id, principal, request, policy):
                 collision = True
             else:
                 collision = False
-                since = utc_now() - policy.window
-                created = sum(
-                    1
-                    for existing in records
-                    if existing["principal"] == principal
-                    and (parse_isoformat(existing["created_at"]) or since) >= since
-                )
-                if created >= policy.max_new_attempts_per_window:
-                    raise ExecutionError(
-                        429,
-                        "attempt_cap_exceeded",
-                        f"This principal has created {policy.max_new_attempts_per_window} attempts in "
-                        f"{int(policy.window.total_seconds() // 3600)} hours.",
-                    )
                 new_record = _new_record(
                     attempt_id=attempt_id,
                     principal=principal,
@@ -631,9 +497,8 @@ def _prepare_failure(result: Mapping[str, Any]) -> ExecutionError:
 
 
 def execute_attempt(*, planner, principal: str, attempt_id: str, request: ExecutionRequest) -> dict[str, Any]:
-    policy = POLICY
     ledger = _ledger()
-    record, plan = _bind_attempt(ledger, planner, attempt_id, principal, request, policy)
+    record, plan = _bind_attempt(ledger, planner, attempt_id, principal, request)
     spec = plan.submission_spec
 
     state = read_remote_attempt_state(record)
@@ -659,7 +524,7 @@ def execute_attempt(*, planner, principal: str, attempt_id: str, request: Execut
         if not request.submit:
             return attempt_response(record)
 
-        _reserve_submission(ledger, attempt_id, principal, policy)
+        _reserve_submission(ledger, attempt_id)
         result = submit_remote_workflow(spec, remote_prepared=True, runner_factory=RUNNER_FACTORY)
         try:
             state = read_remote_attempt_state(record)
@@ -676,7 +541,7 @@ def execute_attempt(*, planner, principal: str, attempt_id: str, request: Execut
         if remote == "PREPARED":
             if "exit_code" in result:
                 # sbatch itself ran and refused the job: a definitive failure. The
-                # attempt stays PREPARED and the reservation no longer counts.
+                # attempt stays PREPARED and its submission reservation is cleared.
                 _release_reservation(ledger, attempt_id)
                 raise ExecutionError(502, "submit_failed", "SLURM did not accept the submission; the attempt remains prepared.")
             # sbatch did not run (busy service, lost connection, or another

@@ -4,16 +4,16 @@ Remote attempt state on POWER (``logs/submission_attempts/<uuid>.json``) stays
 the authority for whether an attempt is prepared, being submitted or
 submitted. That record cannot by itself say *who* created an attempt through
 the API, which plan digest the attempt was bound to, which run timestamp must
-be reused to rebuild an identical submission specification, or how many jobs
-a principal has submitted. This ledger records exactly those facts, one small
-JSON file per attempt, in a deployment-local directory outside the
-repository (``BMD_API_STATE_DIR``).
+be reused to rebuild an identical submission specification, or which local
+submission state was last reconciled. This ledger records exactly those
+facts, one small JSON file per attempt, in a deployment-local directory
+outside the repository (``BMD_API_STATE_DIR``).
 
 * An attempt record is created once, atomically (``O_CREAT | O_EXCL``), before
   any remote side effect. A concurrent duplicate request loses the race and
   re-reads the winner's record.
 * Every change is written to a temporary file and atomically renamed.
-* Read-modify-write updates and cap decisions run under an exclusive
+* Read-modify-write updates and submission reservations run under an exclusive
   ``flock`` on ``ledger.lock`` (plus an in-process lock), so they hold across
   threads, worker processes and restarts.
 
@@ -71,15 +71,6 @@ def utc_now() -> datetime:
 
 def isoformat(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def parse_isoformat(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return None
 
 
 class AttemptLedger:

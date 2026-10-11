@@ -6,7 +6,6 @@ SLURM state). Nothing contacts POWER or submits a job.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import os
 import shutil
@@ -14,7 +13,6 @@ import threading
 import uuid
 import warnings
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
 
 import pytest
 from starlette.testclient import TestClient
@@ -22,6 +20,7 @@ from starlette.testclient import TestClient
 import backend.paramiko_remote as paramiko_remote
 import main
 import test_input_reference_contract as reference_cases
+from backend.calculations.registry import CalculationValidationError
 from backend.monitoring import classify_slurm_state
 from backend.remote import RemoteCommandResult, RemoteJobStatus
 from compute_api import auth as api_auth
@@ -337,37 +336,50 @@ def test_hse06_soc_remains_rejected(client, tokens, power):
     assert no_remote_activity(power)
 
 
-@pytest.mark.parametrize(
-    "resources, field",
-    [
-        ({"cpus": 120}, "resources.cpus"),
-        ({"memory_gb": 160}, "resources.memory_gb"),
-        ({"walltime": "72:00:01"}, "resources.walltime"),
-        ({"walltime": "96:00:00"}, "resources.walltime"),
-    ],
-)
-def test_api_resource_limits_are_enforced(client, tokens, power, resources, field):
+def test_execution_uses_the_browser_resource_policy(client, tokens, power):
+    resources = {"cpus": 120, "memory_gb": 160, "walltime": "96:00:00"}
+    browser = main.execution_resources_from_form(
+        cpus=str(resources["cpus"]),
+        memory_gb=str(resources["memory_gb"]),
+        walltime=resources["walltime"],
+    )
     body = attempt_body(client, tokens, submit=False, resources=resources)
-    response = put(client, tokens["runner"], new_id(), body)
-    assert response.status_code == 422
-    error = response.json()["error"]
-    assert error["code"] == "resource_limit_exceeded"
-    assert {"field": field, "problem": "exceeds_api_limit"} in error["fields"]
-    assert no_remote_activity(power)
-
-
-def test_resources_at_the_api_limits_are_accepted(client, tokens, power):
-    body = attempt_body(client, tokens, submit=False, resources={"cpus": 96, "memory_gb": 128, "walltime": "72:00:00"})
     response = put(client, tokens["runner"], new_id(), body)
     assert response.status_code == 200, response.text
     assert response.json()["resources"] == {
-        "nodes": 1,
-        "cpus": 96,
-        "memory_gb": 128,
-        "walltime": "72:00:00",
-        "partition": "leeburton-pool",
-        "account": "power-leeburton-users_v2",
+        "nodes": browser.nodes,
+        "cpus": browser.cpus,
+        "memory_gb": browser.memory_gb,
+        "walltime": browser.walltime,
+        "partition": browser.partition,
+        "account": browser.account,
     }
+
+
+@pytest.mark.parametrize(
+    ("resources", "browser_fields"),
+    [
+        ({"cpus": 121}, {"cpus": "121"}),
+        ({"memory_gb": 161}, {"memory_gb": "161"}),
+    ],
+)
+def test_execution_rejects_resources_rejected_by_the_browser(
+    client,
+    tokens,
+    power,
+    resources,
+    browser_fields,
+):
+    with pytest.raises(CalculationValidationError):
+        main.execution_resources_from_form(**browser_fields)
+    response = client.post(
+        "/api/v1/plans",
+        headers=bearer(tokens["planner"]),
+        json=plan_body(resources=resources),
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "calculation_invalid"
+    assert no_remote_activity(power)
 
 
 def test_execution_without_a_configured_ledger_fails_closed(client, tokens, power, monkeypatch):
@@ -523,8 +535,7 @@ def test_duplicate_racing_between_claim_and_submitting_mark_is_blocked_by_the_re
     assert "submitted" in outcomes
 
 
-def test_a_retry_is_not_blocked_by_its_own_reservation(client, tokens, power, monkeypatch):
-    monkeypatch.setattr(execution, "POLICY", dataclasses.replace(execution.POLICY, max_active_jobs=1, max_submissions_per_window=1))
+def test_a_retry_reuses_its_own_submission_reservation(client, tokens, power):
     attempt_id = new_id()
     body = attempt_body(client, tokens, submit=True)
     power.fail_next_submitting_state_write = True
@@ -533,7 +544,8 @@ def test_a_retry_is_not_blocked_by_its_own_reservation(client, tokens, power, mo
     assert retried.status_code == 200, retried.text
     assert retried.json()["state"] == "submitted"
     _, another = _submit_new(client, tokens, body)
-    assert another.status_code == 429
+    assert another.status_code == 200
+    assert power.sbatch_calls == 2
 
 
 def test_crash_after_prepare_recovers_with_the_same_run_and_identity(client, tokens, power, state_dir, monkeypatch):
@@ -670,7 +682,14 @@ def test_rebuilt_fingerprint_drift_is_rejected(client, tokens, power, state_dir)
     assert power.connections == connections and power.sbatch_calls == 0
 
 
-def test_server_restart_recovers_from_durable_records(client, tokens, power, state_dir, tmp_path, monkeypatch):
+def test_existing_ledger_record_remains_readable_after_server_restart(
+    client,
+    tokens,
+    power,
+    state_dir,
+    tmp_path,
+    monkeypatch,
+):
     attempt_id = new_id()
     body = attempt_body(client, tokens, submit=False)
     assert put(client, tokens["runner"], attempt_id, body).status_code == 200
@@ -686,7 +705,7 @@ def test_server_restart_recovers_from_durable_records(client, tokens, power, sta
     assert len(power.run_dirs()) == 1
 
 
-# --------------------------------------------------------------------- caps
+# ------------------------------------------------------- unrestricted attempts
 
 
 def _submit_new(client, tokens, body, principal="runner"):
@@ -694,74 +713,55 @@ def _submit_new(client, tokens, body, principal="runner"):
     return attempt_id, put(client, tokens[principal], attempt_id, body)
 
 
-def test_active_job_cap_is_enforced_and_refreshed_from_slurm(client, tokens, power):
+def _use_distinct_run_timestamps(monkeypatch, count):
+    timestamps = iter(f"20261010-1200{second:02d}" for second in range(count))
+    monkeypatch.setattr(
+        execution,
+        "canonical_run_timestamp",
+        lambda value=None: value or next(timestamps),
+    )
+
+
+def test_more_than_two_active_jobs_can_be_submitted(client, tokens, power, monkeypatch):
+    _use_distinct_run_timestamps(monkeypatch, 3)
     body = attempt_body(client, tokens, submit=True)
-    jobs = []
-    for _ in range(2):
+    for _ in range(3):
         _, response = _submit_new(client, tokens, body)
-        assert response.status_code == 200
-        jobs.append(response.json()["submission"]["job_id"])
-        power.job_states[jobs[-1]] = "RUNNING"
-
-    third_id, third = _submit_new(client, tokens, body)
-    assert third.status_code == 429
-    assert third.json()["error"]["code"] == "active_job_cap_exceeded"
-    assert power.sbatch_calls == 2
-    # Prepare-only stays possible while the cap is full; the third is prepared.
-    assert get(client, tokens["runner"], third_id).json()["state"] == "prepared"
-    # Another principal has its own cap.
-    _, other = _submit_new(client, tokens, body, principal="other")
-    assert other.status_code == 200
-
-    power.job_states[jobs[0]] = "COMPLETED"
-    retried = put(client, tokens["runner"], third_id, body)
-    assert retried.status_code == 200, retried.text
-    assert retried.json()["state"] == "submitted"
+        assert response.status_code == 200, response.text
+        power.job_states[response.json()["submission"]["job_id"]] = "RUNNING"
+    assert power.sbatch_calls == 3
 
 
-def test_daily_submission_cap_is_durable_and_rolling(client, tokens, power, state_dir, tmp_path, monkeypatch):
+def test_more_than_five_submissions_are_allowed_within_one_day(
+    client,
+    tokens,
+    power,
+    monkeypatch,
+):
+    _use_distinct_run_timestamps(monkeypatch, 6)
     body = attempt_body(client, tokens, submit=True)
-    submitted = []
-    for _ in range(5):
-        attempt_id, response = _submit_new(client, tokens, body)
-        assert response.status_code == 200
-        power.job_states[response.json()["submission"]["job_id"]] = "COMPLETED"
-        get(client, tokens["runner"], attempt_id)
-        submitted.append(attempt_id)
-
-    _, sixth = _submit_new(client, tokens, body)
-    assert sixth.status_code == 429
-    assert sixth.json()["error"]["code"] == "submission_cap_exceeded"
-    assert power.sbatch_calls == 5
-
-    # A restarted service reading the same durable records keeps the cap.
-    moved = tmp_path / "restarted_state"
-    shutil.copytree(state_dir, moved)
-    os.chmod(moved, 0o700)
-    monkeypatch.setenv(ledger_module.STATE_DIR_ENV, str(moved))
-    _, after_restart = _submit_new(client, tokens, body)
-    assert after_restart.status_code == 429
-
-    # The window is rolling: submissions older than 24 hours stop counting.
-    for attempt_id in submitted:
-        record = ledger_record(moved, attempt_id)
-        record["submission"]["reserved_at"] = ledger_module.isoformat(ledger_module.utc_now() - timedelta(hours=25))
-        (moved / "attempts" / f"{attempt_id}.json").write_text(json.dumps(record), encoding="utf-8")
-    _, later = _submit_new(client, tokens, body)
-    assert later.status_code == 200
+    for _ in range(6):
+        _, response = _submit_new(client, tokens, body)
+        assert response.status_code == 200, response.text
     assert power.sbatch_calls == 6
 
 
-def test_new_attempt_cap_bounds_preparations(client, tokens, power, monkeypatch):
-    monkeypatch.setattr(execution, "POLICY", dataclasses.replace(execution.POLICY, max_new_attempts_per_window=2))
+def test_more_than_twenty_distinct_attempts_can_be_registered(
+    client,
+    tokens,
+    power,
+    state_dir,
+    monkeypatch,
+):
+    _use_distinct_run_timestamps(monkeypatch, 21)
     body = attempt_body(client, tokens, submit=False)
-    for _ in range(2):
-        assert _submit_new(client, tokens, body)[1].status_code == 200
-    connections = power.connections
-    _, third = _submit_new(client, tokens, body)
-    assert third.status_code == 429
-    assert third.json()["error"]["code"] == "attempt_cap_exceeded"
-    assert power.connections == connections
+    for _ in range(21):
+        _, response = _submit_new(client, tokens, body)
+        assert response.status_code == 200, response.text
+        assert response.json()["state"] == "prepared"
+    records = list((state_dir / "attempts").glob("*.json"))
+    assert len(records) == 21
+    assert power.sbatch_calls == 0
 
 
 # ------------------------------------------------------------------- lookup
