@@ -32,8 +32,10 @@ validated the scientific results yet. The phonon results UI is Milestone B.
 Force calculations use atomate2's `PhononDisplacementMaker` input set
 (ENCUT 700, EDIFF 1e-7, reciprocal density 100, LREAL False, ALGO Normal) with
 BMD amendments: `GGA`, `ENAUG`, `LMIXTAU` removed (PBE, as in every BMD stage;
-atomate2's base set is PBEsol), `ISPIN = 1` with `auto_ispin` off, and NCORE
-never set. No WAVECAR/CHGCAR is carried from the relax.
+atomate2's base set is PBEsol), `ISPIN = 1` with `auto_ispin` off, single-point
+Gaussian-smeared forces (`ISMEAR = 0`, `SIGMA = 0.2`, `IBRION = -1`, `NSW = 0`,
+`ISIF` unset — overriding atomate2 0.1.5's `IBRION = 2`/`ISIF = 3` and the
+static set's `ISMEAR = -5`), and NCORE never set. No WAVECAR/CHGCAR is carried from the relax.
 
 Phonopy, called by atomate2, is the authority for the supercell, displacements
 and force constants. `backend/phonons/plan.py` remains an independent

@@ -951,6 +951,14 @@ def test_phonons_desired_output_plan_includes_the_phonopy_plan(client, tokens):
     assert phonon_plan["displacement_count"] == 1
     assert stages[1]["incar"]["settings"]["ENCUT"] == 700
     assert "NCORE" not in stages[1]["incar"]["settings"]
+    force = stages[1]["incar"]["settings"]
+    assert (force["ISMEAR"], force["SIGMA"], force["IBRION"], force["NSW"]) == (0, 0.2, -1, 0)
+    assert "ISIF" not in force
+    # Phonon plans show, and prepare with, phonopy and seekpath as parity-critical.
+    packages = response.json()["software"]["runtime_parity_packages"]
+    assert set(packages) >= {"phonopy", "seekpath"}
+    other = post_plan(client, tokens["plan"], plan_body(desired_output="energy_only")).json()
+    assert not {"phonopy", "seekpath"} & set(other["software"]["runtime_parity_packages"])
 
 
 @pytest.mark.parametrize(
