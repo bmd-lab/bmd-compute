@@ -94,7 +94,7 @@ def _stage_projection(preview: Mapping[str, Any]) -> dict[str, Any]:
     input_set = preview["input_set"]
     incar = json_safe(dict(input_set.incar))
     poscar_text = str(input_set.poscar).rstrip()
-    return {
+    projection = {
         "index": preview["index"],
         "stage_type": stage.stage_type.value,
         "theory": stage.theory.value,
@@ -113,6 +113,13 @@ def _stage_projection(preview: Mapping[str, Any]) -> dict[str, Any]:
             "sha256": sha256_hex(poscar_text),
         },
     }
+    if preview.get("phonon_plan") is not None:
+        # Phonon force stages: the atomate2/Phonopy supercell, displacement
+        # count and force settings (computed from the submitted structure).
+        # The INCAR/KPOINTS/POSCAR above are those of the first displaced
+        # supercell.
+        projection["phonon_plan"] = json_safe(preview["phonon_plan"])
+    return projection
 
 
 def _method_considerations_projection(context: Mapping[str, Any] | None) -> dict[str, Any] | None:

@@ -291,6 +291,36 @@ def workflow_stage_artifact_policies(workflow: WorkflowSpec) -> tuple[dict, ...]
     return tuple(policies)
 
 
+def stage_feeds_phonon_forces(workflow: WorkflowSpec, index: int) -> bool:
+    """Whether stage ``index`` (0-based) is the relax that feeds a phonon stage."""
+
+    stages = workflow.stages
+    return (
+        stages[index].stage_type is StageType.RELAX
+        and index + 1 < len(stages)
+        and stages[index + 1].stage_type is StageType.PHONON_FORCES
+    )
+
+
+def apply_phonon_precursor_incar_settings(
+    user_incar,
+    *,
+    workflow: WorkflowSpec,
+    index: int,
+) -> dict:
+    """Phonon-grade convergence for the relax that feeds a phonon force stage.
+
+    Applied identically by workflow construction and input previews.
+    """
+
+    settings = dict(user_incar or {})
+    if stage_feeds_phonon_forces(workflow, index):
+        from backend.phonons.workflow import PHONON_PRECURSOR_RELAX_INCAR
+
+        settings.update(PHONON_PRECURSOR_RELAX_INCAR)
+    return settings
+
+
 def apply_stage_artifact_incar_settings(user_incar, *, artifact_policy=None) -> dict:
     settings = dict(user_incar or {})
     policy = dict(artifact_policy or {})
@@ -1637,6 +1667,9 @@ def _single_stage_job_name(stage: StageSpec, user_incar: dict | None = None) -> 
     if stage.stage_type is StageType.BAND_STRUCTURE:
         return "band_structure"
 
+    if stage.stage_type is StageType.PHONON_FORCES:
+        return "phonon"
+
     return stage.stage_type.value
 
 
@@ -1654,6 +1687,9 @@ def _workflow_flow_suffix(workflow: WorkflowSpec) -> str:
         ):
             return "hse_static"
         return legacy_workflow_from_spec(compatible_spec)
+
+    if workflow.stages and workflow.stages[-1].stage_type is StageType.PHONON_FORCES:
+        return "phonons"
 
     return "custom_workflow"
 
@@ -1724,6 +1760,11 @@ def build_atomate2_flow_for_workflow_spec(
         user_incar = apply_stage_artifact_incar_settings(
             user_incar,
             artifact_policy=stage_artifacts[index],
+        )
+        user_incar = apply_phonon_precursor_incar_settings(
+            user_incar,
+            workflow=workflow,
+            index=index,
         )
         stage_kpoints = _stage_kpoints(stage, kpoints)
         stage_structure = (
@@ -1873,6 +1914,19 @@ def build_atomate2_flow_for_workflow_spec(
                     mode="line",
                 )
 
+        elif stage.stage_type is StageType.PHONON_FORCES:
+            # atomate2's phonon flow on the previous relax output. Phonopy
+            # (through atomate2) generates the supercell, the displacements
+            # and the force constants at run time; validation guarantees the
+            # previous stage is a full PBE relax and that this stage is last.
+            job = build_phonon_forces_flow(
+                stage_structure,
+                stage=stage,
+                name=stage_name,
+                potcar_functional=potcar_functional,
+                run_vasp_kwargs=run_vasp_kwargs,
+            )
+
         else:
             raise CalculationValidationError(
                 f"Unsupported stage type: {stage.stage_type.value}"
@@ -1889,6 +1943,46 @@ def build_atomate2_flow_for_workflow_spec(
         stage_directories=stage_directories,
         stage_artifacts=stage_artifacts,
     )
+
+
+def build_phonon_force_input_set_generator_for_stage(
+    stage: StageSpec,
+    *,
+    potcar_functional="PBE_64",
+):
+    """atomate2's phonon-grade force-calculation generator for ``stage``."""
+
+    from backend.phonons.workflow import build_phonon_force_input_set_generator
+
+    return build_phonon_force_input_set_generator(
+        potcar_functional=potcar_functional,
+        dispersion_vdw=_dispersion_vdw_for_modifiers(
+            stage.modifiers,
+            dispersion_method_for_stage(stage),
+        ),
+    )
+
+
+def build_phonon_forces_flow(
+    structure,
+    *,
+    stage: StageSpec,
+    name: str,
+    potcar_functional="PBE_64",
+    run_vasp_kwargs=None,
+):
+    from backend.phonons.workflow import build_phonon_flow, build_phonon_maker
+
+    maker = build_phonon_maker(
+        force_input_set_generator=build_phonon_force_input_set_generator_for_stage(
+            stage,
+            potcar_functional=potcar_functional,
+        ),
+        name=name,
+        run_vasp_kwargs=run_vasp_kwargs,
+        stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
+    )
+    return build_phonon_flow(structure, maker)
 
 
 def build_vasp_input_set_generator_for_spec(

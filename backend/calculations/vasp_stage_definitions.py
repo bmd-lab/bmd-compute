@@ -27,6 +27,15 @@ either.
 """
 
 
+from backend.phonons.workflow import (
+    PHONON_DISPLACEMENT_ANGSTROM,
+    PHONON_FORCE_BMD_INCAR_AMENDMENTS,
+    PHONON_KPATH_SCHEME,
+    PHONON_SUPERCELL_MIN_LENGTH_ANGSTROM,
+    PHONON_SYMPREC,
+)
+
+
 EXECUTABLE_METHODOLOGY_SCOPE = (
     "BMD Compute executable calculation methodology: the stages, theories, "
     "settings and treatments this BMD Compute checkout implements and can execute"
@@ -275,6 +284,39 @@ _STAGE_DEFINITIONS: dict[StageType, VaspStageDefinition] = {
             "line",
             "Uses line-mode high-symmetry k-points.",
             line_density=BAND_STRUCTURE_LINE_DENSITY_DEFAULT,
+        ),
+    ),
+    StageType.PHONON_FORCES: VaspStageDefinition(
+        stage_type=StageType.PHONON_FORCES,
+        atomate2=Atomate2Selection(
+            input_set_generator="atomate2.vasp.sets.core.StaticSetGenerator",
+            maker="atomate2.vasp.jobs.phonons.PhononDisplacementMaker",
+            extra_parameters={
+                "flow_maker": "atomate2.vasp.flows.phonons.PhononMaker",
+                "reciprocal_density": 100,
+                "displacement_angstrom": PHONON_DISPLACEMENT_ANGSTROM,
+                "symprec": PHONON_SYMPREC,
+                "supercell_min_length_angstrom": PHONON_SUPERCELL_MIN_LENGTH_ANGSTROM,
+                "kpath_scheme": PHONON_KPATH_SCHEME,
+                "born_maker": None,
+                "auto_ispin": False,
+            },
+        ),
+        incar_policy=StageIncarPolicy(
+            executable_defaults=PHONON_FORCE_BMD_INCAR_AMENDMENTS,
+        ),
+        restart_policy=_restart(
+            "Phonon force stages take the relaxed structure of the immediately "
+            "preceding PBE Geometry Optimisation stage. Phonopy (through atomate2) "
+            "builds the supercell and displacements; each displacement force "
+            "calculation starts from scratch (no WAVECAR or CHGCAR is carried "
+            "over, because the supercell differs from the relaxed cell).",
+            requires_previous_stage=True,
+        ),
+        kpoints_policy=_kpoints(
+            "reciprocal_density",
+            "Uses atomate2's PhononDisplacementMaker k-point density for each displaced supercell.",
+            reciprocal_density=100,
         ),
     ),
 }

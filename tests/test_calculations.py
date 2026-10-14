@@ -147,6 +147,7 @@ assert [option["label"] for option in form_options["desired_outputs"]] == [
     "Relaxed structure",
     "Electronic density of states",
     "Electronic band structure",
+    "Phonons",
     "Custom workflow",
 ]
 assert [
@@ -180,6 +181,13 @@ assert [
     ("relax", "pbe"),
     ("static", "hse06"),
     ("band_structure", "hse06"),
+]
+assert [
+    (stage["stage_type"], stage["theory"])
+    for stage in desired_outputs["phonons"]["workflow_spec"]["stages"]
+] == [
+    ("relax", "pbe"),
+    ("phonon_forces", "pbe"),
 ]
 assert desired_outputs["custom"]["workflow_spec"] is None
 assert (

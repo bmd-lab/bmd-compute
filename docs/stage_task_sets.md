@@ -1,7 +1,9 @@
 # Stage Task Sets (Phonopy M2a)
 
-Status: representation only. Nothing in bmd-compute builds, prepares, submits or
-executes a stage task set yet.
+Status: the `phonon_forces` stage type is executable (Milestone A,
+`docs/phonon_workflow.md`). At run time its tasks are generated and executed by
+atomate2's phonon flow and Phonopy; the stage task-set record described here is
+not written by execution and remains a provenance/cross-check representation.
 
 ## Stages and tasks
 
@@ -26,15 +28,13 @@ sequentially, concurrently or as an array job.
 `StageSpec` is unchanged. Task IDs, task counts, directories, results and
 structures are not part of it, and the task count is not known at Build time.
 
-## `phonon_forces` is not executable
+## `phonon_forces` execution
 
-`StageType.PHONON_FORCES` lets a workflow describe the phonon force stage as one
-stage holding N displacement tasks. It is listed in
-`NON_EXECUTABLE_STAGE_TYPES`. The calculation registry refuses it in
-`validate_stage_spec` (diagnostic code `stage_type_not_executable`), before any
-other check. That function guards Build, Prepare, Submit, input previews, the
-input reference and POWER-side flow reconstruction. The stage type is not in
-the public options catalogue, and there is no `phonons` Desired Output.
+`StageType.PHONON_FORCES` describes the phonon force stage as one stage holding
+N displacement tasks. Since Milestone A it is executable: `NON_EXECUTABLE_STAGE_TYPES`
+is empty (the fail-closed mechanism remains for future representation-only
+stage types), the `phonons` Desired Output exists, and the stage runs atomate2's
+`PhononMaker` (see `docs/phonon_workflow.md`).
 
 ## `bmd_compute.stage_task_set` v1
 

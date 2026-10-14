@@ -19,6 +19,7 @@ class CalculationStage(str, Enum):
     STATIC = "static"
     DOS = "dos"
     BAND_STRUCTURE = "band_structure"
+    PHONON_FORCES = "phonon_forces"
 
 
 HSE06_SUPPORTED_STAGES = frozenset(

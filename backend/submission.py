@@ -46,6 +46,7 @@ from backend.run_records import submission_record_header
 from backend.runtime_environment import (
     RUNTIME_ENVIRONMENT_FILENAME,
     RuntimeParityError,
+    parity_critical_packages_for_workflow,
     prepared_runtime_parity,
 )
 from backend.provenance import build_submission_provenance
@@ -245,9 +246,11 @@ def submission_attempt_metadata(submission_spec: dict) -> dict:
     }
 
 
-def _prepared_runtime_parity_or_error() -> dict:
+def _prepared_runtime_parity_or_error(workflow_spec: dict | None = None) -> dict:
     try:
-        return prepared_runtime_parity()
+        return prepared_runtime_parity(
+            packages=parity_critical_packages_for_workflow(workflow_spec)
+        )
     except RuntimeParityError as exc:
         raise CalculationValidationError(
             "; ".join(exc.problems),
@@ -1480,7 +1483,7 @@ def create_submission_spec(
         },
         # Exact parity-critical package versions of the preparation
         # environment; the POWER runner refuses to start if its own differ.
-        "runtime_parity": _prepared_runtime_parity_or_error(),
+        "runtime_parity": _prepared_runtime_parity_or_error(flow_spec_copy.get("workflow_spec")),
         "preflight": {
             "requires_remote_structure_check": flow_spec_copy.get("structure", {}).get("type") == "path",
             "mp_api_key_provided": bool((mp_api_key or "").strip()),

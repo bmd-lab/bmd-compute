@@ -13,6 +13,11 @@ Package tiers (the versions themselves live in
   They generate inputs and symmetry/k-points (pymatgen, pymatgen-core, spglib),
   construct and run the workflow (atomate2, jobflow), correct VASP errors
   (custodian) or decide whether a stage converged (emmet-core).
+* ``PHONON_PARITY_CRITICAL_PACKAGES`` (phonopy, seekpath) are parity-critical
+  *only* for submissions whose workflow contains a phonon force stage; the
+  required set is derived from the submission's own ``workflow_spec`` at
+  preparation and again on POWER. For every other submission they are recorded
+  as supporting packages.
 * ``RECORDED_SUPPORTING_PACKAGES`` are pinned in the constraints for
   reproducible installs and recorded at run time, but a difference does not
   stop a run: they are numerical, serialization, configuration or job-store
@@ -48,6 +53,16 @@ PARITY_CRITICAL_PACKAGES = (
     "jobflow",
     "spglib",
 )
+# Parity-critical only for workflows that contain a phonon force stage: they
+# choose the phonon supercell, displacements, force constants and band path.
+# Other workflows record their versions (or absence) without depending on them,
+# so existing PBE/HSE06/DFT+U submissions keep working where they are not yet
+# installed.
+PHONON_PARITY_CRITICAL_PACKAGES = (
+    "phonopy",
+    "seekpath",
+)
+PHONON_STAGE_TYPE = "phonon_forces"
 RECORDED_SUPPORTING_PACKAGES = (
     "monty",
     "numpy",
@@ -56,7 +71,6 @@ RECORDED_SUPPORTING_PACKAGES = (
     "pydantic-settings",
     "maggma",
     "ruamel.yaml",
-    "phonopy",
 )
 RECORDED_ATOMATE2_SETTINGS = (
     "CONFIG_FILE",
@@ -106,10 +120,42 @@ def installed_versions(names, *, version_lookup: VersionLookup | None = None) ->
     return versions
 
 
-def prepared_runtime_parity(*, version_lookup: VersionLookup | None = None) -> dict[str, Any]:
+def workflow_requires_phonon_runtime(workflow_spec: Any) -> bool:
+    stages = workflow_spec.get("stages") if isinstance(workflow_spec, Mapping) else None
+    return any(
+        isinstance(stage, Mapping) and stage.get("stage_type") == PHONON_STAGE_TYPE
+        for stage in stages or ()
+    )
+
+
+def parity_critical_packages_for_workflow(workflow_spec: Any) -> tuple[str, ...]:
+    """Parity-critical package names for a submission with ``workflow_spec``."""
+
+    if workflow_requires_phonon_runtime(workflow_spec):
+        return PARITY_CRITICAL_PACKAGES + PHONON_PARITY_CRITICAL_PACKAGES
+    return PARITY_CRITICAL_PACKAGES
+
+
+def parity_critical_packages_for_spec(spec: Any) -> tuple[str, ...]:
+    flow_spec = spec.get("flow_spec") if isinstance(spec, Mapping) else None
+    workflow_spec = flow_spec.get("workflow_spec") if isinstance(flow_spec, Mapping) else None
+    return parity_critical_packages_for_workflow(workflow_spec)
+
+
+def recorded_supporting_packages_for(critical: tuple[str, ...]) -> tuple[str, ...]:
+    return RECORDED_SUPPORTING_PACKAGES + tuple(
+        name for name in PHONON_PARITY_CRITICAL_PACKAGES if name not in critical
+    )
+
+
+def prepared_runtime_parity(
+    *,
+    version_lookup: VersionLookup | None = None,
+    packages: tuple[str, ...] = PARITY_CRITICAL_PACKAGES,
+) -> dict[str, Any]:
     """The ``runtime_parity`` block recorded in ``submission.json`` at preparation."""
 
-    versions = installed_versions(PARITY_CRITICAL_PACKAGES, version_lookup=version_lookup)
+    versions = installed_versions(packages, version_lookup=version_lookup)
     missing = [name for name, version in versions.items() if not version]
     if missing:
         raise RuntimeParityError(
@@ -125,7 +171,10 @@ def prepared_runtime_parity(*, version_lookup: VersionLookup | None = None) -> d
     }
 
 
-def prepared_parity_problems(prepared: Any) -> list[str]:
+def prepared_parity_problems(
+    prepared: Any,
+    required: tuple[str, ...] = PARITY_CRITICAL_PACKAGES,
+) -> list[str]:
     """Structural problems in a prepared ``runtime_parity`` block."""
 
     if not isinstance(prepared, Mapping):
@@ -146,26 +195,30 @@ def prepared_parity_problems(prepared: Any) -> list[str]:
     if not isinstance(packages, Mapping):
         problems.append("runtime_parity.packages is not an object.")
         return problems
-    if set(packages) != set(PARITY_CRITICAL_PACKAGES):
+    if set(packages) != set(required):
         problems.append(
             "runtime_parity.packages lists "
-            f"{sorted(packages)}, expected {sorted(PARITY_CRITICAL_PACKAGES)}."
+            f"{sorted(packages)}, expected {sorted(required)}."
         )
-    for name in PARITY_CRITICAL_PACKAGES:
+    for name in required:
         value = packages.get(name)
         if name in packages and (not isinstance(value, str) or not value.strip()):
             problems.append(f"runtime_parity.packages[{name!r}] is not a version string: {value!r}.")
     return problems
 
 
-def runtime_parity_problems(prepared: Any, actual: Mapping[str, str | None]) -> list[str]:
+def runtime_parity_problems(
+    prepared: Any,
+    actual: Mapping[str, str | None],
+    required: tuple[str, ...] = PARITY_CRITICAL_PACKAGES,
+) -> list[str]:
     """Every reason the runtime stack does not satisfy the prepared contract."""
 
-    problems = prepared_parity_problems(prepared)
+    problems = prepared_parity_problems(prepared, required)
     if problems:
         return problems
     expected = prepared["packages"]
-    for name in PARITY_CRITICAL_PACKAGES:
+    for name in required:
         runtime_version = actual.get(name)
         if not runtime_version:
             problems.append(f"{name}: prepared {expected[name]}, not installed at runtime.")
@@ -241,9 +294,13 @@ def enforce_runtime_environment(
 
     environ = os.environ if environ is None else environ
     prepared = spec.get("runtime_parity") if isinstance(spec, Mapping) else None
-    critical = installed_versions(PARITY_CRITICAL_PACKAGES, version_lookup=version_lookup)
-    supporting = installed_versions(RECORDED_SUPPORTING_PACKAGES, version_lookup=version_lookup)
-    problems = runtime_parity_problems(prepared, critical)
+    required = parity_critical_packages_for_spec(spec)
+    critical = installed_versions(required, version_lookup=version_lookup)
+    supporting = installed_versions(
+        recorded_supporting_packages_for(required),
+        version_lookup=version_lookup,
+    )
+    problems = runtime_parity_problems(prepared, critical, required)
     try:
         settings_snapshot = atomate2_settings_snapshot(settings)
     except Exception as exc:
@@ -269,7 +326,7 @@ def enforce_runtime_environment(
         "parity_policy": {
             "policy_id": RUNTIME_PARITY_POLICY_ID,
             "policy_version": RUNTIME_PARITY_POLICY_VERSION,
-            "critical_packages": list(PARITY_CRITICAL_PACKAGES),
+            "critical_packages": list(required),
         },
         "prepared_packages": _json_safe(prepared.get("packages")) if isinstance(prepared, Mapping) else None,
         "runtime_packages": critical,
@@ -285,6 +342,11 @@ def enforce_runtime_environment(
 
 __all__ = [
     "PARITY_CRITICAL_PACKAGES",
+    "PHONON_PARITY_CRITICAL_PACKAGES",
+    "parity_critical_packages_for_spec",
+    "parity_critical_packages_for_workflow",
+    "recorded_supporting_packages_for",
+    "workflow_requires_phonon_runtime",
     "RECORDED_ATOMATE2_SETTINGS",
     "RECORDED_SUPPORTING_PACKAGES",
     "RUNTIME_ENVIRONMENT_FILENAME",

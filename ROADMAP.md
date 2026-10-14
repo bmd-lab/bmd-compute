@@ -128,13 +128,13 @@ These are possible future directions, not commitments; none is part of bmd-compu
 - [ ] GW
 - [ ] Elastic constants
 - [ ] Equation of state
-- [ ] Phonons
+- [ ] Phonons — Milestone A: executable finite-displacement PBE phonons (`docs/phonon_workflow.md`); live acceptance and results UI (Milestone B) pending
 - [ ] NEB
 - [ ] LOBSTER / bonding analysis
 
 ## Architectural Debt To Watch
 
 - [ ] extract more route orchestration out of `main.py` into backend application services
-- [ ] decide how non-linear jobflow detours/additions should map to stage directories before exposing workflows that need them
+- [x] decide how non-linear jobflow detours/additions should map to stage directories before exposing workflows that need them (named subdirectories of the creating job; `backend/execution.py`)
 - [ ] replace process-local cache/limits with durable or cross-process mechanisms before running multiple Uvicorn workers
 - [ ] add a durable application database only when state requirements justify it

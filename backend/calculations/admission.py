@@ -25,8 +25,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.calculations.models import Modifier, StageSpec, Theory, WorkflowSpec
+from backend.calculations.models import Modifier, StageSpec, StageType, Theory, WorkflowSpec
 from backend.calculations.registry import (
+    PHONON_SUPPORTED_SCOPE_TEXT,
     CalculationValidationError,
     modifier_display_name,
     theory_display_name,
@@ -50,6 +51,15 @@ HSE06_SOC_NOT_SUPPORTED_MESSAGE = (
     "require system-specific convergence and resource settings. HSE06 and "
     "PBE+SOC remain available separately."
 )
+# Phonon workflows (Milestone A) are limited to non-magnetic, collinear,
+# plain-PBE calculations on every stage: the relax that produces the
+# structure and the force calculations must use the same Hamiltonian, and
+# magnetic, SOC, DFT+U and hybrid phonons are not yet supported.
+PHONONS_UNSUPPORTED_TREATMENT_CODE = "phonons_require_nonmagnetic_pbe"
+PHONON_EXCLUDED_MODIFIERS = frozenset(
+    {Modifier.SPIN_POLARIZED, Modifier.SOC, Modifier.DFT_U}
+)
+
 HSE06_SOC_OMITTED_TITLE = "HSE06 + SOC is not currently supported by BMD Compute."
 HSE06_SOC_OMITTED_MESSAGE = (
     "Spin–orbit coupling has been omitted from the HSE06 stages of this "
@@ -100,6 +110,7 @@ def require_admissible_new_calculation(workflow: WorkflowSpec) -> WorkflowSpec:
     normalized = validate_workflow_spec(workflow)
     blocked = inadmissible_stage_indices(normalized)
     if not blocked:
+        require_admissible_phonon_workflow(normalized)
         return normalized
 
     stage_text = _stage_list_text(blocked)
@@ -111,6 +122,52 @@ def require_admissible_new_calculation(workflow: WorkflowSpec) -> WorkflowSpec:
         ),
         diagnostic={
             "code": HSE06_SOC_NOT_SUPPORTED_CODE,
+            "policy_id": ADMISSION_POLICY_ID,
+            "policy_version": ADMISSION_POLICY_VERSION,
+            "stage_indices": list(blocked),
+        },
+    )
+
+
+def phonon_workflow_problem_stages(workflow: WorkflowSpec) -> tuple[int, ...]:
+    """1-based indices of stages that a phonon workflow may not contain."""
+
+    if not any(stage.stage_type is StageType.PHONON_FORCES for stage in workflow.stages):
+        return ()
+    return tuple(
+        index
+        for index, stage in enumerate(workflow.stages, start=1)
+        if stage.theory is not Theory.PBE
+        or stage.modifiers.intersection(PHONON_EXCLUDED_MODIFIERS)
+    )
+
+
+def require_admissible_phonon_workflow(workflow: WorkflowSpec) -> WorkflowSpec:
+    blocked = phonon_workflow_problem_stages(workflow)
+    if not blocked:
+        return workflow
+    treatments = sorted(
+        {
+            modifier_display_name(modifier)
+            for index in blocked
+            for modifier in workflow.stages[index - 1].modifiers.intersection(
+                PHONON_EXCLUDED_MODIFIERS
+            )
+        }
+        | {
+            theory_display_name(workflow.stages[index - 1].theory)
+            for index in blocked
+            if workflow.stages[index - 1].theory is not Theory.PBE
+        }
+    )
+    raise CalculationValidationError(
+        (
+            "Phonon workflows are not available with "
+            f"{', '.join(treatments)} ({_stage_list_text(blocked)})."
+        ),
+        suggestion=PHONON_SUPPORTED_SCOPE_TEXT,
+        diagnostic={
+            "code": PHONONS_UNSUPPORTED_TREATMENT_CODE,
             "policy_id": ADMISSION_POLICY_ID,
             "policy_version": ADMISSION_POLICY_VERSION,
             "stage_indices": list(blocked),
@@ -147,6 +204,10 @@ __all__ = [
     "HSE06_SOC_NOT_SUPPORTED_MESSAGE",
     "HSE06_SOC_OMITTED_MESSAGE",
     "HSE06_SOC_OMITTED_TITLE",
+    "PHONONS_UNSUPPORTED_TREATMENT_CODE",
+    "PHONON_EXCLUDED_MODIFIERS",
+    "phonon_workflow_problem_stages",
+    "require_admissible_phonon_workflow",
     "UNSUPPORTED_NEW_CALCULATION_COMBINATIONS",
     "inadmissible_stage_indices",
     "modifier_is_admissible_for_new_theory",

@@ -57,9 +57,10 @@ class StageType(_IntentEnum):
     STATIC = "static"
     DOS = "dos"
     BAND_STRUCTURE = "band_structure"
-    # Representation only (Phonopy M2a): one stage whose calculations are a
-    # task set derived at runtime. Not executable; see
-    # backend.calculations.stage_materialization.
+    # One stage whose calculations are a task set derived at runtime: the
+    # finite-displacement force calculations of atomate2's phonon flow, with
+    # Phonopy analysis. See backend.calculations.stage_materialization and
+    # backend.phonons.workflow.
     PHONON_FORCES = "phonon_forces"
 
 

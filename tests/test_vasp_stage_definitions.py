@@ -23,6 +23,7 @@ def test_stage_definition_introspection_is_json_safe_and_read_only():
         "static",
         "dos",
         "band_structure",
+        "phonon_forces",
     }
     json.dumps(definitions, sort_keys=True)
 

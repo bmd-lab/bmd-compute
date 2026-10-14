@@ -89,6 +89,7 @@ def test_base_stage_definitions_are_represented_from_existing_api():
         "static",
         "dos",
         "band_structure",
+        "phonon_forces",
     }
 
 

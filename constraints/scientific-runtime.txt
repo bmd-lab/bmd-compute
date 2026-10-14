@@ -29,6 +29,18 @@ jobflow==0.1.19
 # symmetry: band-structure k-paths, irreducible meshes
 spglib==2.7.0
 #
+# Tier 1P - parity-critical for phonon workflows only. Required, at exactly
+# these versions, for any submission whose workflow contains a phonon force
+# stage (backend/runtime_environment.py PHONON_PARITY_CRITICAL_PACKAGES); for
+# every other submission they are recorded but a difference or absence does
+# not stop the run. Install in both environments before phonon submissions.
+#
+# phonon supercells, displacements, force constants and frequencies
+# (atomate2 PhononMaker; BMD phonon stages and displacement plan)
+phonopy==4.8.1
+# phonon band-structure path (atomate2 kpath_scheme="seekpath")
+seekpath==2.1.0
+#
 # Tier 2 - supporting. Pinned for reproducible installs and recorded in each
 # run's runtime_environment.json; a difference does not stop a run.
 #
@@ -43,7 +55,3 @@ pydantic-settings==2.14.2
 maggma==0.74.0
 # loads the pymatgen/atomate2 YAML input-set configurations
 ruamel.yaml==0.19.1
-# phonon displacement planning (backend/phonons, M1). Imported lazily and not
-# used by any executable workflow yet; a missing install on POWER is recorded,
-# not fatal. Promote to Tier 1 before phonon execution depends on it.
-phonopy==4.8.1
