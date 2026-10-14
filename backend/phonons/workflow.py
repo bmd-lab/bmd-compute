@@ -66,12 +66,25 @@ PHONON_PRECURSOR_RELAX_INCAR = {"ENCUT": 700, "EDIFF": 1e-7, "EDIFFG": -1e-3}
 #   that produced the structure.
 # - phonon stages are non-magnetic only, so spin is fixed off explicitly
 #   instead of atomate2's auto_ispin.
+# - single-point force calculation: atomate2 0.1.5's PhononDisplacementMaker
+#   sets IBRION = 2 and ISIF = 3 (with NSW = 0), and its StaticSetGenerator
+#   sets ISMEAR = -5 (tetrahedron), which pymatgen keeps whenever the
+#   supercell k-mesh has enough points (e.g. the 64-atom Si cell, 2x2x2).
+#   Tetrahedron smearing gives no variational forces, so forces use Gaussian
+#   smearing (ISMEAR = 0, SIGMA = 0.2, the value atomate2/pymatgen fall back
+#   to), no ionic algorithm (IBRION = -1, NSW = 0), and ISIF is left to the
+#   VASP default.
 # NCORE is deliberately left unset for force stages.
 PHONON_FORCE_BMD_INCAR_AMENDMENTS = {
     "GGA": None,
     "ENAUG": None,
     "LMIXTAU": None,
     "ISPIN": 1,
+    "ISMEAR": 0,
+    "SIGMA": 0.2,
+    "IBRION": -1,
+    "NSW": 0,
+    "ISIF": None,
 }
 PHONON_FORCE_AUTO_ISPIN = False
 

@@ -161,11 +161,26 @@ def test_simulated_si_phonon_run_produces_force_constants_and_frequencies(tmp_pa
     assert relax_incar["ENCUT"] == 700
     assert relax_incar["EDIFF"] == 1e-7
     assert relax_incar["EDIFFG"] == -1e-3
+    # The INCAR VASP receives is exactly the one the plan previewed (the fake
+    # relax returns the submitted structure, so the displaced supercell is
+    # identical).
+    from pymatgen.io.vasp.inputs import Incar
+
+    planned_section = plan.generated_inputs["incar"].split("# Stage 2")[1]
+    planned = Incar.from_str(
+        "\n".join(line for line in planned_section.splitlines()[1:] if not line.startswith("#"))
+    )
     for directory in displacement_dirs:
         settings = incar(directory)
+        assert Incar(settings) == planned
         assert settings["ENCUT"] == 700
         assert settings["EDIFF"] == 1e-7
         assert settings["NSW"] == 0
+        assert settings["IBRION"] == -1
+        assert settings["ISMEAR"] == 0
+        assert settings["SIGMA"] == 0.2
+        assert "ISIF" not in settings
+        assert settings["LREAL"] is False
         assert settings["ISPIN"] == 1
         assert "NCORE" not in settings
         assert "GGA" not in settings

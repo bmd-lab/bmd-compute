@@ -195,6 +195,13 @@ def test_si_phonon_workflow_uses_atomate2_phonon_maker_with_bmd_settings():
     assert force_incar["EDIFF"] == 1e-7
     assert force_incar["ISPIN"] == 1
     assert force_incar["GGA"] is None  # PBE, not atomate2's PBEsol base set
+    # Single-point Gaussian-smeared forces, overriding atomate2 0.1.5's
+    # IBRION=2/ISIF=3 and StaticSetGenerator's ISMEAR=-5.
+    assert force_incar["ISMEAR"] == 0
+    assert force_incar["SIGMA"] == 0.2
+    assert force_incar["IBRION"] == -1
+    assert force_incar["NSW"] == 0
+    assert force_incar["ISIF"] is None
     assert "NCORE" not in force_incar
     assert force_maker.input_set_generator.auto_ispin is False
     assert force_maker.input_set_generator.vdw is None
@@ -284,6 +291,29 @@ def test_non_magnetic_pbe_phonons_are_admitted_with_a_planning_preview():
     assert "NCORE" not in incar.split("# Stage 2")[1]
     assert "EDIFFG = -0.001" in incar.split("# Stage 2")[0]
     assert "ENCUT = 700" in incar.split("# Stage 2")[0]
+
+
+def test_planned_force_incar_is_single_point_gaussian_for_the_64_atom_si_cell():
+    # Regression: the first live plan showed ISMEAR=-5, IBRION=2, ISIF=3. For
+    # the 64-atom Si supercell the k-mesh is 2x2x2, so pymatgen does not fall
+    # back from tetrahedron smearing; the BMD amendments must set it.
+    from pymatgen.io.vasp.inputs import Incar
+
+    resolved = plan(desired_output="phonons")
+    sections = resolved.generated_inputs["incar"].split("# Stage ")[1:]
+    force = Incar.from_str("\n".join(line for line in sections[1].splitlines()[1:] if not line.startswith("#")))
+    assert force["ISMEAR"] == 0
+    assert force["SIGMA"] == 0.2
+    assert force["IBRION"] == -1
+    assert force["NSW"] == 0
+    assert "ISIF" not in force
+    assert force["ENCUT"] == 700
+    assert force["EDIFF"] == 1e-7
+    assert force["LREAL"] is False
+    assert force["ISPIN"] == 1
+    for absent in ("GGA", "NCORE", "IVDW"):
+        assert absent not in force
+    assert "Gamma\n2 2 2" in resolved.generated_inputs["kpoints"].split("# Stage 2")[1]
 
 
 def test_d3_is_applied_consistently_to_relax_and_forces():
