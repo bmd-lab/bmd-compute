@@ -446,8 +446,14 @@ def test_sns2_dimensionality_observation_produces_dispersion_consideration():
     assert consideration.trigger_elements == ()
     assert consideration.trigger_classes == ("two_dimensional_bonded_connectivity",)
     assert consideration.selection_state == WORKFLOW_NOT_PROVIDED
-    assert consideration.applicable_stage_types == ("relax", "static")
+    assert consideration.applicable_stage_types == ("phonon_forces", "relax", "static")
     assert consideration.bmd_compute_support["supported_stage_capabilities"] == [
+        {
+            "stage_type": "phonon_forces",
+            "stage_label": "Phonon Force Calculations",
+            "theory": "pbe",
+            "theory_label": "PBE",
+        },
         {
             "stage_type": "relax",
             "stage_label": "Geometry Optimisation",

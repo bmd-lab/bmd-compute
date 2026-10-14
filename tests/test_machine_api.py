@@ -541,6 +541,7 @@ PARITY_CASES = {
     "pbe_dft_u": (NIO_POSCAR, "energy_only", None),
     "custom_pbe_soc": (SI_POSCAR, None, {"stages": [custom_stage("static", "pbe", ["soc"])]}),
     "custom_hse06": (SI_POSCAR, None, {"stages": [custom_stage("relax", "pbe"), custom_stage("static", "hse06")]}),
+    "pbe_phonons": (SI_POSCAR, "phonons", None),
 }
 
 
@@ -934,3 +935,128 @@ def test_alternative_paths_never_bypass_authentication(tokens, no_science, path)
     if response.status_code == 307:
         followed = TestClient(main.app, client=LOOPBACK).post(path, json=plan_body())
         assert followed.status_code == 401
+
+
+# ------------------------------------------------------------- phonons (Milestone A)
+
+
+def test_phonons_desired_output_plan_includes_the_phonopy_plan(client, tokens):
+    response = post_plan(client, tokens["plan"], plan_body(desired_output="phonons"))
+    assert response.status_code == 200, response.text
+    stages = response.json()["scientific_inputs"]["stages"]
+    assert [stage["stage_type"] for stage in stages] == ["relax", "phonon_forces"]
+    assert "phonon_plan" not in stages[0]
+    phonon_plan = stages[1]["phonon_plan"]
+    assert phonon_plan["supercell_atom_count"] == stages[1]["poscar"]["num_sites"] == 64
+    assert phonon_plan["displacement_count"] == 1
+    assert stages[1]["incar"]["settings"]["ENCUT"] == 700
+    assert "NCORE" not in stages[1]["incar"]["settings"]
+
+
+@pytest.mark.parametrize(
+    ("structure", "custom"),
+    [
+        (NIO_POSCAR, None),
+        (SI_POSCAR, {"stages": [custom_stage("relax", "pbe", ["spin_polarized"]), custom_stage("phonon_forces", "pbe")]}),
+        (SI_POSCAR, {"stages": [custom_stage("relax", "pbe"), custom_stage("phonon_forces", "pbe", ["soc"])]}),
+        (SI_POSCAR, {"stages": [custom_stage("relax", "hse06"), custom_stage("phonon_forces", "hse06")]}),
+    ],
+    ids=["dft_u_and_magnetic", "spin_relax", "soc_forces", "hse06"],
+)
+def test_unsupported_phonon_combinations_are_refused_by_the_api(client, tokens, structure, custom):
+    body = plan_body(structure, desired_output="phonons", custom=custom)
+    response = post_plan(client, tokens["plan"], body)
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "calculation_invalid"
+
+
+# ------------------------------------------------- phonon settings in the plan digest
+
+
+_PHONON_SETTING_MUTATIONS = {
+    "PHONON_DISPLACEMENT_ANGSTROM": 0.02,
+    "PHONON_SYMPREC": 1e-3,
+    "PHONON_SYM_REDUCE": False,
+    "PHONON_SUPERCELL_MIN_LENGTH_ANGSTROM": 20.0,
+    "PHONON_SUPERCELL_PREFER_90_DEGREES": False,
+    "PHONON_KPATH_SCHEME": "setyawan_curtarolo",
+    "PHONON_USE_SYMMETRIZED_STRUCTURE": "primitive",
+    "PHONON_WORKFLOW_VERSION": 2,
+    "PHONON_PRECURSOR_RELAX_INCAR": {"ENCUT": 700, "EDIFF": 1e-6, "EDIFFG": -1e-3},
+    "PHONON_FORCE_BMD_INCAR_AMENDMENTS": {"GGA": None, "ENAUG": None, "LMIXTAU": None, "ISPIN": 2},
+    "PHONON_FORCE_AUTO_ISPIN": True,
+    "PHONON_STORE_FORCE_CONSTANTS": False,
+    "PHONON_ANALYSIS_KWARGS": {
+        "create_force_constants_file": True,
+        "force_constants_filename": "FORCE_CONSTANTS",
+        "calculate_pdos": True,
+    },
+    "PHONON_FORCE_CONSTANTS_FILENAME": "FC",
+}
+
+
+@pytest.fixture(scope="module")
+def phonon_plan_and_previews():
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        plan = main.plan_calculation_request(structure_text=SI_POSCAR, fmt="poscar", desired_output="phonons")
+        return plan, plan_stage_previews(plan)
+
+
+def _digest(plan, previews):
+    return compute_plan_digest(structure=plan.structure, submission_spec=plan.submission_spec, stage_previews=previews)
+
+
+def test_phonon_digest_material_uses_the_authoritative_settings(phonon_plan_and_previews):
+    from backend.phonons.workflow import phonon_force_settings_payload
+
+    plan, previews = phonon_plan_and_previews
+    material = plan_digest_module.stage_input_material(previews)
+    assert "phonon_settings" not in material[0]
+    assert material[1]["phonon_settings"] == json_safe(phonon_force_settings_payload())
+    # The preview shows the same payload the digest covers.
+    assert json_safe(previews[1]["phonon_plan"]["settings"]) == material[1]["phonon_settings"]
+    assert _digest(plan, previews) == _digest(plan, previews)
+
+
+@pytest.mark.parametrize("name", sorted(_PHONON_SETTING_MUTATIONS))
+def test_changing_a_phonon_setting_changes_the_plan_digest(phonon_plan_and_previews, monkeypatch, name):
+    from backend.phonons import workflow as phonon_workflow
+
+    plan, previews = phonon_plan_and_previews
+    before = _digest(plan, previews)
+    assert getattr(phonon_workflow, name) != _PHONON_SETTING_MUTATIONS[name]
+    monkeypatch.setattr(phonon_workflow, name, _PHONON_SETTING_MUTATIONS[name])
+    assert _digest(plan, previews) != before
+
+
+@pytest.mark.parametrize("desired_output", ["energy_only", "relaxed_structure", "electronic_dos"])
+def test_non_phonon_digest_material_is_unchanged(desired_output):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        plan = main.plan_calculation_request(structure_text=SI_POSCAR, fmt="poscar", desired_output=desired_output)
+        previews = plan_stage_previews(plan)
+    for stage in plan_digest_module.stage_input_material(previews):
+        assert set(stage) == {"index", "vasp_executable", "incar", "kpoints_text", "poscar_sha256", "potcar_symbols"}
+
+
+def test_browser_and_api_phonon_digests_match(client, tokens):
+    ui = _browser_build(SI_POSCAR, workflow="phonons")
+    api = post_plan(client, tokens["plan"], plan_body(desired_output="phonons")).json()
+    structure_obj = parse_structure(SI_POSCAR, "poscar")
+    ui_plan = main.CalculationPlan(
+        structure=structure_obj,
+        workflow_spec=main.WorkflowSpec.from_dict(ui["submission_spec"]["flow_spec"]["workflow_spec"]),
+        default_treatment_resolution=ui["default_treatment_resolution"],
+        method_considerations=ui["method_considerations"],
+        execution_resources=ui["selected_resources"],
+        summary=ui["summary"],
+        generated_inputs=ui["generated_inputs"],
+        submission_spec=ui["submission_spec"],
+    )
+    ui_digest = compute_plan_digest(
+        structure=structure_obj,
+        submission_spec=ui["submission_spec"],
+        stage_previews=plan_stage_previews(ui_plan),
+    )
+    assert ui_digest == api["plan_digest"]

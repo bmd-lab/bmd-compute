@@ -30,6 +30,8 @@ from backend.workflows import (
     validate_input_set_for_modifiers,
     vasp_executable_for_modifiers,
     apply_stage_artifact_incar_settings,
+    apply_phonon_precursor_incar_settings,
+    build_phonon_force_input_set_generator_for_stage,
     dispersion_method_for_stage,
     workflow_stage_artifact_policies,
 )
@@ -130,19 +132,35 @@ def generated_input_stage_previews(
     stage_previews = []
 
     for index, stage in enumerate(workflow_spec.stages):
-        input_set = _input_set_for_stage(
-            structure,
-            stage,
-            incar=incar,
-            kpoints=kpoints,
-            resources=resources,
-            potcar_functional=potcar_functional,
-            artifact_policy=stage_artifacts[index],
-        )
-        validate_input_set_for_modifiers(
-            input_set,
-            spec=_calculation_spec_for_stage(stage),
-        )
+        phonon_plan = None
+        if stage.stage_type is StageType.PHONON_FORCES:
+            # The force-calculation preview shows the first Phonopy-displaced
+            # supercell of the submitted structure.
+            phonon_plan, first_displaced = phonon_stage_plan_payload(
+                structure,
+                workflow_spec,
+                index,
+            )
+            input_set = build_phonon_force_input_set_generator_for_stage(
+                stage,
+                potcar_functional=potcar_functional,
+            ).get_input_set(first_displaced, potcar_spec=True)
+        else:
+            input_set = _input_set_for_stage(
+                structure,
+                stage,
+                incar=incar,
+                kpoints=kpoints,
+                resources=resources,
+                potcar_functional=potcar_functional,
+                artifact_policy=stage_artifacts[index],
+                workflow=workflow_spec,
+                index=index,
+            )
+            validate_input_set_for_modifiers(
+                input_set,
+                spec=_calculation_spec_for_stage(stage),
+            )
         stage_previews.append(
             {
                 "index": index + 1,
@@ -153,6 +171,7 @@ def generated_input_stage_previews(
                 "artifact_policy": stage_artifacts[index],
                 "stage_spec": stage,
                 "input_set": input_set,
+                "phonon_plan": phonon_plan,
             }
         )
 
@@ -177,7 +196,7 @@ def _preview_workflow_inputs(
         potcar_functional=potcar_functional,
     )
 
-    return {
+    preview = {
         "incar": _combined_stage_input_text(stage_previews, "incar"),
         "kpoints": _combined_stage_input_text(stage_previews, "kpoints"),
         "poscar": _combined_stage_input_text(stage_previews, "poscar"),
@@ -190,6 +209,54 @@ def _preview_workflow_inputs(
             for stage in stage_previews
         ],
     }
+    phonon_plans = [
+        {"stage": stage["index"], "label": stage["label"], **stage["phonon_plan"]}
+        for stage in stage_previews
+        if stage.get("phonon_plan") is not None
+    ]
+    if phonon_plans:
+        preview["phonon_plans"] = phonon_plans
+    return preview
+
+
+def phonon_stage_plan_payload(structure, workflow: WorkflowSpec, index: int):
+    """Planning preview of a phonon force stage, plus the stage list it runs.
+
+    Supercell and displacements come from atomate2/Phonopy
+    (``backend.phonons.workflow.phonon_planning_preview``); nothing here
+    re-implements Phonopy planning. Returns ``(plan, first_displaced_supercell)``.
+    """
+
+    from backend.phonons.workflow import PHONON_JOB_NAMES, phonon_planning_preview
+
+    plan = phonon_planning_preview(structure)
+    first_displaced = plan.pop("first_displaced_supercell")
+    precursor = workflow.stages[index - 1] if index > 0 else None
+    plan["stages"] = [
+        {
+            "name": "relax (preceding stage)",
+            "description": (
+                f"{stage_display_name(precursor)} ({theory_display_name(precursor.theory)}) "
+                "with phonon-grade convergence"
+            )
+            if precursor is not None
+            else "",
+        },
+        {"name": PHONON_JOB_NAMES[0], "description": "atomate2/Phonopy automatic supercell"},
+        {"name": PHONON_JOB_NAMES[1], "description": "Phonopy finite displacements"},
+        {
+            "name": PHONON_JOB_NAMES[2],
+            "description": (
+                f"{plan['displacement_count']} VASP force calculation(s) on "
+                f"{plan['supercell_atom_count']}-atom supercells"
+            ),
+        },
+        {
+            "name": PHONON_JOB_NAMES[3],
+            "description": "Phonopy force constants, band structure (seekpath) and DOS",
+        },
+    ]
+    return plan, first_displaced
 
 
 def _input_set_for_stage(
@@ -201,6 +268,8 @@ def _input_set_for_stage(
     resources,
     potcar_functional: str,
     artifact_policy: dict | None = None,
+    workflow: WorkflowSpec | None = None,
+    index: int | None = None,
 ):
     user_incar = dict(incar or {})
     user_incar.update(dict(stage.options or {}).get("incar") or {})
@@ -208,6 +277,12 @@ def _input_set_for_stage(
         user_incar,
         artifact_policy=artifact_policy,
     )
+    if workflow is not None and index is not None:
+        user_incar = apply_phonon_precursor_incar_settings(
+            user_incar,
+            workflow=workflow,
+            index=index,
+        )
     stage_kpoints = dict(stage.options or {}).get("kpoints", kpoints)
     spin_polarized = Modifier.SPIN_POLARIZED in stage.modifiers
 
@@ -381,5 +456,6 @@ def _input_text(input_object) -> str:
 
 __all__ = [
     "generated_input_stage_previews",
+    "phonon_stage_plan_payload",
     "preview_generated_inputs",
 ]

@@ -177,6 +177,10 @@ _STAGE_DESCRIPTIONS = {
     StageType.STATIC: "Calculate a converged single-point total energy.",
     StageType.DOS: "Calculate the electronic density of states after a static calculation.",
     StageType.BAND_STRUCTURE: "Calculate the electronic band structure after a static calculation.",
+    StageType.PHONON_FORCES: (
+        "Calculate finite-displacement forces on Phonopy-generated supercells of the "
+        "relaxed structure, then derive force constants and phonon frequencies with Phonopy."
+    ),
 }
 
 _STAGE_PURPOSES = {
@@ -198,6 +202,20 @@ _PURPOSE_STAGE_TYPES = {
         StageType.BAND_STRUCTURE,
     ),
 }
+
+# Phonon Milestone A scope: non-magnetic, collinear, plain PBE (optionally with
+# DFT-D3/D3(BJ) applied consistently to the relax and the forces).
+_PBE_PHONON_FORCE_MODIFIERS = (Modifier.DISPERSION,)
+PHONON_UNSUPPORTED_MODIFIER_CODE = "phonon_forces_unsupported_modifier"
+PHONON_SUPPORTED_SCOPE_TEXT = (
+    "Phonon calculations are currently available for non-magnetic materials with "
+    "plain PBE (optionally with van der Waals correction): spin polarisation, "
+    "SOC, DFT+U and HSE06 are not supported for phonons."
+)
+
+_DISPERSION_STAGE_TYPES = frozenset(
+    {StageType.RELAX, StageType.STATIC, StageType.PHONON_FORCES}
+)
 
 _TERMINAL_ANALYSIS_STAGES = {
     StageType.DOS,
@@ -386,6 +404,22 @@ def _desired_output_workflows() -> tuple[tuple[str, str, str, WorkflowSpec | Non
             ),
         ),
         (
+            "phonons",
+            "Phonons",
+            (
+                "Relax the structure with phonon-grade PBE convergence, then run "
+                "finite-displacement force calculations and Phonopy analysis "
+                "(non-magnetic materials only)."
+            ),
+            WorkflowSpec(
+                [
+                    StageSpec(StageType.RELAX, Theory.PBE),
+                    StageSpec(StageType.PHONON_FORCES, Theory.PBE),
+                ],
+                recipe="phonons",
+            ),
+        ),
+        (
             "custom",
             "Custom workflow",
             "Configure stages and theories explicitly.",
@@ -487,6 +521,8 @@ def validate_workflow_spec(workflow: WorkflowSpec) -> WorkflowSpec:
     _validate_dispersion_workflow_consistency(normalized)
     _validate_previous_stage_soc_consistency(normalized)
 
+    _validate_phonon_force_stage_placement(normalized)
+
     for index, stage in enumerate(normalized.stages):
         stage_number = index + 1
         if stage.stage_type in _TERMINAL_ANALYSIS_STAGES and index != len(normalized.stages) - 1:
@@ -518,6 +554,39 @@ def validate_workflow_spec(workflow: WorkflowSpec) -> WorkflowSpec:
             )
 
     return normalized
+
+
+def _validate_phonon_force_stage_placement(workflow: WorkflowSpec) -> None:
+    # A phonon force stage runs atomate2's phonon flow on the relaxed structure
+    # of the stage before it, so it must directly follow a full (cell and ions)
+    # PBE Geometry Optimisation, and nothing can consume its output.
+    for index, stage in enumerate(workflow.stages):
+        if stage.stage_type is not StageType.PHONON_FORCES:
+            continue
+        stage_number = index + 1
+        if index != len(workflow.stages) - 1:
+            raise CalculationValidationError(
+                f"{stage_display_name(stage)} must be the final workflow stage.",
+                suggestion="Move this stage to the end of the workflow.",
+            )
+        previous = workflow.stages[index - 1] if index > 0 else None
+        if (
+            previous is None
+            or previous.stage_type is not StageType.RELAX
+            or previous.theory is not stage.theory
+            or Modifier.IONS_ONLY in previous.modifiers
+        ):
+            raise CalculationValidationError(
+                (
+                    f"{stage_display_name(stage)} must directly follow a full "
+                    f"{theory_display_name(stage.theory)} Geometry Optimisation stage."
+                ),
+                suggestion=(
+                    f"Add a {theory_display_name(stage.theory)} Geometry Optimisation "
+                    f"immediately before stage {stage_number}, or choose the Phonons "
+                    "Desired Output."
+                ),
+            )
 
 
 def _validate_previous_stage_soc_consistency(workflow: WorkflowSpec) -> None:
@@ -901,6 +970,19 @@ def _validate_stage_support(stage: StageSpec) -> None:
     unsupported_modifiers = stage.modifiers.difference(
         _supported_modifiers_for_stage(stage.stage_type, stage.theory)
     )
+    if unsupported_modifiers and stage.stage_type is StageType.PHONON_FORCES:
+        modifier_text = ", ".join(
+            modifier_display_name(modifier)
+            for modifier in sorted(unsupported_modifiers, key=lambda item: item.value)
+        )
+        raise CalculationValidationError(
+            f"{stage_label} is not available with {modifier_text}.",
+            suggestion=PHONON_SUPPORTED_SCOPE_TEXT,
+            diagnostic={
+                "code": PHONON_UNSUPPORTED_MODIFIER_CODE,
+                "modifiers": sorted(modifier.value for modifier in unsupported_modifiers),
+            },
+        )
     if unsupported_modifiers:
         modifier_text = ", ".join(
             modifier_display_name(modifier)
@@ -969,9 +1051,9 @@ def _validate_dispersion_stage_support(stage: StageSpec) -> None:
             "van der Waals correction is currently available for PBE Geometry Optimisation and Static Energy stages only.",
             suggestion="Use PBE for this van der Waals-corrected stage, or remove van der Waals correction.",
         )
-    if stage.stage_type not in {StageType.RELAX, StageType.STATIC}:
+    if stage.stage_type not in _DISPERSION_STAGE_TYPES:
         raise CalculationValidationError(
-            "van der Waals correction is applied only to PBE Geometry Optimisation and Static Energy stages in Phase 1.",
+            "van der Waals correction is applied only to PBE Geometry Optimisation, Static Energy and Phonon Force Calculation stages.",
             suggestion="Apply dispersion to the PBE precursor relax/static stages, not directly to DOS or Band Structure.",
         )
     try:
@@ -984,7 +1066,10 @@ def _validate_dispersion_stage_support(stage: StageSpec) -> None:
 
 
 def _validate_dispersion_workflow_consistency(workflow: WorkflowSpec) -> None:
-    relax_static_types = {StageType.RELAX, StageType.STATIC}
+    # Phonon force stages are connected to the relax that produced their
+    # structure: forces must include the same dispersion correction as the
+    # relaxation, or the structure is not at a minimum of the force field.
+    relax_static_types = _DISPERSION_STAGE_TYPES
     for previous_stage, current_stage in zip(workflow.stages, workflow.stages[1:]):
         if (
             previous_stage.stage_type not in relax_static_types
@@ -1012,6 +1097,8 @@ def _supported_modifiers_for_stage(
     theory: Theory,
 ) -> frozenset[Modifier]:
     if theory is Theory.PBE:
+        if stage_type is StageType.PHONON_FORCES:
+            return frozenset(_PBE_PHONON_FORCE_MODIFIERS)
         supported = set(_ACTIVE_UI_MODIFIERS)
         if stage_type is StageType.STATIC:
             supported.add(Modifier.SOC)

@@ -14,7 +14,7 @@ from backend.workflows import (
     vasp_executable_for_modifiers,
     vasp_job_kwargs_for_modifiers,
 )
-from backend.runtime_environment import PARITY_CRITICAL_PACKAGES, RUNTIME_ENVIRONMENT_SCHEMA
+from backend.runtime_environment import RUNTIME_ENVIRONMENT_SCHEMA, parity_critical_packages_for_spec
 from backend.runtime_package import runtime_package_manifest_metadata
 
 
@@ -35,6 +35,7 @@ SCIENTIFIC_PACKAGE_NAMES = (
     "maggma",
     "ruamel.yaml",
     "phonopy",
+    "seekpath",
 )
 
 
@@ -76,7 +77,9 @@ def build_submission_provenance(submission_spec: dict) -> dict:
                     (submission_spec.get("paths") or {}).get("runtime_environment")
                 ),
                 "record_schema": RUNTIME_ENVIRONMENT_SCHEMA,
-                "parity_critical_packages": list(PARITY_CRITICAL_PACKAGES),
+                "parity_critical_packages": list(
+                    parity_critical_packages_for_spec(submission_spec)
+                ),
             },
         },
         "vasp": {

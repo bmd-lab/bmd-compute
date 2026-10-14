@@ -208,6 +208,12 @@ def resolve_default_treatments(
         str(consideration.get("id"))
         for consideration in payload.get("considerations", ())
     )
+    _reject_phonons_requiring_excluded_treatments(
+        normalized_base,
+        consideration_ids,
+        _dft_u_evaluation(payload),
+        desired_output=desired_output,
+    )
 
     stages = tuple(normalized_base.stages)
     applied: list[AppliedDefaultTreatment] = []
@@ -328,6 +334,7 @@ def automatic_default_treatment_policy() -> dict[str, Any]:
                 "application": [
                     {"stage_type": StageType.RELAX.value, "theory": Theory.PBE.value},
                     {"stage_type": StageType.STATIC.value, "theory": Theory.PBE.value},
+                    {"stage_type": StageType.PHONON_FORCES.value, "theory": Theory.PBE.value},
                 ],
                 "support_guard": "backend.calculations.registry.validate_stage_spec",
             },
@@ -389,6 +396,16 @@ def automatic_default_treatment_policy() -> dict[str, Any]:
             },
         ],
         "advisory_only": [],
+        "phonon_workflows": {
+            "excluded_treatments": [
+                Modifier.SPIN_POLARIZED.value,
+                Modifier.SOC.value,
+                Modifier.DFT_U.value,
+            ],
+            "action": "reject_before_preview_preparation_or_submission",
+            "diagnostic_code": PHONONS_EXCLUDED_TREATMENT_CODE,
+            "dispersion": "applied to the relax and the phonon force stage alike",
+        },
     }
 
 
@@ -572,9 +589,58 @@ def _apply_dft_u(
 
 
 def _stage_receives_default_dispersion(stage: StageSpec) -> bool:
+    # Phonon force stages receive the same correction as the relax that
+    # produced their structure.
     return (
         stage.theory is Theory.PBE
-        and stage.stage_type in {StageType.RELAX, StageType.STATIC}
+        and stage.stage_type in {StageType.RELAX, StageType.STATIC, StageType.PHONON_FORCES}
+    )
+
+
+PHONONS_EXCLUDED_TREATMENT_CODE = "phonons_structure_requires_unsupported_treatment"
+
+
+def _reject_phonons_requiring_excluded_treatments(
+    workflow: WorkflowSpec,
+    consideration_ids: tuple[str, ...],
+    dft_u_evaluation: Mapping[str, Any] | None,
+    *,
+    desired_output: str | None,
+) -> None:
+    """Fail closed when BMD would add a treatment phonons do not support.
+
+    Spin polarisation, SOC and DFT+U are automatic BMD treatments. Applying
+    them to a phonon workflow is not supported (Milestone A), and silently
+    leaving them out would run a materially different Hamiltonian from the
+    one BMD Compute chooses for the same structure in every other workflow.
+    """
+
+    if not any(stage.stage_type is StageType.PHONON_FORCES for stage in workflow.stages):
+        return
+    triggered: list[str] = []
+    if SPIN_CONSIDERATION_ID in consideration_ids:
+        triggered.append(modifier_display_name(Modifier.SPIN_POLARIZED))
+    if SOC_CONSIDERATION_ID in consideration_ids:
+        triggered.append(modifier_display_name(Modifier.SOC))
+    if dft_u_evaluation is not None and dft_u_evaluation.get("decision") == DFT_U_DECISION_APPLY:
+        triggered.append(modifier_display_name(Modifier.DFT_U))
+    if not triggered:
+        return
+    raise CalculationValidationError(
+        (
+            "Phonons are not available for this structure: BMD Compute would apply "
+            f"{', '.join(triggered)}, which phonon workflows do not support yet."
+        ),
+        suggestion=(
+            "Phonon calculations are currently available for non-magnetic materials "
+            "with plain PBE (optionally with van der Waals correction)."
+        ),
+        diagnostic={
+            "code": PHONONS_EXCLUDED_TREATMENT_CODE,
+            "policy": "fail_closed",
+            "desired_output": desired_output,
+            "triggered_treatments": triggered,
+        },
     )
 
 

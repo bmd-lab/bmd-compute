@@ -94,6 +94,7 @@ def test_desired_output_options_are_backend_owned_and_beginner_facing():
         "Relaxed structure",
         "Electronic density of states",
         "Electronic band structure",
+        "Phonons",
         "Custom workflow",
     ]
     assert [option["value"] for option in desired_outputs] == [
@@ -101,6 +102,7 @@ def test_desired_output_options_are_backend_owned_and_beginner_facing():
         "relaxed_structure",
         "electronic_dos",
         "electronic_band_structure",
+        "phonons",
         "custom",
     ]
 
@@ -126,6 +128,10 @@ def test_desired_output_options_are_backend_owned_and_beginner_facing():
         ("relax", "pbe"),
         ("static", "hse06"),
         ("band_structure", "hse06"),
+    ]
+    assert _stage_pairs(workflows["phonons"]) == [
+        ("relax", "pbe"),
+        ("phonon_forces", "pbe"),
     ]
     assert workflows["custom"] is None
 

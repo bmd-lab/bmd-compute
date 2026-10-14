@@ -171,7 +171,10 @@ def run_submission(spec: dict) -> None:
 
 def _flow_stage_directories(flow) -> tuple[str, ...]:
     jobs = list(getattr(flow, "jobs", []) or [])
-    if len(jobs) <= 1:
+    # A single plain job runs in the launch directory as before. A nested
+    # flow (even a single one) always needs per-job directories so that its
+    # jobs cannot overwrite each other's VASP files.
+    if len(jobs) <= 1 and not any(hasattr(job, "jobs") for job in jobs):
         return ()
 
     metadata = getattr(flow, "metadata", None) or {}
@@ -196,6 +199,23 @@ def _safe_stage_directory_name(name, index: int) -> str:
         for character in raw
     ).strip("_-")
     return safe or f"stage_{index:02d}"
+
+
+def _safe_job_directory_name(name) -> str:
+    """Directory name for a job inside a nested or replacement flow.
+
+    Unlike stage names, job names such as ``"phonon static 3/8"`` are kept
+    whole (``phonon_static_3_of_8``) so sibling directories stay readable
+    and distinct.
+    """
+
+    raw = re.sub(r"(\d)\s*/\s*(\d)", r"\1_of_\2", str(name or "").strip())
+    safe = "".join(
+        character if character.isalnum() or character in {"_", "-"} else "_"
+        for character in raw
+    )
+    safe = re.sub(r"_+", "_", safe).strip("_-")
+    return safe or "job"
 
 
 def _run_locally_with_stage_directories(
@@ -231,7 +251,7 @@ def _run_locally_with_stage_directories(
     responses = defaultdict(dict)
     stop_jobflow = False
 
-    def _run_job(job, parents):
+    def _run_job(job, parents, job_dir: Path):
         nonlocal stop_jobflow
 
         if stop_jobflow:
@@ -275,11 +295,11 @@ def _run_locally_with_stage_directories(
 
         diversion_responses = []
         if response.replace is not None:
-            diversion_responses.append(_run(response.replace))
+            diversion_responses.append(_run(response.replace, job_dir))
         if response.detour is not None:
-            diversion_responses.append(_run(response.detour))
+            diversion_responses.append(_run(response.detour, job_dir))
         if response.addition is not None:
-            diversion_responses.append(_run(response.addition))
+            diversion_responses.append(_run(response.addition, job_dir))
         if not all(diversion_responses):
             return None, False
 
@@ -290,19 +310,58 @@ def _run_locally_with_stage_directories(
             return root / stage_directories[index]
         return root / f"stage_{index + 1:02d}"
 
-    def _run(current_flow):
+    # Each leaf job belongs to one top-level stage of the root flow. A stage
+    # that is a single Job keeps the stage directory itself; a stage that is
+    # a nested Flow (for example atomate2's phonon flow) gives each of its
+    # jobs a named subdirectory of the stage directory. Jobs created at run
+    # time by Response.replace/detour/addition get named subdirectories of
+    # the directory of the job that created them, so no job ever reuses
+    # another job's directory.
+    stage_owner: dict[str, int] = {}
+    nested_stages: set[int] = set()
+    for stage_index, child in enumerate(getattr(root_flow, "jobs", []) or []):
+        child_uuids = getattr(child, "job_uuids", None)
+        if child_uuids is None or not hasattr(child, "jobs"):
+            stage_owner[child.uuid] = stage_index
+        else:
+            nested_stages.add(stage_index)
+            for uuid in child_uuids:
+                stage_owner[uuid] = stage_index
+    used_directories: set[Path] = set()
+
+    def _unique_child_directory(parent: Path, job) -> Path:
+        base = _safe_job_directory_name(getattr(job, "name", ""))
+        candidate = parent / base
+        suffix = 2
+        while candidate in used_directories:
+            candidate = parent / f"{base}_{suffix}"
+            suffix += 1
+        return candidate
+
+    def _job_directory(job, position: int, parent_dir: Path | None) -> tuple[Path, int | None]:
+        if parent_dir is not None:
+            return _unique_child_directory(parent_dir, job), None
+        stage_index = stage_owner.get(job.uuid, position)
+        stage_dir = _stage_directory(stage_index)
+        if stage_index in nested_stages:
+            stage_dir.mkdir(exist_ok=True)
+            return _unique_child_directory(stage_dir, job), None
+        return stage_dir, stage_index
+
+    def _run(current_flow, parent_dir: Path | None = None):
         encountered_bad_response = False
-        for index, (job, parents) in enumerate(current_flow.iterflow()):
-            job_dir = _stage_directory(index)
-            job_dir.mkdir(exist_ok=True)
-            if index > 0:
+        for position, (job, parents) in enumerate(current_flow.iterflow()):
+            job_dir, stage_index = _job_directory(job, position, parent_dir)
+            used_directories.add(job_dir)
+            job_dir.mkdir(parents=True, exist_ok=True)
+            if stage_index is not None and stage_index > 0:
                 _copy_optional_previous_stage_artifacts(
-                    _stage_directory(index - 1),
+                    _stage_directory(stage_index - 1),
                     job_dir,
-                    stage_artifacts[index] if index < len(stage_artifacts) else {},
+                    stage_artifacts[stage_index] if stage_index < len(stage_artifacts) else {},
                 )
             with _change_directory(job_dir):
-                response, jobflow_stopped = _run_job(job, parents)
+                response, jobflow_stopped = _run_job(job, parents, job_dir)
             if response is not None:
                 response.job_dir = job_dir
             encountered_bad_response = encountered_bad_response or response is None

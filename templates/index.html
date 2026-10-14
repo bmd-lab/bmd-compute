@@ -1739,6 +1739,21 @@ ul {
                     </div>
                 </div>
                 {% endif %}
+                {% if generated_inputs and generated_inputs.phonon_plans %}
+                {% for phonon_plan in generated_inputs.phonon_plans %}
+                <div class="callout" data-phonon-plan>
+                    <div class="callout-title">Phonon Plan (stage {{ phonon_plan.stage }})</div>
+                    <div class="callout-value">
+                        Supercell matrix: <span class="mono">{% for row in phonon_plan.supercell_matrix %}[{{ row|join(", ") }}]{% if not loop.last %} {% endif %}{% endfor %}</span><br>
+                        Supercell atoms: {{ phonon_plan.supercell_atom_count }}<br>
+                        Displacements: {{ phonon_plan.displacement_count }} ({{ phonon_plan.settings.displacement_angstrom }} &Aring;, symprec {{ phonon_plan.settings.symprec }})<br>
+                        Force calculations: atomate2 PhononDisplacementMaker settings (INCAR stage {{ phonon_plan.stage }}); band path {{ phonon_plan.settings.kpath_scheme }}<br>
+                        Stages: {% for item in phonon_plan.stages %}{{ item.name }}{% if not loop.last %} &rarr; {% endif %}{% endfor %}<br>
+                        <span class="summary-line">{{ phonon_plan.note }}</span>
+                    </div>
+                </div>
+                {% endfor %}
+                {% endif %}
             </div>
 
             <div class="details-grid">

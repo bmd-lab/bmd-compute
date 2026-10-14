@@ -118,17 +118,24 @@ It lists two tiers:
 
 - **Parity-critical** (atomate2, pymatgen, pymatgen-core, custodian, emmet-core,
   jobflow, spglib): they generate the inputs, symmetry and k-points, run the
-  workflow, correct VASP errors, or decide whether a stage converged. Preparation
+  workflow, correct VASP errors, or decide whether a stage converged.
+- **Parity-critical for phonon workflows only** (phonopy, seekpath, "Tier 1P"):
+  required at exactly the pinned versions, at preparation and on POWER, for any
+  submission whose `workflow_spec` contains a `phonon_forces` stage. The
+  required set is derived from the submission's own workflow on both sides.
+  For every other submission they are recorded as supporting packages, so
+  existing PBE/HSE06/DFT+U submissions keep running before they are installed. Preparation
   records their exact versions in `submission.json` (`runtime_parity`); the POWER
   runner reads its own before building the workflow and stops, without starting
   VASP, on any missing or different version.
 - **Supporting** (monty, numpy, scipy, pydantic, pydantic-settings, maggma,
-  ruamel.yaml, phonopy): pinned for reproducible installs and recorded at run
-  time, but a difference does not stop a run. phonopy is used only by the
-  non-executable phonon displacement planner (`backend/phonons`); it is imported
-  lazily, so a POWER environment without it still runs every existing workflow
-  and records it as missing. It must move to the parity-critical tier before
-  any phonon calculation executes.
+  ruamel.yaml): pinned for reproducible installs and recorded at run time, but a
+  difference does not stop a run.
+
+Deployment transition: install phonopy and seekpath at the pinned versions in
+both the preparation environment and the POWER environment before preparing a
+phonon calculation (`docs/phonon_workflow.md`). Until then, phonon preparation
+fails with a parity error and every other workflow is unaffected.
 
 Web-only, SSH, scheduler and test packages stay out of the constraints file.
 Upgrading any pinned package is a deliberate change: update the constraints file,

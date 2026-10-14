@@ -13,6 +13,7 @@ import backend.workflows as workflows
 from backend.execution import run_submission
 from backend.runtime_environment import (
     PARITY_CRITICAL_PACKAGES,
+    PHONON_PARITY_CRITICAL_PACKAGES,
     RECORDED_SUPPORTING_PACKAGES,
     RUNTIME_ENVIRONMENT_FILENAME,
     RUNTIME_ENVIRONMENT_SCHEMA,
@@ -37,6 +38,8 @@ PRODUCTION = {
     "emmet-core": "0.87.1",
     "jobflow": "0.1.19",
     "spglib": "2.7.0",
+    "phonopy": "4.8.1",
+    "seekpath": "2.1.0",
     "monty": "2026.7.16",
     "numpy": "2.5.1",
     "scipy": "1.18.0",
@@ -44,7 +47,6 @@ PRODUCTION = {
     "pydantic-settings": "2.14.2",
     "maggma": "0.74.0",
     "ruamel.yaml": "0.19.1",
-    "phonopy": "4.8.1",
 }
 
 
@@ -75,18 +77,38 @@ def prepared(versions=PRODUCTION):
     return prepared_runtime_parity(version_lookup=lookup(versions))
 
 
-def spec_for(tmp_path, runtime_parity):
-    return {
+PHONON_WORKFLOW_SPEC = {
+    "stages": [
+        {"stage_type": "relax", "theory": "pbe", "modifiers": [], "label": None, "options": {}},
+        {"stage_type": "phonon_forces", "theory": "pbe", "modifiers": [], "label": None, "options": {}},
+    ],
+    "label": None,
+    "recipe": "phonons",
+}
+
+
+def prepared_phonons(versions=PRODUCTION):
+    return prepared_runtime_parity(
+        version_lookup=lookup(versions),
+        packages=PARITY_CRITICAL_PACKAGES + PHONON_PARITY_CRITICAL_PACKAGES,
+    )
+
+
+def spec_for(tmp_path, runtime_parity, workflow_spec=None):
+    spec = {
         "run_name": "NiO-static-20260929-120000",
         "submission": {"attempt_id": "3c8f2d8e-2f7a-4c1b-9a51-2d0d1b6b0e11"},
         "paths": {"run_dir": str(tmp_path)},
         "runtime_parity": runtime_parity,
     }
+    if workflow_spec is not None:
+        spec["flow_spec"] = {"workflow_spec": workflow_spec}
+    return spec
 
 
-def enforce(tmp_path, runtime_parity, runtime_versions=PRODUCTION, settings=None):
+def enforce(tmp_path, runtime_parity, runtime_versions=PRODUCTION, settings=None, workflow_spec=None):
     return enforce_runtime_environment(
-        spec_for(tmp_path, runtime_parity),
+        spec_for(tmp_path, runtime_parity, workflow_spec),
         version_lookup=lookup(runtime_versions),
         settings=settings or Settings(),
         environ={"SLURM_JOB_ID": "22400000"},
@@ -111,7 +133,9 @@ def test_identical_stack_is_allowed_and_recorded(tmp_path):
     assert written["problems"] == []
     assert written["prepared_packages"] == {name: PRODUCTION[name] for name in PARITY_CRITICAL_PACKAGES}
     assert written["runtime_packages"] == {name: PRODUCTION[name] for name in PARITY_CRITICAL_PACKAGES}
-    assert written["supporting_packages"] == {name: PRODUCTION[name] for name in RECORDED_SUPPORTING_PACKAGES}
+    assert written["supporting_packages"] == {
+        name: PRODUCTION[name] for name in RECORDED_SUPPORTING_PACKAGES + PHONON_PARITY_CRITICAL_PACKAGES
+    }
     assert written["slurm_job_id"] == "22400000"
     assert written["attempt_id"] == "3c8f2d8e-2f7a-4c1b-9a51-2d0d1b6b0e11"
     assert written["atomate2_settings"]["VASP_HANDLE_UNSUCCESSFUL"] == "error"
@@ -161,14 +185,55 @@ def test_supporting_package_difference_is_recorded_but_does_not_stop(tmp_path):
     assert record["supporting_packages"]["maggma"] is None
 
 
-def test_phonopy_is_recorded_but_its_absence_never_stops_a_run(tmp_path):
-    # Phonopy serves only the non-executable displacement planner (M1). It must
-    # not become a precondition for existing POWER calculations.
-    assert "phonopy" in RECORDED_SUPPORTING_PACKAGES
-    assert "phonopy" not in PARITY_CRITICAL_PACKAGES
-    record = enforce(tmp_path, prepared(), {**PRODUCTION, "phonopy": None})
+def test_phonon_packages_never_stop_non_phonon_runs(tmp_path):
+    # Deployment transition: existing PBE/HSE06/DFT+U submissions must keep
+    # running where phonopy/seekpath are not installed (or differ). They are
+    # recorded, not required.
+    assert not set(PHONON_PARITY_CRITICAL_PACKAGES) & set(PARITY_CRITICAL_PACKAGES)
+    assert set(prepared()["packages"]) == set(PARITY_CRITICAL_PACKAGES)
+    absent = {**PRODUCTION, "phonopy": None, "seekpath": None}
+    record = enforce(tmp_path, prepared(absent), absent)
     assert record["status"] == "passed"
     assert record["supporting_packages"]["phonopy"] is None
+    assert record["supporting_packages"]["seekpath"] is None
+    record = enforce(tmp_path, prepared(), {**PRODUCTION, "phonopy": "4.9.0"})
+    assert record["status"] == "passed"
+
+
+@pytest.mark.parametrize("name", PHONON_PARITY_CRITICAL_PACKAGES)
+def test_phonon_runs_require_exact_phonopy_and_seekpath(tmp_path, name):
+    # Phonopy chooses the supercell, displacements and force constants;
+    # seekpath the band path. For phonon workflows both are parity-critical.
+    record = enforce(tmp_path, prepared_phonons(), workflow_spec=PHONON_WORKFLOW_SPEC)
+    assert record["status"] == "passed"
+    assert record["parity_policy"]["critical_packages"] == list(
+        PARITY_CRITICAL_PACKAGES + PHONON_PARITY_CRITICAL_PACKAGES
+    )
+    with pytest.raises(RuntimeParityError, match=f"{name}: prepared .*, not installed at runtime"):
+        enforce(tmp_path, prepared_phonons(), {**PRODUCTION, name: None}, workflow_spec=PHONON_WORKFLOW_SPEC)
+    with pytest.raises(RuntimeParityError, match=f"{name}: prepared .*, runtime 9.9.9"):
+        enforce(tmp_path, prepared_phonons(), {**PRODUCTION, name: "9.9.9"}, workflow_spec=PHONON_WORKFLOW_SPEC)
+
+
+def test_phonon_run_prepared_without_phonon_packages_is_refused(tmp_path):
+    with pytest.raises(RuntimeParityError, match="runtime_parity.packages lists"):
+        enforce(tmp_path, prepared(), workflow_spec=PHONON_WORKFLOW_SPEC)
+
+
+def test_preparing_a_phonon_workflow_requires_phonopy_and_seekpath(monkeypatch):
+    real = runtime_environment._default_version_lookup
+
+    def without_seekpath(name):
+        if name == "seekpath":
+            raise metadata.PackageNotFoundError(name)
+        return real(name)
+
+    monkeypatch.setattr(runtime_environment, "_default_version_lookup", without_seekpath)
+    # A non-phonon submission prepares normally without seekpath ...
+    assert "seekpath" not in submission._prepared_runtime_parity_or_error({"stages": [{"stage_type": "static"}]})["packages"]
+    # ... a phonon submission does not.
+    with pytest.raises(CalculationValidationError, match="seekpath"):
+        submission._prepared_runtime_parity_or_error(PHONON_WORKFLOW_SPEC)
 
 
 def _malformed_blocks():
@@ -283,7 +348,7 @@ def test_record_reflects_the_actual_installed_versions(tmp_path):
         try:
             installed = metadata.version(name)
         except metadata.PackageNotFoundError:
-            installed = None  # a supporting package may be absent (e.g. phonopy on POWER)
+            installed = None  # a supporting package may be absent
         assert record["supporting_packages"][name] == installed
     from atomate2 import SETTINGS
 

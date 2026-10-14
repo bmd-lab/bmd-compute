@@ -20,7 +20,11 @@ Covered (any change alters the digest):
   and the prepared DFT+U record), or its absence for Custom workflows;
 * for every stage: the VASP executable, the generated INCAR settings, the
   generated KPOINTS file text, the SHA-256 of the generated POSCAR file text and
-  the POTCAR symbols. These are the inputs Compute's stage input-set generators
+  the POTCAR symbols; for phonon force stages also the phonon execution
+  settings (``backend.phonons.workflow.phonon_force_settings_payload``:
+  displacement amplitude, symprec, symmetry reduction, supercell policy,
+  band-path scheme, workflow version, precursor-relax and force-calculation
+  amendments, analysis and output settings). These are the inputs Compute's stage input-set generators
   produce for each stage from the submitted structure (the same generator path
   as the browser preview); at run time stage 2 onwards is regenerated from the
   previous stage's output, as described in ``docs/methodology.md``;
@@ -107,17 +111,30 @@ def stage_input_material(stage_previews: Sequence[Mapping[str, Any]]) -> list[di
     for preview in stage_previews:
         input_set = preview["input_set"]
         kpoints = input_set.kpoints
-        material.append(
-            {
-                "index": preview["index"],
-                "vasp_executable": preview["vasp_executable"],
-                "incar": json_safe(dict(input_set.incar)),
-                "kpoints_text": str(kpoints).rstrip() if kpoints is not None else None,
-                "poscar_sha256": sha256_hex(str(input_set.poscar).rstrip()),
-                "potcar_symbols": potcar_symbols(input_set),
-            }
-        )
+        stage_material = {
+            "index": preview["index"],
+            "vasp_executable": preview["vasp_executable"],
+            "incar": json_safe(dict(input_set.incar)),
+            "kpoints_text": str(kpoints).rstrip() if kpoints is not None else None,
+            "poscar_sha256": sha256_hex(str(input_set.poscar).rstrip()),
+            "potcar_symbols": potcar_symbols(input_set),
+        }
+        if _is_phonon_force_stage(preview):
+            # Settings the phonon flow runs with but that the first displaced
+            # supercell's INCAR/KPOINTS/POSCAR do not show. Taken from the
+            # authoritative payload; added only for phonon stages, so digests
+            # of every other workflow are unchanged.
+            from backend.phonons.workflow import phonon_force_settings_payload
+
+            stage_material["phonon_settings"] = json_safe(phonon_force_settings_payload())
+        material.append(stage_material)
     return material
+
+
+def _is_phonon_force_stage(preview: Mapping[str, Any]) -> bool:
+    stage = preview.get("stage_spec")
+    stage_type = getattr(stage, "stage_type", None)
+    return getattr(stage_type, "value", stage_type) == "phonon_forces"
 
 
 def plan_digest_material(
