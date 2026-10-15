@@ -118,6 +118,22 @@ def workflow_result_file_keys(
     return tuple(keys)
 
 
+# Phonopy outputs of the phonon analysis job, read from the phonon stage's
+# nested analysis directory. They are optional result files: a missing or
+# incomplete file is reported in the phonon summary and never turns the
+# relaxation results of the same workflow into a failure.
+PHONON_RESULT_FILES = {
+    "phonon_band_structure": "phonon_band_structure.yaml",
+    "phonon_dos": "phonon_dos.yaml",
+    "phonopy_yaml": "phonopy.yaml",
+}
+
+
+def workflow_has_phonon_results(spec: CalculationSpec | WorkflowSpec | None) -> bool:
+    stage_types = _workflow_stage_types(spec)
+    return bool(stage_types) and stage_types[-1] is StageType.PHONON_FORCES
+
+
 def workflow_result_parse_dos(
     spec: CalculationSpec | WorkflowSpec | None,
     *,
@@ -558,6 +574,8 @@ __all__ = [
     "WorkflowResultPayload",
     "WorkflowResultRenderer",
     "render_workflow_results",
+    "PHONON_RESULT_FILES",
+    "workflow_has_phonon_results",
     "workflow_result_file_keys",
     "workflow_result_parse_dos",
     "workflow_result_parse_eigenvalues",

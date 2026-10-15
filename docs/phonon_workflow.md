@@ -1,8 +1,10 @@
 # Phonon Workflow (Milestone A)
 
-Status: executable integration. Workflow construction, admission, preview and a
-simulated end-to-end run (fake VASP) are tested. No live POWER calculation has
-validated the scientific results yet. The phonon results UI is Milestone B.
+Status: executable and presented. Workflow construction, admission, preview
+and a simulated end-to-end run (fake VASP) are tested, and a first live Si run
+on POWER (SLURM job 23021014) completed with optical Γ modes at 15.02 THz and
+acoustic Γ modes within 0.01 THz of zero. Results presentation is described
+under "Results" below (Milestone B).
 
 ## Workflow
 
@@ -88,3 +90,35 @@ phonopy 4.8.1 and seekpath 2.1.0 are parity-critical for phonon submissions
 only (`docs/deployment.md`, "Tier 1P"). Install both in the preparation and
 POWER environments before preparing a phonon calculation; other workflows do
 not depend on them.
+
+## Results
+
+The results view of a phonon workflow shows:
+
+- the relaxation results (final structure, energy, convergence) from the
+  stage-1 VASP outputs, because the phonon stage contains Phonopy outputs
+  rather than a VASP run;
+- the phonon dispersion and the total phonon DOS, read from
+  `stage_02/generate_frequencies_eigenvectors/phonon_band_structure.yaml` and
+  `phonon_dos.yaml` by the existing results parser
+  (`backend/remote_result_parser.py`), which runs on POWER beside the files.
+
+Nothing is recomputed. Frequencies are shown as written by Phonopy, with their
+sign (negative values are imaginary modes); there is no interpolation or
+smoothing. Phonopy does not write path labels into its band file, so the
+high-symmetry labels are recovered by matching segment end points with the
+same pymatgen `KPathSeek` path atomate2 used; a path discontinuity is drawn as
+a gap with a combined label such as `U|K`. The DOS is Phonopy's total DOS in
+states/THz per primitive cell (it integrates to 3N modes; the file is
+two-column text despite its `.yaml` name).
+
+The summary lists the Γ frequencies, the minimum and maximum frequencies on
+the path, and the negative frequencies. Negative values above -0.1 THz are
+described as small (commonly numerical acoustic deviations near Γ); values
+below it are reported with the q-points where they occur, as possible
+instabilities or convergence problems. The 0.1 THz value is a reporting
+threshold, not a stability criterion.
+
+Both plots use the shared results line-plot renderer, including its PNG
+download. Missing or unreadable phonon files are listed in the summary and do
+not hide the relaxation results.
