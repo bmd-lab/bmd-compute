@@ -1068,3 +1068,41 @@ def test_browser_and_api_phonon_digests_match(client, tokens):
         stage_previews=plan_stage_previews(ui_plan),
     )
     assert ui_digest == api["plan_digest"]
+
+
+# ------------------------------------------------------- automatic NCORE (reliability)
+
+
+@pytest.mark.parametrize(
+    ("desired_output", "expected"),
+    [
+        ("energy_only", {"static": 4}),
+        ("relaxed_structure", {"relax": 4}),
+        ("electronic_dos", {"relax": 4, "static": 4, "dos": 4}),
+        ("electronic_band_structure", {"relax": 4, "static": 4, "band_structure": None}),
+        ("phonons", {"relax": 4, "phonon_forces": None}),
+    ],
+)
+def test_planned_ncore_is_four_on_eligible_stages_only(client, tokens, desired_output, expected):
+    response = post_plan(client, tokens["plan"], plan_body(desired_output=desired_output))
+    assert response.status_code == 200, response.text
+    for stage in response.json()["scientific_inputs"]["stages"]:
+        assert stage["incar"]["settings"].get("NCORE") == expected[stage["stage_type"]], stage["stage_type"]
+
+
+def test_plan_digest_covers_the_automatic_ncore(monkeypatch):
+    from backend.calculations import resources as resource_module
+
+    def digest():
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            plan = main.plan_calculation_request(structure_text=SI_POSCAR, fmt="poscar", desired_output="energy_only")
+            previews = plan_stage_previews(plan)
+        material = plan_digest_module.stage_input_material(previews)
+        assert material[0]["incar"]["NCORE"] == resource_module.DEFAULT_NCORE
+        return compute_plan_digest(structure=plan.structure, submission_spec=plan.submission_spec, stage_previews=previews)
+
+    current = digest()
+    assert digest() == current
+    monkeypatch.setattr(resource_module, "DEFAULT_NCORE", 8)
+    assert digest() != current

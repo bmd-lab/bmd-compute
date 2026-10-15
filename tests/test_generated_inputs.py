@@ -156,7 +156,7 @@ static_preview = preview_generated_inputs(
     potcar_functional="PBE_64",
 )
 assert "ENCUT = 620.0" in static_preview["incar"]
-assert "NCORE = 8" in static_preview["incar"]
+assert "NCORE = 4" in static_preview["incar"]
 assert "ISPIN = 1" in static_preview["incar"]
 assert "MAGMOM =" not in static_preview["incar"]
 assert "LELF = True" in static_preview["incar"]
@@ -228,7 +228,7 @@ assert "LELF =" not in soc_static_preview["incar"]
 assert "SAXIS = 0 0 1" in soc_static_preview["incar"]
 # Non-magnetic SOC (no Spin Polarised) starts from zero vector moments.
 assert magmom_components(soc_static_preview["incar"]) == [0.0] * (3 * len(structure))
-assert "NCORE = 8" in soc_static_preview["incar"]
+assert "NCORE = 4" in soc_static_preview["incar"]
 assert "LWAVE = False" in soc_static_preview["incar"]
 assert magmom_component_count(soc_static_preview["incar"]) == 3 * len(structure)
 for dft_u_key in ("LDAU", "LDAUTYPE", "LDAUL", "LDAUU", "LDAUJ", "LDAUPRINT", "LMAXMIX"):
@@ -256,7 +256,7 @@ assert "ISYM = 0" in hse_soc_static_preview["incar"]
 assert "GGA_COMPAT = False" in hse_soc_static_preview["incar"]
 assert "SAXIS = 0 0 1" in hse_soc_static_preview["incar"]
 assert magmom_components(hse_soc_static_preview["incar"]) == [0.0] * (3 * len(structure))
-assert "NCORE = 8" in hse_soc_static_preview["incar"]
+assert "NCORE = 4" in hse_soc_static_preview["incar"]
 assert "LWAVE = False" in hse_soc_static_preview["incar"]
 assert magmom_component_count(hse_soc_static_preview["incar"]) == 3 * len(structure)
 
@@ -448,7 +448,7 @@ assert "GGA_COMPAT = False" in fe2o3_soc_preview["incar"]
 assert "LELF =" not in fe2o3_soc_preview["incar"]
 assert "MAGMOM = 0.0 0.0 5.0 0.0 0.0 5.0 0.0 0.0 0.6 0.0 0.0 0.6 0.0 0.0 0.6" in fe2o3_soc_preview["incar"]
 assert magmom_component_count(fe2o3_soc_preview["incar"]) == 3 * len(fe2o3_structure)
-assert "NCORE = 8" in fe2o3_soc_preview["incar"]
+assert "NCORE = 4" in fe2o3_soc_preview["incar"]
 for dft_u_key in ("LDAU", "LDAUTYPE", "LDAUL", "LDAUU", "LDAUJ", "LDAUPRINT", "LMAXMIX"):
     assert f"{dft_u_key} =" not in fe2o3_soc_preview["incar"]
 fe2o3_spin_soc_preview = preview_generated_inputs(
@@ -468,7 +468,7 @@ assert "GGA_COMPAT = False" in fe2o3_dft_u_soc_preview["incar"]
 assert "LELF =" not in fe2o3_dft_u_soc_preview["incar"]
 assert "MAGMOM = 0.0 0.0 5.0 0.0 0.0 5.0 0.0 0.0 0.6 0.0 0.0 0.6 0.0 0.0 0.6" in fe2o3_dft_u_soc_preview["incar"]
 assert magmom_component_count(fe2o3_dft_u_soc_preview["incar"]) == 3 * len(fe2o3_structure)
-assert "NCORE = 8" in fe2o3_dft_u_soc_preview["incar"]
+assert "NCORE = 4" in fe2o3_dft_u_soc_preview["incar"]
 assert "LDAU = True" in fe2o3_dft_u_soc_preview["incar"]
 assert "LDAUU = 5.3 0" in fe2o3_dft_u_soc_preview["incar"]
 
@@ -517,8 +517,8 @@ band_static_section, band_section = band_static_and_path.split("\n\n", 1)
 assert "# Stage 1 - Geometry Optimisation" in band_relax_section
 assert "# Stage 2 - Static Energy" in band_static_section
 assert "# Stage 3 - Band Structure" in band_section
-assert "NCORE = 8" in band_relax_section
-assert "NCORE = 8" in band_static_section
+assert "NCORE = 4" in band_relax_section
+assert "NCORE = 4" in band_static_section
 assert "ISPIN = 1" in band_relax_section
 assert "ISPIN = 1" in band_static_section
 assert "ISPIN = 1" in band_section

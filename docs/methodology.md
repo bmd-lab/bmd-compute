@@ -254,7 +254,7 @@ These affect generated inputs but are fixed by the pinned stack and recorded
 rather than declared individually: pymatgen's band-gap-dependent smearing
 mechanics, symmetry precision, `LMAXMIX` (set by pymatgen's rule and verified
 for +U stages), the Custodian handler set (recorded per stage), the fixed
-automatic `NCORE = 8` policy on eligible stages for validated resource
+automatic `NCORE = 4` policy on eligible stages for validated resource
 selections, and the runtime parity check that stops a run whose parity-critical
 packages or input-altering atomate2 settings differ from preparation.
 

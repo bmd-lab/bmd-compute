@@ -368,7 +368,7 @@ def test_hse06_dos_execution_uses_hsebs_maker_and_uniform_generator():
     assert terminal_incar["NEDOS"] == 4001
     assert terminal_incar["ISMEAR"] == -5
     assert terminal_incar["ISPIN"] == 1
-    assert terminal_incar["NCORE"] == 8
+    assert terminal_incar["NCORE"] == 4
     assert "MAGMOM" not in terminal_incar
     assert "ICHARG" not in terminal_incar
 
@@ -410,7 +410,7 @@ def test_electronic_dos_desired_output_uses_existing_hse_static_and_hse_dos_path
     assert static_incar["HFSCREEN"] == 0.2
     assert static_incar["PRECFOCK"] == "Accurate"
     assert static_incar["ISMEAR"] == 0
-    assert static_incar["NCORE"] == 8
+    assert static_incar["NCORE"] == 4
 
     dos_kwargs = dos_job.input_set_generator.kwargs
     assert dos_kwargs["mode"] == "uniform"
@@ -444,7 +444,7 @@ def test_hse06_dos_preview_uses_real_uniform_weighted_hse_inputs_without_line_pa
     assert "NEDOS = 4001" in terminal_incar
     assert "ISMEAR = -5" in terminal_incar
     assert "ISPIN = 1" in terminal_incar
-    assert "NCORE = 8" in terminal_incar
+    assert "NCORE = 4" in terminal_incar
     assert "ICHARG" not in terminal_incar
     assert "MAGMOM" not in terminal_incar
 

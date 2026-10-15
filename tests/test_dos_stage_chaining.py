@@ -152,7 +152,7 @@ assert static_incar["ENCUT"] == 620
 assert static_incar["ADDGRID"] is True
 assert static_incar["ENAUG"] is None
 assert static_incar["GGA"] is None
-assert dos_incar["NCORE"] == static_incar["NCORE"] == 8
+assert dos_incar["NCORE"] == static_incar["NCORE"] == 4
 assert dos_incar["ICHARG"] == 11
 assert dos_incar["NEDOS"] == static_incar["NEDOS"] == 4001
 assert dos_incar["LORBIT"] == static_incar["LORBIT"] == 11

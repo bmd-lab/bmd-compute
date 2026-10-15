@@ -171,7 +171,9 @@ account = power-leeburton-users_v2
 
 The account is fixed backend policy and is not user-editable.
 
-Automatic NCORE is stage-specific. For validated resource selections, eligible Relax, Static, and DOS stages receive the current fixed `NCORE = 8` policy. Band Structure stages omit automatic NCORE until parallel band-structure performance is separately benchmarked.
+Automatic NCORE is stage-specific. For validated resource selections, eligible Relax, Static, and DOS stages receive the current fixed `NCORE = 4` policy (`DEFAULT_NCORE` in `backend/calculations/resources.py`; eligibility in `backend/calculations/resource_policy.py`). Band Structure stages omit automatic NCORE until parallel band-structure performance is separately benchmarked, and phonon force calculations omit it by design.
+
+The default was `NCORE = 8` until it was reduced to 4 as a reliability correction. A 16-atom Si HSE06 static calculation (VASP 6.4.1, 24 MPI ranks, ENCUT 620 eV, PRECFOCK Accurate) aborted during initialisation with `NCORE = 8` (`SET_INDPW_FULL: insufficient memory`), whereas `NCORE = 4` initialised and ran (25 electronic steps in 2 h, about 6.9 GiB peak RSS) and NCORE unset also ran (20 steps, about 16.2 GiB). This shows the failure depends on the parallel decomposition; it does not show that `NCORE = 8` is unsafe for every system, nor that `NCORE = 4` is optimal for every system. `NCORE = 4` divides every permitted CPU count. Performance tuning should come from benchmarks, not from this single comparison.
 
 ## Generated Input Previews
 

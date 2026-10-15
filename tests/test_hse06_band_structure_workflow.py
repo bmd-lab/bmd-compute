@@ -339,7 +339,7 @@ with fake_atomate2_and_jobflow():
         hse_band_workflow,
         label="Si-hse-bands-explicit-ncore",
         resources={"ntasks": 24},
-        incar={"NCORE": 4},
+        incar={"NCORE": 2},
     )
     generated_inputs = preview_generated_inputs(
         "initial_structure",
@@ -384,7 +384,7 @@ assert band_incar["HFSCREEN"] == 0.2
 assert band_incar["GGA"] == static_incar["GGA"] == "PE"
 assert band_incar["ENCUT"] == static_incar["ENCUT"] == 620
 assert band_incar["ADDGRID"] == static_incar["ADDGRID"] is True
-assert static_incar["NCORE"] == 8
+assert static_incar["NCORE"] == 4
 assert "NCORE" not in band_incar
 assert "ICHARG" not in band_incar
 
@@ -404,8 +404,8 @@ explicit_ncore_static_incar = explicit_ncore_flow.jobs[1].input_set_generator.kw
 explicit_ncore_band_incar = explicit_ncore_flow.jobs[2].input_set_generator.kwargs[
     "user_incar_settings"
 ]
-assert explicit_ncore_static_incar["NCORE"] == 8
-assert explicit_ncore_band_incar["NCORE"] == 4
+assert explicit_ncore_static_incar["NCORE"] == 4
+assert explicit_ncore_band_incar["NCORE"] == 2
 assert_hsebs_custodian_policy_allows_auto_nbands(explicit_ncore_flow.jobs[2])
 
 assert "# Stage 1 - Geometry Optimisation (PBE)" in generated_inputs["incar"]
@@ -419,7 +419,7 @@ band_section = generated_inputs["incar"].split("# Stage 3 - Band Structure (HSE0
 relax_section = generated_inputs["incar"].split("# Stage 2 - Static Energy (HSE06)", 1)[0]
 assert "ISPIN = 1" in relax_section
 assert "MAGMOM" not in relax_section
-assert "NCORE = 8" in static_section
+assert "NCORE = 4" in static_section
 assert "ISPIN = 1" in static_section
 assert "MAGMOM" not in static_section
 assert "LHFCALC = True" in band_section

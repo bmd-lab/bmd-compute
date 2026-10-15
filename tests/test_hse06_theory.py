@@ -247,11 +247,11 @@ with fake_atomate2_and_jobflow():
         "Si2",
         theory=Theory.HSE06,
         resources={"ntasks": 24},
-        incar={"NCORE": 4},
+        incar={"NCORE": 2},
     )
 
 pbe_relax_incar = pbe_relax_generator.kwargs["user_incar_settings"]
-assert pbe_relax_incar["NCORE"] == 8
+assert pbe_relax_incar["NCORE"] == 4
 assert pbe_relax_incar["ENCUT"] == 580
 assert pbe_relax_incar["ADDGRID"] is True
 assert pbe_relax_incar["EDIFF"] == 1e-6
@@ -261,7 +261,7 @@ assert "HFSCREEN" not in pbe_relax_incar
 assert "PRECFOCK" not in pbe_relax_incar
 
 pbe_incar = pbe_generator.kwargs["user_incar_settings"]
-assert pbe_incar["NCORE"] == 8
+assert pbe_incar["NCORE"] == 4
 assert pbe_incar["ISMEAR"] == -5
 assert "LHFCALC" not in pbe_incar
 assert "HFSCREEN" not in pbe_incar
@@ -277,12 +277,12 @@ assert hse_incar["PRECFOCK"] == "Accurate"
 assert hse_incar["ISMEAR"] == 0
 assert hse_incar["SIGMA"] == 0.05
 assert hse_incar["ENCUT"] == 620
-assert hse_incar["NCORE"] == pbe_incar["NCORE"] == 8
+assert hse_incar["NCORE"] == pbe_incar["NCORE"] == 4
 assert hse_incar["ISPIN"] == 1
 assert "MAGMOM" not in hse_incar
 
 hse_user_ncore_incar = hse_user_ncore_generator.kwargs["user_incar_settings"]
-assert hse_user_ncore_incar["NCORE"] == 8
+assert hse_user_ncore_incar["NCORE"] == 4
 
 hse_relax_incar = hse_relax_generator.kwargs["user_incar_settings"]
 assert hse_relax_incar["LHFCALC"] is True
@@ -298,7 +298,7 @@ assert hse_relax_incar["EDIFF"] == 1e-6
 assert hse_relax_incar["EDIFFG"] == -0.01
 assert hse_relax_incar["LCHARG"] is False
 assert hse_relax_incar["LWAVE"] is False
-assert hse_relax_incar["NCORE"] == pbe_relax_incar["NCORE"] == 8
+assert hse_relax_incar["NCORE"] == pbe_relax_incar["NCORE"] == 4
 assert hse_relax_incar["ISPIN"] == 1
 assert "MAGMOM" not in hse_relax_incar
 
@@ -312,7 +312,7 @@ with fake_atomate2_and_jobflow():
 assert spin_generator.kwargs["user_incar_settings"]["ISPIN"] == 2
 assert spin_generator.kwargs["user_incar_settings"]["LHFCALC"] is True
 assert spin_generator.kwargs["user_incar_settings"]["ISMEAR"] == 0
-assert spin_generator.kwargs["user_incar_settings"]["NCORE"] == 8
+assert spin_generator.kwargs["user_incar_settings"]["NCORE"] == 4
 
 with fake_atomate2_and_jobflow():
     generated_inputs = preview_generated_inputs("Si2", hse_static_spec)
@@ -323,7 +323,7 @@ assert "GGA = PE" in generated_inputs["incar"]
 assert "PRECFOCK = Accurate" in generated_inputs["incar"]
 assert "ISMEAR = 0" in generated_inputs["incar"]
 assert "ISMEAR = -5" not in generated_inputs["incar"]
-assert "NCORE = 8" in generated_inputs["incar"]
+assert "NCORE = 4" in generated_inputs["incar"]
 assert "ISPIN = 1" in generated_inputs["incar"]
 assert generated_inputs["kpoints"] == "KPOINTS"
 assert generated_inputs["poscar"] == "POSCAR Si2"
@@ -340,7 +340,7 @@ assert "IBRION = 2" in relax_generated_inputs["incar"]
 assert "ISIF = 3" in relax_generated_inputs["incar"]
 assert "NSW = 99" in relax_generated_inputs["incar"]
 assert "EDIFFG = -0.01" in relax_generated_inputs["incar"]
-assert "NCORE = 8" in relax_generated_inputs["incar"]
+assert "NCORE = 4" in relax_generated_inputs["incar"]
 assert "ISPIN = 1" in relax_generated_inputs["incar"]
 assert relax_generated_inputs["kpoints"] == "KPOINTS"
 assert relax_generated_inputs["poscar"] == "POSCAR Si2"
