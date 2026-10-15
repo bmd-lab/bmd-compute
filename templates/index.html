@@ -2433,6 +2433,41 @@ ul {
                         <div class="callout-value">{{ results_summary.band_structure.bands or "Unknown" }}</div>
                     </div>
                     {% endif %}
+                    {% if results_summary.phonons %}
+                    {% set phonon_bands = results_summary.phonons.band_structure %}
+                    <div class="callout" data-phonon-summary>
+                        <div class="callout-title">Phonons</div>
+                        <div class="callout-value">
+                            {% if results_summary.phonons.available %}Available{% else %}Not available{% endif %}
+                        </div>
+                    </div>
+                    {% if phonon_bands and phonon_bands.available %}
+                    <div class="callout">
+                        <div class="callout-title">Γ Frequencies</div>
+                        <div class="callout-value mono">
+                            {% if phonon_bands.gamma_frequencies_thz %}{{ phonon_bands.gamma_frequencies_thz | join(", ") }} THz{% else %}Γ not on path{% endif %}
+                        </div>
+                    </div>
+                    <div class="callout">
+                        <div class="callout-title">Frequency Range</div>
+                        <div class="callout-value">{{ phonon_bands.min_frequency_thz }} to {{ phonon_bands.max_frequency_thz }} THz</div>
+                    </div>
+                    <div class="callout">
+                        <div class="callout-title">Branches / Path Q-points</div>
+                        <div class="callout-value">{{ phonon_bands.branches }} / {{ phonon_bands.qpoints }}</div>
+                    </div>
+                    <div class="callout" data-phonon-imaginary="{{ phonon_bands.imaginary_status }}">
+                        <div class="callout-title">Negative Frequencies</div>
+                        <div class="callout-value">{{ phonon_bands.imaginary_note }}</div>
+                    </div>
+                    {% endif %}
+                    {% for problem in results_summary.phonons.problems %}
+                    <div class="callout">
+                        <div class="callout-title">Phonon Output</div>
+                        <div class="callout-value">{{ problem }}</div>
+                    </div>
+                    {% endfor %}
+                    {% endif %}
                 </div>
             </div>
 
@@ -2508,6 +2543,24 @@ ul {
                     <tr>
                         <td>KPOINTS</td>
                         <td class="mono">{{ results_summary.files.kpoints }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if results_summary.files.phonon_band_structure %}
+                    <tr>
+                        <td>Phonon band structure</td>
+                        <td class="mono">{{ results_summary.files.phonon_band_structure }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if results_summary.files.phonon_dos %}
+                    <tr>
+                        <td>Phonon DOS</td>
+                        <td class="mono">{{ results_summary.files.phonon_dos }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if results_summary.files.phonopy_yaml %}
+                    <tr>
+                        <td>phonopy.yaml</td>
+                        <td class="mono">{{ results_summary.files.phonopy_yaml }}</td>
                     </tr>
                     {% endif %}
                     <tr>
@@ -3318,7 +3371,7 @@ document.addEventListener("DOMContentLoaded", function () {
         }
 
         var shapes = [];
-        if (plot.energy_reference === "fermi") {
+        if (plot.energy_reference === "fermi" || plot.energy_reference === "zero") {
             if (plot.reference_axis === "y") {
                 shapes.push({
                     type: "line",

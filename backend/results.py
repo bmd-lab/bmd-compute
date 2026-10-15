@@ -32,7 +32,11 @@ from backend.remote_runtime import (
     default_connection_profile,
 )
 from backend.remote_result_parser import parse_result_paths
-from backend.workflow_results import workflow_result_file_keys
+from backend.workflow_results import (
+    PHONON_RESULT_FILES,
+    workflow_has_phonon_results,
+    workflow_result_file_keys,
+)
 
 
 RESULT_FILES = {
@@ -41,6 +45,7 @@ RESULT_FILES = {
     "vasprun": "vasprun.xml",
     "doscar": "DOSCAR",
     "kpoints": "KPOINTS",
+    **PHONON_RESULT_FILES,
 }
 LOGGER = logging.getLogger(__name__)
 RESULTS_CACHE_MAX_ENTRIES = 4
@@ -151,6 +156,11 @@ def load_results_for_completed_job(
             _log_results("Verify result files")
             missing = missing_result_files(runner, paths)
             _log_results("Result file verification complete")
+            for key, remote_path in (location.get("optional_result_file_paths") or {}).items():
+                # Optional outputs (phonons): include those present; the parser
+                # reports any that are missing.
+                if runner.is_file(remote_path):
+                    paths[key] = remote_path
             if missing:
                 _log_results("Required result file missing")
                 _log_results("RETURN results")
@@ -253,9 +263,20 @@ def results_location_from_submission_spec(submission_spec: dict | None) -> dict:
     workflow_spec = workflow_spec_from_submission_spec(submission_spec)
     calculation_spec = calculation_spec_from_submission_spec(submission_spec)
     output_dir = result_output_dir_from_submission_spec(run_dir, submission_spec)
+    optional_paths = {}
+    phonon_dirs = phonon_result_directories(run_dir, submission_spec, workflow_spec)
+    if phonon_dirs is not None:
+        # VASP results come from the relax that produced the phonon structure;
+        # the phonon stage itself holds Phonopy outputs, not a VASP run.
+        output_dir = phonon_dirs["vasp_dir"]
+        optional_paths = {
+            key: posixpath.join(phonon_dirs["analysis_dir"], filename)
+            for key, filename in PHONON_RESULT_FILES.items()
+        }
     return {
         "run_dir": run_dir,
         "output_dir": output_dir,
+        "optional_result_file_paths": optional_paths,
         "calculation_spec": calculation_spec,
         "workflow_spec": workflow_spec,
         "workflow_result_file_keys": workflow_result_file_keys(
@@ -453,10 +474,45 @@ def result_includes_dos_from_submission_spec(submission_spec: dict | None) -> bo
     return "doscar" in workflow_result_file_keys(workflow_spec or calculation_spec)
 
 
+def phonon_result_directories(
+    run_dir: str,
+    submission_spec: dict | None,
+    workflow_spec: WorkflowSpec | None,
+) -> dict | None:
+    """Relax and Phonopy-analysis directories of a phonon workflow, or None."""
+
+    if workflow_spec is None or not workflow_has_phonon_results(workflow_spec):
+        return None
+    from backend.calculations.registry import workflow_stage_directories
+    from backend.execution import _safe_job_directory_name
+    from backend.phonons.workflow import PHONON_JOB_NAMES
+
+    try:
+        stage_names = workflow_stage_directories(workflow_spec)
+    except Exception:
+        return None
+    if len(stage_names) < 2:
+        return None
+    stage_dirs = ((submission_spec or {}).get("paths") or {}).get("stage_dirs") or {}
+    root = run_dir.rstrip("/")
+
+    def stage_dir(name: str) -> str:
+        return str(stage_dirs.get(name) or posixpath.join(root, name))
+
+    return {
+        "vasp_dir": stage_dir(stage_names[-2]),
+        "analysis_dir": posixpath.join(
+            stage_dir(stage_names[-1]),
+            _safe_job_directory_name(PHONON_JOB_NAMES[-1]),
+        ),
+    }
+
+
 def _empty_results_location() -> dict:
     return {
         "run_dir": "",
         "output_dir": "",
+        "optional_result_file_paths": {},
         "calculation_spec": None,
         "workflow_spec": None,
         "workflow_result_file_keys": (),
@@ -726,6 +782,9 @@ def parse_vasp_result_files(files: dict, monitoring_result: dict) -> dict:
             local_paths["doscar"] = tmp / "DOSCAR"
         if "kpoints" in files:
             local_paths["kpoints"] = tmp / "KPOINTS"
+        for key, filename in PHONON_RESULT_FILES.items():
+            if key in files:
+                local_paths[key] = tmp / filename
 
         for key, local_path in local_paths.items():
             local_path.write_text(files[key]["text"], encoding="utf-8")
@@ -828,6 +887,7 @@ __all__ = [
     "result_includes_dos_from_submission_spec",
     "result_output_dir_from_submission_spec",
     "result_stage_directory_from_submission_spec",
+    "phonon_result_directories",
     "result_file_paths",
     "store_completed_result",
 ]
