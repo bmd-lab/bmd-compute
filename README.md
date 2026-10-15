@@ -66,7 +66,7 @@ Important current policies:
 - Stages that consume the previous stage's electronic data must match its SOC setting: PBE DOS and Band Structure restart from the fixed charge density (`ICHARG = 11`), and PBE and HSE06 DOS/Band Structure size `NBANDS` from the previous run. Atomate2 may physically copy `CHGCAR` into an HSE06 DOS/Band Structure stage, but BMD requests neither a fixed-charge-density nor a WAVECAR restart (`ICHARG` and `ISTART` are absent), so the HSE06 calculation remains self-consistent.
 - An unsuccessful (unconverged) stage fails the workflow; BMD sets this on every stage instead of relying on atomate2's configurable default. A workflow runs in one SLURM allocation: reaching the walltime is a failure, results are loaded only from the final stage of a completed run, and running again starts a new attempt without reusing completed stages. Continuation across allocations is not part of v1.
 - The POWER runner checks its scientific package versions against those recorded at preparation and stops before any VASP work on a mismatch (`constraints/scientific-runtime.txt`, `runtime_environment.json`).
-- NCORE is an execution-resource policy, not a theory policy. For validated resource selections, eligible Relax, Static, and DOS stages automatically receive the current fixed `NCORE = 8` policy; Band Structure omits automatic NCORE pending separate benchmarking.
+- NCORE is an execution-resource policy, not a theory policy. For validated resource selections, eligible Relax, Static, and DOS stages automatically receive the current fixed `NCORE = 4` policy (reduced from 8 for reliability; see `docs/calculation_architecture.md`); Band Structure and phonon force calculations omit automatic NCORE.
 
 ## Operational Safety
 

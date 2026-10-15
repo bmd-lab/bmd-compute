@@ -155,7 +155,7 @@ assert static_incar["ENCUT"] == 620
 assert static_incar["ADDGRID"] is True
 assert static_incar["ENAUG"] is None
 assert static_incar["GGA"] is None
-assert static_incar["NCORE"] == 8
+assert static_incar["NCORE"] == 4
 assert "NCORE" not in band_incar
 assert band_incar["ICHARG"] == 11
 
@@ -189,7 +189,7 @@ assert override_band_incar["ENAUG"] == 1400
 assert override_band_incar["ADDGRID"] is False
 assert override_band_incar["GGA"] == "PE"
 assert override_band_incar["ICHARG"] == 11
-assert override_static_incar["NCORE"] == 8
+assert override_static_incar["NCORE"] == 4
 assert "NCORE" not in override_band_incar
 assert override_band_job.input_set_generator.kwargs["user_kpoints_settings"] == {
     "line_density": 32,
@@ -200,12 +200,12 @@ with fake_atomate2_and_jobflow():
         "initial_structure",
         label="explicit-ncore-bands",
         resources={"ntasks": 24},
-        incar={"NCORE": 4},
+        incar={"NCORE": 2},
     )
 
 _, explicit_static_job, explicit_band_job = explicit_ncore_flow.jobs
-assert explicit_static_job.input_set_generator.kwargs["user_incar_settings"]["NCORE"] == 8
-assert explicit_band_job.input_set_generator.kwargs["user_incar_settings"]["NCORE"] == 4
+assert explicit_static_job.input_set_generator.kwargs["user_incar_settings"]["NCORE"] == 4
+assert explicit_band_job.input_set_generator.kwargs["user_incar_settings"]["NCORE"] == 2
 
 summary = summarize_workflow(flow, CalculationSpec(Purpose.BAND_STRUCTURE, Theory.PBE))
 assert summary["calculation_type"] == "Band Structure"

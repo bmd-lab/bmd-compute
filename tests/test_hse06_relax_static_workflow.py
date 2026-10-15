@@ -202,8 +202,8 @@ with fake_atomate2_and_jobflow():
 
 pbe_relax_incar = pbe_relax_generator.kwargs["user_incar_settings"]
 pbe_static_incar = pbe_static_generator.kwargs["user_incar_settings"]
-assert pbe_relax_incar["NCORE"] == 8
-assert pbe_static_incar["NCORE"] == 8
+assert pbe_relax_incar["NCORE"] == 4
+assert pbe_static_incar["NCORE"] == 4
 assert "LHFCALC" not in pbe_relax_incar
 assert "LHFCALC" not in pbe_static_incar
 assert "PRECFOCK" not in pbe_relax_incar
@@ -227,8 +227,8 @@ assert relax_incar["GGA"] == static_incar["GGA"] == "PE"
 assert relax_incar["PRECFOCK"] == "Fast"
 assert static_incar["PRECFOCK"] == "Accurate"
 assert static_incar["ISMEAR"] == 0
-assert relax_incar["NCORE"] == 8
-assert static_incar["NCORE"] == 8
+assert relax_incar["NCORE"] == 4
+assert static_incar["NCORE"] == 4
 
 summary = summarize_workflow(flow, hse_relax_static_spec)
 assert summary["calculation_type"] == "Geometry Optimisation + Static Energy"
@@ -265,7 +265,7 @@ assert "PRECFOCK = Fast" in generated_inputs["incar"]
 assert "PRECFOCK = Accurate" in generated_inputs["incar"]
 assert "ISMEAR = 0" in generated_inputs["incar"]
 assert "ISMEAR = -5" not in generated_inputs["incar"]
-assert "NCORE = 8" in generated_inputs["incar"]
+assert "NCORE = 4" in generated_inputs["incar"]
 assert "# Stage 1 - Geometry Optimisation (HSE06)" in generated_inputs["kpoints"]
 assert "# Stage 2 - Static Energy (HSE06)" in generated_inputs["poscar"]
 

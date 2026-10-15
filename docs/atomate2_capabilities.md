@@ -38,7 +38,7 @@ Primary primitives:
 - `atomate2.vasp.sets.core.StaticSetGenerator`
 - `atomate2.vasp.jobs.core.StaticMaker`
 
-BMD policy applies the final/static settings, including the 620 eV ENCUT policy, charge-density output, ELF for ordinary collinear PBE static calculations, and automatic `NCORE = 8` where the stage is eligible and resources have passed validation.
+BMD policy applies the final/static settings, including the 620 eV ENCUT policy, charge-density output, ELF for ordinary collinear PBE static calculations, and automatic `NCORE = 4` where the stage is eligible and resources have passed validation.
 
 ### Double Geometry Optimisation
 
@@ -123,7 +123,7 @@ PRECFOCK = Accurate
 ISMEAR = 0
 ```
 
-Automatic NCORE remains independent of theory. Eligible stages receive the current fixed `NCORE = 8` policy after resource validation; a 24-rank HSE06 static benchmark showed strong benefit from that value.
+Automatic NCORE remains independent of theory. Eligible stages receive the current fixed `NCORE = 4` policy after resource validation. Historical note: the policy was previously `NCORE = 8`, chosen after a 24-rank HSE06 static benchmark showed strong benefit from that value. A later 16-atom Si HSE06 static (24 ranks, PRECFOCK Accurate) failed to initialise with `NCORE = 8` but ran with `NCORE = 4`, so the default was lowered for reliability; the earlier benchmark result is retained as evidence that `NCORE = 8` can be faster where it initialises, not as the current policy (see `docs/calculation_architecture.md`).
 
 ### HSE06 Relax -> Static
 

@@ -378,19 +378,19 @@ static_incar = mixed_flow.jobs[1].input_set_generator.kwargs["user_incar_setting
 assert "LHFCALC" not in relax_incar
 assert relax_incar["ISPIN"] == 1
 assert "MAGMOM" not in relax_incar
-assert relax_incar["NCORE"] == 8
+assert relax_incar["NCORE"] == 4
 assert static_incar["LHFCALC"] is True
 assert static_incar["PRECFOCK"] == "Accurate"
 assert static_incar["ISMEAR"] == 0
 assert static_incar["ISPIN"] == 2
-assert static_incar["NCORE"] == relax_incar["NCORE"] == 8
+assert static_incar["NCORE"] == relax_incar["NCORE"] == 4
 
 assert [job.name for job in dos_flow.jobs] == ["stage_01", "stage_02", "stage_03"]
 assert dos_flow.jobs[2].prev_dir == dos_flow.jobs[1].output.dir_name
 assert dos_flow.jobs[2].mode == "uniform"
 dos_static_incar = dos_flow.jobs[1].input_set_generator.kwargs["user_incar_settings"]
 dos_incar = dos_flow.jobs[2].input_set_generator.kwargs["user_incar_settings"]
-assert dos_incar["NCORE"] == dos_static_incar["NCORE"] == 8
+assert dos_incar["NCORE"] == dos_static_incar["NCORE"] == 4
 
 assert [job.name for job in band_flow.jobs] == ["stage_01", "stage_02", "stage_03"]
 assert band_flow.jobs[2].prev_dir == band_flow.jobs[1].output.dir_name
@@ -398,8 +398,8 @@ assert band_flow.jobs[2].mode == "line"
 band_relax_incar = band_flow.jobs[0].input_set_generator.kwargs["user_incar_settings"]
 band_static_incar = band_flow.jobs[1].input_set_generator.kwargs["user_incar_settings"]
 band_incar = band_flow.jobs[2].input_set_generator.kwargs["user_incar_settings"]
-assert band_relax_incar["NCORE"] == 8
-assert band_static_incar["NCORE"] == 8
+assert band_relax_incar["NCORE"] == 4
+assert band_static_incar["NCORE"] == 4
 assert band_relax_incar["ISPIN"] == 1
 assert band_static_incar["ISPIN"] == 1
 assert band_incar["ISPIN"] == 1
@@ -422,15 +422,15 @@ assert "PRECFOCK = Accurate" in static_section
 assert "ISMEAR = 0" in static_section
 assert "ISMEAR = -5" not in static_section
 assert "ISPIN = 2" in static_section
-assert "NCORE = 8" in static_section
+assert "NCORE = 4" in static_section
 
 band_relax_section, band_static_and_path = band_generated_inputs["incar"].split("\n\n", 1)
 band_static_section, band_section = band_static_and_path.split("\n\n", 1)
 assert "# Stage 1 - Geometry Optimisation (PBE)" in band_relax_section
 assert "# Stage 2 - Static Energy (PBE)" in band_static_section
 assert "# Stage 3 - Band Structure (PBE)" in band_section
-assert "NCORE = 8" in band_relax_section
-assert "NCORE = 8" in band_static_section
+assert "NCORE = 4" in band_relax_section
+assert "NCORE = 4" in band_static_section
 assert "ISPIN = 1" in band_relax_section
 assert "ISPIN = 1" in band_static_section
 assert "ISPIN = 1" in band_section
@@ -458,7 +458,7 @@ assert soc_static_incar["ISPIN"] is None
 assert soc_static_incar["GGA_COMPAT"] is False
 assert soc_static_incar["LELF"] is None
 assert soc_static_incar["LWAVE"] is False
-assert soc_static_incar["NCORE"] == 8
+assert soc_static_incar["NCORE"] == 4
 soc_stage_1, soc_stage_2_and_3 = soc_generated_inputs["incar"].split("\n\n", 1)
 soc_stage_2, soc_stage_3 = soc_stage_2_and_3.split("\n\n", 1)
 assert "# VASP executable - vasp_std" in soc_stage_1
@@ -499,7 +499,7 @@ assert hse_soc_static_incar["SAXIS"] == [0, 0, 1]
 assert hse_soc_static_incar["ISPIN"] is None
 assert hse_soc_static_incar["LELF"] is None
 assert hse_soc_static_incar["LWAVE"] is False
-assert hse_soc_static_incar["NCORE"] == 8
+assert hse_soc_static_incar["NCORE"] == 4
 assert hse_soc_generated_inputs["vasp_executable"] == "vasp_ncl"
 assert "LHFCALC = True" in hse_soc_generated_inputs["incar"]
 assert "PRECFOCK = Accurate" in hse_soc_generated_inputs["incar"]

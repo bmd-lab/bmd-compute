@@ -136,7 +136,7 @@ def test_pbe_static_reference_matches_existing_preview_path():
     assert stage["kpoints"]["text"] == preview["kpoints"]
     assert stage["poscar"]["text"] == preview["poscar"]
     assert stage["incar"]["settings"]["ENCUT"] == 620.0
-    assert stage["incar"]["settings"]["NCORE"] == 8
+    assert stage["incar"]["settings"]["NCORE"] == 4
     assert stage["incar"]["settings"]["ISPIN"] == 1
     assert "MAGMOM" not in stage["incar"]["settings"]
     assert stage["vasp_executable"] == "vasp_std"

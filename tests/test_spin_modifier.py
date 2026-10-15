@@ -99,8 +99,16 @@ assert ALLOWED_MEMORY_GB == (32, 64, 96, 128, 160, 192, 224, 256, 320, 384, 512)
 assert ALLOWED_QUEUES == ("leeburton-pool",)
 assert ExecutionResources().memory_gb == 128
 assert ExecutionResources().queue == "leeburton-pool"
-assert ncore_for_execution_resources(ExecutionResources(cpus=24)) == 8
-assert ncore_for_execution_resources({"ntasks": 48}) == 8
+assert ncore_for_execution_resources(ExecutionResources(cpus=24)) == 4
+assert ncore_for_execution_resources({"ntasks": 48}) == 4
+# Automatic NCORE must divide the MPI rank count of every permitted allocation
+# (and leave at least one band group), so no permitted selection receives an
+# inconsistent decomposition.
+for allowed_cpus in ALLOWED_CPU_COUNTS:
+    automatic_ncore = ncore_for_execution_resources(ExecutionResources(cpus=allowed_cpus))
+    assert automatic_ncore == 4
+    assert allowed_cpus % automatic_ncore == 0
+    assert allowed_cpus // automatic_ncore >= 1
 try:
     ExecutionResources(cpus=25)
 except CalculationValidationError as exc:
@@ -124,16 +132,16 @@ assert apply_resource_incar_settings(
     resources=ExecutionResources(cpus=24),
 ) == {
     "ENCUT": 520,
-    "NCORE": 8,
+    "NCORE": 4,
 }
 assert apply_resource_incar_settings(
-    {"NCORE": 4},
+    {"NCORE": 2},
     resources=ExecutionResources(cpus=48),
 ) == {
-    "NCORE": 8,
+    "NCORE": 4,
 }
 assert apply_resource_incar_settings(
-    {"NCORE": 4},
+    {"NCORE": 2},
     resources=ExecutionResources(cpus=24),
     allow_ncore=False,
 ) == {}
@@ -147,7 +155,7 @@ assert apply_stage_resource_incar_settings(
     resources=ExecutionResources(cpus=24),
 ) == {
     "ENCUT": 520,
-    "NCORE": 8,
+    "NCORE": 4,
 }
 assert apply_stage_resource_incar_settings(
     {"ENCUT": 520},
@@ -157,11 +165,11 @@ assert apply_stage_resource_incar_settings(
     "ENCUT": 520,
 }
 assert apply_stage_resource_incar_settings(
-    {"NCORE": 4},
+    {"NCORE": 2},
     stage_type=StageType.BAND_STRUCTURE,
     resources=ExecutionResources(cpus=24),
 ) == {
-    "NCORE": 4,
+    "NCORE": 2,
 }
 assert apply_modifier_incar_settings(
     {"MAGMOM": {"Fe": 5}},
