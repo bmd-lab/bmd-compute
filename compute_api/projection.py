@@ -147,6 +147,33 @@ def _resources_projection(submission_spec: Mapping[str, Any]) -> dict[str, Any]:
         "walltime": resources["walltime"],
         "partition": cluster["partition"],
         "account": cluster["account"],
+        "qos": cluster.get("qos"),
+    }
+
+
+def _resource_selection_projection(submission_spec: Mapping[str, Any]) -> dict[str, Any] | None:
+    record = (submission_spec.get("flow_spec") or {}).get("resource_selection")
+    if not record:
+        return None
+    fields = record.get("fields") or {}
+    estimate = record.get("walltime_estimate") or {}
+    return {
+        "policy": json_safe(record.get("policy")),
+        "sources": {name: (fields.get(name) or {}).get("source") for name in sorted(fields)},
+        "walltime": {
+            "recommended": json_safe((fields.get("walltime") or {}).get("recommended")),
+            "basis": json_safe(estimate.get("basis")),
+            "explanation": json_safe(estimate.get("explanation")),
+            "stages": [
+                {
+                    "index": json_safe(stage.get("index")),
+                    "class": json_safe(stage.get("class")),
+                    "seconds": json_safe(stage.get("seconds")),
+                    "reason": json_safe(stage.get("reason")),
+                }
+                for stage in estimate.get("stages") or []
+            ],
+        },
     }
 
 
@@ -195,6 +222,7 @@ def plan_response(plan, request) -> dict[str, Any]:
         "automatic_treatments": json_safe(flow_spec.get("automatic_treatments")),
         "method_considerations": _method_considerations_projection(plan.method_considerations),
         "resources": _resources_projection(submission_spec),
+        "resource_selection": _resource_selection_projection(submission_spec),
         "scientific_inputs": {
             "potcar_functional": flow_spec["potcar_functional"],
             "stages": [_stage_projection(preview) for preview in stage_previews],

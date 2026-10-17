@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from backend.calculations.registry import CalculationValidationError
@@ -21,6 +22,11 @@ ALLOWED_QUEUES = (DEFAULT_PARTITION,)
 # unset (about 2.3x the memory). NCORE = 4 divides every ALLOWED_CPU_COUNTS
 # value. This is one data point, not a performance optimum for every system.
 DEFAULT_NCORE = 4
+# SLURM walltime as H:MM:SS (hours may exceed 24). The upper limit is the
+# 100-day maximum of the owner100d QOS that BMD Compute submits under; SLURM
+# would reject longer requests at submission.
+WALLTIME_PATTERN = re.compile(r"^([0-9]{1,4}):([0-5][0-9]):([0-5][0-9])$")
+MAX_WALLTIME_SECONDS = 100 * 24 * 3600
 
 
 @dataclass(frozen=True)
@@ -36,7 +42,7 @@ class ExecutionResources:
         object.__setattr__(self, "nodes", _positive_int(self.nodes, "nodes"))
         object.__setattr__(self, "cpus", _allowed_cpu_count(self.cpus))
         object.__setattr__(self, "memory_gb", _allowed_memory_gb(self.memory_gb))
-        object.__setattr__(self, "walltime", _nonempty_text(self.walltime, "walltime"))
+        object.__setattr__(self, "walltime", validate_walltime(self.walltime))
         object.__setattr__(self, "queue", validate_queue(self.queue))
         object.__setattr__(self, "account", _nonempty_text(self.account, "account"))
 
@@ -101,6 +107,38 @@ def normalize_execution_resources(resources=None) -> ExecutionResources:
 def ncore_for_execution_resources(resources=None) -> int:
     normalize_execution_resources(resources)
     return DEFAULT_NCORE
+
+
+def walltime_seconds(value) -> int:
+    match = WALLTIME_PATTERN.fullmatch(str(value or "").strip())
+    if match is None:
+        raise ValueError("walltime must be H:MM:SS")
+    hours, minutes, seconds = (int(part) for part in match.groups())
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def format_walltime(seconds: int) -> str:
+    seconds = int(seconds)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def validate_walltime(value) -> str:
+    text = _nonempty_text(value, "walltime")
+    try:
+        total = walltime_seconds(text)
+    except ValueError as exc:
+        raise CalculationValidationError(
+            "Walltime must be written as hours:minutes:seconds, for example 12:00:00.",
+            suggestion="Enter the walltime as H:MM:SS (hours may exceed 24), or leave it on Automatic.",
+        ) from exc
+    if total <= 0 or total > MAX_WALLTIME_SECONDS:
+        raise CalculationValidationError(
+            "Walltime must be greater than zero and at most 2400:00:00 (100 days).",
+            suggestion="100 days is the limit of the owner100d QOS. Enter a shorter walltime, or leave it on Automatic.",
+        )
+    return text
 
 
 def validate_queue(value) -> str:
@@ -175,10 +213,15 @@ __all__ = [
     "ALLOWED_QUEUES",
     "AUTOMATIC_NCORE_STAGE_TYPES",
     "DEFAULT_NCORE",
+    "MAX_WALLTIME_SECONDS",
+    "WALLTIME_PATTERN",
     "ExecutionResources",
     "default_execution_resources",
     "ncore_for_execution_resources",
     "normalize_execution_resources",
     "stage_allows_automatic_ncore",
+    "format_walltime",
     "validate_queue",
+    "validate_walltime",
+    "walltime_seconds",
 ]

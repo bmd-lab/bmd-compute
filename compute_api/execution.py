@@ -153,6 +153,7 @@ def _effective_resources(submission_spec: Mapping[str, Any]) -> dict[str, Any]:
         "walltime": str(resources["walltime"]),
         "partition": str(cluster["partition"]),
         "account": str(cluster["account"]),
+        "qos": cluster.get("qos"),
     }
 
 
@@ -405,8 +406,32 @@ def _authorize_record(record: Mapping[str, Any], principal: str) -> None:
         raise ExecutionError(403, "attempt_forbidden", "This attempt belongs to another principal.")
 
 
+_SUBMISSION_STARTED = frozenset({SUBMISSION_RESERVED, SUBMISSION_SUBMITTED, SUBMISSION_UNCERTAIN})
+
+
+def _is_exact_retry_of_started_submission(record: Mapping[str, Any], request: ExecutionRequest) -> bool:
+    """An exact retry of an attempt whose submission has already started.
+
+    Recognised from the immutable ledger binding alone (principal and request
+    hash are checked by the caller; the plan digest the client expects is the
+    one bound at registration), before any current planning policy is applied.
+    Such an attempt is reconciled from its remote state; it is replanned only
+    if it must still be prepared or submitted, and then fails closed when the
+    plan no longer resolves identically.
+    """
+
+    return (
+        record["plan_digest"] == request.expected_plan_digest
+        and record["submission"]["status"] in _SUBMISSION_STARTED
+    )
+
+
 def _bind_attempt(ledger, planner, attempt_id, principal, request):
-    """Return ``(record, plan)`` for an attempt bound to this principal and request."""
+    """Return ``(record, plan)`` for an attempt bound to this principal and request.
+
+    ``plan`` is ``None`` for an exact retry of an attempt whose submission has
+    already started (see ``_is_exact_retry_of_started_submission``).
+    """
 
     request_digest = request_sha256(request)
     for _ in range(5):
@@ -419,45 +444,14 @@ def _bind_attempt(ledger, planner, attempt_id, principal, request):
                     "attempt_request_mismatch",
                     "This attempt ID is already bound to a different request.",
                 )
+            if _is_exact_retry_of_started_submission(record, request):
+                return record, None
             timestamp = record["run_timestamp"]
         else:
             timestamp = canonical_run_timestamp(None)
 
-        plan = planner(
-            structure_text=request.plan.structure_text,
-            fmt=request.plan.structure_format,
-            desired_output=request.plan.desired_output,
-            custom_workflow=request.plan.custom_workflow,
-            resources=request.plan.resources,
-            timestamp=timestamp,
-            submission_attempt_id=attempt_id,
-        )
-        spec = plan.submission_spec
-        plan_digest = compute_plan_digest(
-            structure=plan.structure,
-            submission_spec=spec,
-            stage_previews=plan_stage_previews(plan),
-        )
-        if plan_digest != request.expected_plan_digest:
-            raise ExecutionError(
-                409,
-                "plan_digest_mismatch",
-                "The resolved plan does not match expected_plan_digest.",
-                plan_digest=plan_digest,
-            )
+        plan, plan_digest = _plan_attempt(planner, request, attempt_id, timestamp, record)
         if record is not None:
-            if record["plan_digest"] != plan_digest:
-                raise ExecutionError(
-                    409,
-                    "plan_changed",
-                    "The plan bound to this attempt no longer resolves identically on this service.",
-                )
-            if record["attempt_fingerprint"] != spec["submission"]["attempt_fingerprint"]:
-                raise ExecutionError(
-                    409,
-                    "attempt_fingerprint_mismatch",
-                    "This attempt no longer rebuilds the identical submission specification.",
-                )
             return record, plan
 
         with ledger.locked():
@@ -468,6 +462,7 @@ def _bind_attempt(ledger, planner, attempt_id, principal, request):
                 collision = True
             else:
                 collision = False
+                spec = plan.submission_spec
                 new_record = _new_record(
                     attempt_id=attempt_id,
                     principal=principal,
@@ -485,6 +480,53 @@ def _bind_attempt(ledger, planner, attempt_id, principal, request):
     raise ExecutionError(409, "attempt_busy", "The attempt could not be registered; retry.")
 
 
+def _plan_digest(plan) -> str:
+    return compute_plan_digest(
+        structure=plan.structure,
+        submission_spec=plan.submission_spec,
+        stage_previews=plan_stage_previews(plan),
+    )
+
+
+def _plan_attempt(planner, request, attempt_id, timestamp, record):
+    """Resolve the plan under the current policy; fail closed if it changed."""
+
+    plan = planner(
+        structure_text=request.plan.structure_text,
+        fmt=request.plan.structure_format,
+        desired_output=request.plan.desired_output,
+        custom_workflow=request.plan.custom_workflow,
+        resources=request.plan.resources,
+        timestamp=timestamp,
+        submission_attempt_id=attempt_id,
+    )
+    spec = plan.submission_spec
+    plan_digest = _plan_digest(plan)
+    if record is not None and record["plan_digest"] != plan_digest:
+        # Includes attempts registered under an earlier planning policy or
+        # digest version that still need preparation or submission.
+        raise ExecutionError(
+            409,
+            "plan_changed",
+            "The plan bound to this attempt no longer resolves identically on this service.",
+        )
+    if plan_digest != request.expected_plan_digest:
+        raise ExecutionError(
+            409,
+            "plan_digest_mismatch",
+            "The resolved plan does not match expected_plan_digest.",
+            plan_digest=plan_digest,
+        )
+    if record is not None:
+        if record["attempt_fingerprint"] != spec["submission"]["attempt_fingerprint"]:
+            raise ExecutionError(
+                409,
+                "attempt_fingerprint_mismatch",
+                "This attempt no longer rebuilds the identical submission specification.",
+            )
+    return plan, plan_digest
+
+
 def _prepare_failure(result: Mapping[str, Any]) -> ExecutionError:
     stage = str(result.get("stage") or "")
     if stage == "Remote Capacity":
@@ -499,9 +541,15 @@ def _prepare_failure(result: Mapping[str, Any]) -> ExecutionError:
 def execute_attempt(*, planner, principal: str, attempt_id: str, request: ExecutionRequest) -> dict[str, Any]:
     ledger = _ledger()
     record, plan = _bind_attempt(ledger, planner, attempt_id, principal, request)
-    spec = plan.submission_spec
 
     state = read_remote_attempt_state(record)
+    if plan is None and (state is None or state.get("state") not in {"SUBMITTING", "SUBMITTED"}):
+        # The submission was reserved but never reached POWER: preparing or
+        # submitting it needs the plan, which must still resolve identically
+        # under the current policy (otherwise plan_changed; fail closed).
+        plan, _ = _plan_attempt(planner, request, attempt_id, record["run_timestamp"], record)
+    spec = plan.submission_spec if plan is not None else None
+
     if state is None:
         result = prepare_remote_submission(spec, runner_factory=RUNNER_FACTORY)
         state = read_remote_attempt_state(record)

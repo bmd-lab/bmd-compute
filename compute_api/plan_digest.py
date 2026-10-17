@@ -29,12 +29,17 @@ Covered (any change alters the digest):
   as the browser preview); at run time stage 2 onwards is regenerated from the
   previous stage's output, as described in ``docs/methodology.md``;
 * the POTCAR functional and the per-stage POTCAR symbol record;
-* execution resources: nodes, MPI tasks, memory, walltime, partition, account;
+* execution resources: nodes, MPI tasks, memory, walltime, partition, account
+  and QOS;
+* the resource selection: which resources were Automatic and which explicit,
+  the automatic walltime recommendation and its basis (empirical estimate or
+  conservative fallback) and per-stage classes, under the automatic-resource
+  policy version;
 * the loaded software modules and the VASP command template;
 * the parity-critical scientific package versions (``runtime_parity``);
 * the versions of the policies that decide the plan: new-calculation
-  admission, automatic DFT+U, method considerations, Custodian handling and
-  runtime parity, and this digest's own version.
+  admission, automatic DFT+U, method considerations, Custodian handling,
+  runtime parity, automatic resources, and this digest's own version.
 
 Not covered (changing these does not alter the digest):
 
@@ -55,6 +60,9 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 from backend.calculations.admission import ADMISSION_POLICY_ID, ADMISSION_POLICY_VERSION
+from backend.calculations.automatic_resources import POLICY_ID as RESOURCE_POLICY_ID
+from backend.calculations.automatic_resources import POLICY_VERSION as RESOURCE_POLICY_VERSION
+from backend.calculations.automatic_resources import selection_digest_material
 from backend.calculations.custodian_policy import (
     BMD_CUSTODIAN_POLICY_ID,
     BMD_CUSTODIAN_POLICY_VERSION,
@@ -70,7 +78,8 @@ from compute_api.canonical import canonical_json, json_safe, sha256_hex
 
 
 PLAN_DIGEST_SCHEMA = "bmd_compute.plan_digest"
-PLAN_DIGEST_VERSION = 1
+# Version 2: QOS, the resource selection and the automatic-resource policy.
+PLAN_DIGEST_VERSION = 2
 
 _POTCAR_RECORD_EXCLUDED_KEYS = frozenset({"repository", "target", "symlink_targets"})
 _ENVIRONMENT_COVERED_KEYS = ("VASP_CMD",)
@@ -83,6 +92,7 @@ def policy_versions() -> dict[str, dict[str, Any]]:
         "method_considerations": {"version": METHOD_CONSIDERATIONS_POLICY_VERSION},
         "custodian": {"id": BMD_CUSTODIAN_POLICY_ID, "version": BMD_CUSTODIAN_POLICY_VERSION},
         "runtime_parity": {"id": RUNTIME_PARITY_POLICY_ID, "version": RUNTIME_PARITY_POLICY_VERSION},
+        "automatic_resources": {"id": RESOURCE_POLICY_ID, "version": RESOURCE_POLICY_VERSION},
         "plan_digest": {"id": PLAN_DIGEST_SCHEMA, "version": PLAN_DIGEST_VERSION},
     }
 
@@ -166,7 +176,9 @@ def plan_digest_material(
             "walltime": resources["walltime"],
             "partition": cluster["partition"],
             "account": cluster["account"],
+            "qos": cluster.get("qos"),
         },
+        "resource_selection": json_safe(selection_digest_material(flow_spec.get("resource_selection"))),
         "software": {
             "modules": json_safe(submission_spec.get("modules")),
             "environment": {key: environment.get(key) for key in _ENVIRONMENT_COVERED_KEYS},

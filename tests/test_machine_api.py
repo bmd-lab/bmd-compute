@@ -422,6 +422,7 @@ def test_valid_poscar_request_returns_the_bounded_plan_contract(client, tokens):
         "automatic_treatments",
         "method_considerations",
         "resources",
+        "resource_selection",
         "scientific_inputs",
         "software",
         "policies",
@@ -436,6 +437,14 @@ def test_valid_poscar_request_returns_the_bounded_plan_contract(client, tokens):
         "walltime": "02:00:00",
         "partition": "leeburton-pool",
         "account": "power-leeburton-users_v2",
+        "qos": "owner100d",
+    }
+    # Explicit values are kept exactly and reported as manual.
+    assert payload["resource_selection"]["sources"] == {
+        "cpus": "manual",
+        "memory_gb": "manual",
+        "queue": "automatic",
+        "walltime": "manual",
     }
     stage = payload["scientific_inputs"]["stages"][0]
     assert stage["stage_type"] == "static" and stage["theory"] == "pbe"
@@ -582,7 +591,12 @@ def test_ui_and_api_share_the_scientific_resolution(client, tokens, case):
         "walltime": ui_spec["resources"]["walltime"],
         "partition": ui_spec["cluster"]["partition"],
         "account": ui_spec["cluster"]["account"],
+        "qos": ui_spec["cluster"]["qos"],
     }
+    # Automatic resource selection is the same record for both interfaces.
+    assert api["resource_selection"]["sources"]["walltime"] == "automatic"
+    assert api["resource_selection"]["walltime"]["recommended"] == ui_flow["resource_selection"]["fields"]["walltime"]["recommended"]
+    assert api["resource_selection"]["walltime"]["basis"] == ui_flow["resource_selection"]["walltime_estimate"]["basis"]
     # Method-consideration classification.
     ui_considerations = (ui["method_considerations"] or {}).get("considerations") or []
     api_considerations = (api["method_considerations"] or {}).get("considerations") or []

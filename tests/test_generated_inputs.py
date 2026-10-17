@@ -617,7 +617,20 @@ resource_response = build_workflow(
 )
 assert resource_response.status_code == 200
 assert resource_response.context["generated_inputs"]["incar"] == static_preview["incar"]
-assert resource_response.context["selected_resources"] == {
+selected_resource_context = resource_response.context["selected_resources"]
+assert {
+    key: selected_resource_context[key]
+    for key in (
+        "nodes",
+        "cpus",
+        "allowed_cpu_counts",
+        "memory_gb",
+        "allowed_memory_gb",
+        "walltime",
+        "queue",
+        "allowed_queues",
+    )
+} == {
     "nodes": 1,
     "cpus": 48,
     "allowed_cpu_counts": [24, 48, 72, 96, 120, 144, 168, 192],
@@ -627,6 +640,14 @@ assert resource_response.context["selected_resources"] == {
     "queue": DEFAULT_PARTITION,
     "allowed_queues": list(ALLOWED_QUEUES),
 }
+# Explicit values are kept exactly and reported as manual.
+assert selected_resource_context["sources"] == {
+    "cpus": "manual",
+    "memory_gb": "manual",
+    "walltime": "manual",
+    "queue": "manual",
+}
+assert selected_resource_context["requested"]["walltime"] == "12:00:00"
 assert resource_response.context["submission_spec"]["resources"]["ntasks"] == 48
 assert resource_response.context["submission_spec"]["resources"]["mem_gb"] == 256
 assert resource_response.context["submission_spec"]["cluster"]["partition"] == DEFAULT_PARTITION

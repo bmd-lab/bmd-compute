@@ -158,18 +158,27 @@ Current allow-lists:
 - Memory GB: `32, 64, 96, 128, 160, 192, 224, 256, 320, 384, 512`
 - Queue: `leeburton-pool`
 
-Defaults:
+Automatic resources are the default for new calculations
+(`backend/calculations/automatic_resources.py`; see
+`docs/automatic_resources.md`): 24 CPUs, 128 GB and a conservative walltime
+estimated per stage from computational descriptors, with identified fallbacks
+outside the calibrated domain. Explicit values are kept exactly.
+
+Fixed values and defaults for explicit callers:
 
 ```text
 nodes = 1
 ntasks = 24
 memory = 128 GB
-walltime = 72:00:00
+walltime = 72:00:00   (explicit callers only; Automatic estimates it)
 queue = leeburton-pool
 account = power-leeburton-users_v2
+qos = owner100d       (for this account only)
 ```
 
-The account is fixed backend policy and is not user-editable.
+Walltime is `H:MM:SS` (up to four hour digits), at most `2400:00:00`, the
+100-day limit of the `owner100d` QOS. The account and QOS are fixed backend
+policy and are not user-editable.
 
 Automatic NCORE is stage-specific. For validated resource selections, eligible Relax, Static, and DOS stages receive the current fixed `NCORE = 4` policy (`DEFAULT_NCORE` in `backend/calculations/resources.py`; eligibility in `backend/calculations/resource_policy.py`). Band Structure stages omit automatic NCORE until parallel band-structure performance is separately benchmarked, and phonon force calculations omit it by design.
 

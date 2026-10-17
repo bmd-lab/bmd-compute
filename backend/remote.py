@@ -224,6 +224,7 @@ class BatchSubmissionRequest:
     mem_gb: int
     walltime: str
     parsable: bool = True
+    qos: str | None = None
 
 
 @dataclass(frozen=True)

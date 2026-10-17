@@ -86,18 +86,29 @@ This is designed to prevent duplicate SLURM jobs from repeated submit requests w
 
 ## Resource Policy
 
-Current default resources:
+Resources left on Automatic (the default) are chosen by the backend: 24 CPUs,
+128 GB and a walltime estimated from the structure and workflow; see
+`docs/automatic_resources.md`.
 
 ```text
 partition = leeburton-pool
 nodes = 1
-ntasks = 24
-memory = 128G
-walltime = 72:00:00
+ntasks = 24                 (Automatic)
+memory = 128G               (Automatic)
+walltime = estimated        (Automatic; explicit callers default to 72:00:00)
 account = power-leeburton-users_v2
+qos = owner100d
 ```
 
-CPU counts, memory values, and queue are allow-listed in the backend. The account is fixed backend policy and is not user-editable.
+CPU counts, memory values, and queue are allow-listed in the backend. The account and QOS are fixed backend policy and are not user-editable.
+
+Deploying a new automatic-resource policy changes the plan digest and attempt
+fingerprint of recomputed plans. Machine-API attempts whose submission had
+already started before the deployment stay retryable with the identical
+request (the existing job, or `submission_uncertain`, is returned without
+resubmitting); attempts that were registered or prepared but not yet submitted
+fail closed with `plan_changed` and need a new attempt ID. See
+`docs/machine_api.md`.
 
 ## Scientific Runtime Environment
 

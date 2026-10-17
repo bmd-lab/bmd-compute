@@ -36,6 +36,14 @@ from backend.calculations.method_considerations import (
     SPIN_COMPOSITION_CONSIDERATION_ID,
     method_consideration_payload,
 )
+from backend.calculations.automatic_resources import (
+    AUTOMATIC_CPUS,
+    AUTOMATIC_MEMORY_GB,
+    SOURCE_AUTOMATIC,
+    ResourceRequest,
+    planned_resources_token,
+    resolve_execution_resources,
+)
 from backend.calculations.resources import (
     ALLOWED_CPU_COUNTS,
     ALLOWED_MEMORY_GB,
@@ -43,6 +51,7 @@ from backend.calculations.resources import (
     ExecutionResources,
     default_execution_resources,
 )
+from backend.config import DEFAULT_PARTITION
 from backend.calculations.registry import (
     CalculationValidationError,
     calculation_spec_from_workflow_spec,
@@ -61,7 +70,7 @@ from backend.calculations.registry import (
     workflow_display_name,
     workflow_spec_from_calculation_spec,
 )
-from backend.generated_inputs import preview_generated_inputs
+from backend.generated_inputs import generated_input_stage_previews, preview_generated_inputs
 from backend.monitoring import monitor_job, monitor_submitted_job
 from backend.parser import StructureValidationError, parse_structure
 from backend.remote_preparation import prepare_remote_submission, remembered_successful_preparation
@@ -90,7 +99,7 @@ def page_context(
     summary=None,
     selected_spec: CalculationSpec | None = None,
     selected_workflow: WorkflowSpec | None = None,
-    selected_resources: ExecutionResources | None = None,
+    selected_resources: "SelectedResources | ExecutionResources | None" = None,
     calculation_summary=None,
     generated_inputs=None,
     submission_spec=None,
@@ -118,7 +127,9 @@ def page_context(
         or calculation_spec_from_workflow_spec(selected_workflow)
         or default_calculation_spec()
     )
-    selected_resources = selected_resources or default_execution_resources()
+    selected_resources = (
+        selected_resources if selected_resources is not None else SelectedResources()
+    )
     return {
         "structure_text": structure_text,
         "fmt": fmt,
@@ -255,7 +266,7 @@ def structure_error_response(
     exc: StructureValidationError,
     selected_spec: CalculationSpec | None = None,
     selected_workflow: WorkflowSpec | None = None,
-    selected_resources: ExecutionResources | None = None,
+    selected_resources: "SelectedResources | ExecutionResources | None" = None,
 ):
     return templates.TemplateResponse(
         request=request,
@@ -290,7 +301,7 @@ def calculation_error_response(
     exc: CalculationValidationError,
     selected_spec: CalculationSpec | None = None,
     selected_workflow: WorkflowSpec | None = None,
-    selected_resources: ExecutionResources | None = None,
+    selected_resources: "SelectedResources | ExecutionResources | None" = None,
 ):
     summary = None
     try:
@@ -324,16 +335,104 @@ def default_workflow_spec() -> WorkflowSpec:
     )
 
 
-def selected_resources_context(resources: ExecutionResources) -> dict:
+@dataclass(frozen=True)
+class SelectedResources:
+    """Resources as requested (``None`` = Automatic) and, once built, as resolved."""
+
+    request: ResourceRequest = ResourceRequest()
+    resources: ExecutionResources | None = None
+    record: dict | None = None
+    qos: str | None = None
+
+
+def selected_resources_from_submission(
+    submission_spec: dict,
+    request: ResourceRequest,
+) -> SelectedResources:
+    resources = submission_spec["resources"]
+    cluster = submission_spec["cluster"]
+    resolved = ExecutionResources(
+        nodes=resources["nodes"],
+        cpus=resources["ntasks"],
+        memory_gb=resources["mem_gb"],
+        walltime=resources["walltime"],
+        queue=cluster["partition"],
+        account=cluster["account"],
+    )
+    record = (submission_spec.get("flow_spec") or {}).get("resource_selection")
+    return SelectedResources(
+        request=request,
+        resources=resolved,
+        record=record,
+        qos=cluster.get("qos"),
+    )
+
+
+def selected_resources_context(selection) -> dict:
+    if isinstance(selection, ExecutionResources):
+        selection = SelectedResources(
+            request=ResourceRequest.from_execution_resources(selection),
+            resources=selection,
+        )
+    request = selection.request
+    resources = selection.resources
+    record = selection.record or {}
+    estimate = record.get("walltime_estimate") or {}
+    fields = record.get("fields") or {}
+
+    def source(name: str) -> str:
+        return SOURCE_AUTOMATIC if getattr(request, name) is None else "manual"
+
+    cpus = resources.cpus if resources is not None else (request.cpus or AUTOMATIC_CPUS)
+    memory_gb = (
+        resources.memory_gb if resources is not None else (request.memory_gb or AUTOMATIC_MEMORY_GB)
+    )
+    walltime = resources.walltime if resources is not None else request.walltime
     return {
-        "nodes": resources.nodes,
-        "cpus": resources.cpus,
+        "nodes": resources.nodes if resources is not None else 1,
+        "cpus": cpus,
         "allowed_cpu_counts": list(ALLOWED_CPU_COUNTS),
-        "memory_gb": resources.memory_gb,
+        "memory_gb": memory_gb,
         "allowed_memory_gb": list(ALLOWED_MEMORY_GB),
-        "walltime": resources.walltime,
-        "queue": resources.queue,
+        "walltime": walltime,
+        "queue": resources.queue if resources is not None else (request.queue or DEFAULT_PARTITION),
         "allowed_queues": list(ALLOWED_QUEUES),
+        "automatic_cpus": AUTOMATIC_CPUS,
+        "automatic_memory_gb": AUTOMATIC_MEMORY_GB,
+        "requested": {
+            "cpus": "" if request.cpus is None else request.cpus,
+            "memory_gb": "" if request.memory_gb is None else request.memory_gb,
+            "walltime": "" if request.walltime is None else request.walltime,
+            "queue": "" if request.queue is None else request.queue,
+        },
+        "sources": {
+            "cpus": source("cpus"),
+            "memory_gb": source("memory_gb"),
+            "walltime": source("walltime"),
+            "queue": source("queue"),
+        },
+        "resolved": resources is not None,
+        "qos": selection.qos,
+        "recommended_walltime": (fields.get("walltime") or {}).get("recommended"),
+        "walltime_basis": estimate.get("basis"),
+        "walltime_explanation": estimate.get("explanation"),
+        "walltime_stages": [
+            {
+                "index": stage.get("index"),
+                "stage_type": stage.get("stage_type"),
+                "theory": stage.get("theory"),
+                "class": stage.get("class"),
+                "hours": round(float(stage.get("seconds") or 0) / 3600, 2),
+                "reason": stage.get("reason"),
+            }
+            for stage in estimate.get("stages") or []
+        ],
+        "policy": record.get("policy"),
+        "planned_token": (
+            planned_resources_token(resources, selection.record)
+            if resources is not None and selection.record
+            else ""
+        ),
     }
 
 
@@ -513,6 +612,23 @@ def resolve_workflow_for_structure(
     return resolution.resolved_workflow, resolution
 
 
+def resource_request_from_form(
+    *,
+    cpus=None,
+    memory_gb=None,
+    walltime=None,
+    queue=None,
+) -> ResourceRequest:
+    """Requested resources: an omitted, empty or "auto" value means Automatic."""
+
+    return ResourceRequest.from_values(
+        cpus=optional_form_value(cpus),
+        memory_gb=optional_form_value(memory_gb),
+        walltime=optional_form_value(walltime),
+        queue=optional_form_value(queue),
+    )
+
+
 def execution_resources_from_form(
     *,
     cpus: str | None = None,
@@ -520,6 +636,8 @@ def execution_resources_from_form(
     walltime: str | None = None,
     queue: str | None = None,
 ) -> ExecutionResources:
+    """Explicit resources with defaults for missing fields (no estimation)."""
+
     defaults = default_execution_resources()
     return ExecutionResources(
         cpus=cpus or defaults.cpus,
@@ -905,11 +1023,12 @@ def build_submission_state(
     fmt: str,
     calculation_spec: CalculationSpec | None = None,
     workflow_spec: WorkflowSpec | None = None,
-    execution_resources: ExecutionResources | None = None,
+    execution_resources: ExecutionResources | ResourceRequest | None = None,
     timestamp: str | None = None,
     submission_attempt_id: str | None = None,
 ):
-    execution_resources = execution_resources or default_execution_resources()
+    if execution_resources is None:
+        execution_resources = default_execution_resources()
     if workflow_spec is None:
         if calculation_spec is None:
             calculation_spec = default_calculation_spec()
@@ -935,10 +1054,11 @@ def build_submission_state_from_structure(
     fmt: str,
     calculation_spec: CalculationSpec | None = None,
     workflow_spec: WorkflowSpec,
-    execution_resources: ExecutionResources,
+    execution_resources: ExecutionResources | ResourceRequest,
     timestamp: str | None = None,
     submission_attempt_id: str | None = None,
     default_treatment_resolution: ResolvedDefaultWorkflow | None = None,
+    planned_resources: str | None = None,
 ):
     if (
         default_treatment_resolution is not None
@@ -967,6 +1087,24 @@ def build_submission_state_from_structure(
         if calculation_spec is not None
         else "custom_workflow"
     )
+    resource_selection = resolve_resources_for_workflow(
+        structure_obj,
+        workflow_spec,
+        execution_resources,
+        potcar_functional=potcar_functional,
+    )
+    execution_resources = resource_selection.resources
+    if planned_resources:
+        current = planned_resources_token(execution_resources, resource_selection.record)
+        if current != planned_resources:
+            raise CalculationValidationError(
+                "The resources for this calculation changed after it was built.",
+                suggestion=(
+                    "Build the calculation again to review the current resource "
+                    "recommendation before preparing or submitting it."
+                ),
+                diagnostic={"code": "planned_resources_changed"},
+            )
     generated_inputs = preview_generated_inputs(
         structure_obj,
         workflow_spec,
@@ -987,6 +1125,7 @@ def build_submission_state_from_structure(
         "kpoints": None,
         "incar": {},
         "execution_resources": execution_resources.to_dict(),
+        "resource_selection": resource_selection.record,
         "structure": {
             "type": "pasted_text",
             "format": fmt,
@@ -1027,6 +1166,40 @@ def build_submission_state_from_structure(
         submission_spec
     )["text"]
     return summary, calculation_summary, generated_inputs, submission_spec
+
+
+def resolve_resources_for_workflow(
+    structure_obj,
+    workflow_spec: WorkflowSpec,
+    requested: ExecutionResources | ResourceRequest,
+    *,
+    potcar_functional: str,
+):
+    """Authoritative resource resolution for the browser and the machine API.
+
+    Explicit values are kept; Automatic values come from
+    ``backend.calculations.automatic_resources`` using the stage inputs that
+    Compute generates for this structure and workflow.
+    """
+
+    if isinstance(requested, ExecutionResources):
+        requested = ResourceRequest.from_execution_resources(requested)
+    preview_resources = ExecutionResources(
+        cpus=requested.cpus if requested.cpus is not None else AUTOMATIC_CPUS,
+        memory_gb=requested.memory_gb if requested.memory_gb is not None else AUTOMATIC_MEMORY_GB,
+        queue=requested.queue if requested.queue is not None else DEFAULT_PARTITION,
+    )
+    stage_previews = generated_input_stage_previews(
+        structure_obj,
+        workflow_spec,
+        resources=preview_resources,
+        potcar_functional=potcar_functional,
+    )
+    return resolve_execution_resources(
+        requested,
+        stage_previews=stage_previews,
+        potcar_functional=potcar_functional,
+    )
 
 
 @dataclass(frozen=True)
@@ -1103,7 +1276,8 @@ def plan_calculation_request(
             diagnostic={"code": "unsupported_workflow_vocabulary"},
         ) from exc
     resources = dict(resources or {})
-    execution_resources = execution_resources_from_form(
+    # Omitted resource values mean Automatic; explicit values are kept exactly.
+    resource_request = resource_request_from_form(
         cpus=resources.get("cpus"),
         memory_gb=resources.get("memory_gb"),
         walltime=resources.get("walltime"),
@@ -1136,11 +1310,14 @@ def plan_calculation_request(
         structure_text=structure_text,
         fmt=fmt,
         workflow_spec=workflow_spec,
-        execution_resources=execution_resources,
+        execution_resources=resource_request,
         timestamp=timestamp,
         submission_attempt_id=submission_attempt_id,
         default_treatment_resolution=default_treatment_resolution,
     )
+    execution_resources = selected_resources_from_submission(
+        submission_spec, resource_request
+    ).resources
     return CalculationPlan(
         structure=structure_obj,
         workflow_spec=workflow_spec,
@@ -1243,7 +1420,8 @@ def build_workflow(
     # The selection as requested, before automatic treatments: what a failed
     # request redisplays, so it never looks like a resolved calculation.
     requested_workflow_spec = workflow_spec
-    execution_resources = default_execution_resources()
+    resource_request = ResourceRequest()
+    execution_resources = SelectedResources(request=resource_request)
     method_considerations = None
     try:
         workflow_spec = workflow_spec_from_form(
@@ -1259,12 +1437,13 @@ def build_workflow(
             calculation_spec_from_workflow_spec(workflow_spec)
             or default_calculation_spec()
         )
-        execution_resources = execution_resources_from_form(
+        resource_request = resource_request_from_form(
             cpus=cpus,
             memory_gb=memory_gb,
             walltime=walltime,
             queue=queue,
         )
+        execution_resources = SelectedResources(request=resource_request)
         structure_obj = parse_structure(structure, fmt)
         workflow_spec, default_treatment_resolution = resolve_workflow_for_structure(
             structure_obj,
@@ -1285,8 +1464,11 @@ def build_workflow(
             structure_text=structure,
             fmt=fmt,
             workflow_spec=workflow_spec,
-            execution_resources=execution_resources,
+            execution_resources=resource_request,
             default_treatment_resolution=default_treatment_resolution,
+        )
+        execution_resources = selected_resources_from_submission(
+            submission_spec, resource_request
         )
     except StructureValidationError as exc:
         return structure_error_response(
@@ -1346,6 +1528,7 @@ def prepare_remote(
     workflow_spec_json: str | None = Form(None),
     workflow: str | None = Form(None),
     method: str | None = Form(None),
+    planned_resources: str | None = Form(None),
 ):
     preparation_started = time.perf_counter()
     # Accepted for legacy clients only; the signed server identity is authoritative.
@@ -1355,7 +1538,8 @@ def prepare_remote(
     # The selection as requested, before automatic treatments: what a failed
     # request redisplays, so it never looks like a resolved calculation.
     requested_workflow_spec = workflow_spec
-    execution_resources = default_execution_resources()
+    resource_request = ResourceRequest()
+    execution_resources = SelectedResources(request=resource_request)
     method_considerations = None
     try:
         identity = authoritative_submission_identity(
@@ -1375,12 +1559,13 @@ def prepare_remote(
             calculation_spec_from_workflow_spec(workflow_spec)
             or default_calculation_spec()
         )
-        execution_resources = execution_resources_from_form(
+        resource_request = resource_request_from_form(
             cpus=cpus,
             memory_gb=memory_gb,
             walltime=walltime,
             queue=queue,
         )
+        execution_resources = SelectedResources(request=resource_request)
         structure_obj = parse_structure(structure, fmt)
         workflow_spec, default_treatment_resolution = resolve_workflow_for_structure(
             structure_obj,
@@ -1401,10 +1586,14 @@ def prepare_remote(
             structure_text=structure,
             fmt=fmt,
             workflow_spec=workflow_spec,
-            execution_resources=execution_resources,
+            execution_resources=resource_request,
             timestamp=identity["run_timestamp"],
             submission_attempt_id=identity["attempt_id"],
             default_treatment_resolution=default_treatment_resolution,
+            planned_resources=optional_form_value(planned_resources),
+        )
+        execution_resources = selected_resources_from_submission(
+            submission_spec, resource_request
         )
     except StructureValidationError as exc:
         return structure_error_response(
@@ -1472,6 +1661,7 @@ def submit_workflow(
     workflow_spec_json: str | None = Form(None),
     workflow: str | None = Form(None),
     method: str | None = Form(None),
+    planned_resources: str | None = Form(None),
 ):
     # Accepted for legacy clients only; the signed server identity is authoritative.
     del created_at
@@ -1480,7 +1670,8 @@ def submit_workflow(
     # The selection as requested, before automatic treatments: what a failed
     # request redisplays, so it never looks like a resolved calculation.
     requested_workflow_spec = workflow_spec
-    execution_resources = default_execution_resources()
+    resource_request = ResourceRequest()
+    execution_resources = SelectedResources(request=resource_request)
     method_considerations = None
     try:
         identity = authoritative_submission_identity(
@@ -1500,12 +1691,13 @@ def submit_workflow(
             calculation_spec_from_workflow_spec(workflow_spec)
             or default_calculation_spec()
         )
-        execution_resources = execution_resources_from_form(
+        resource_request = resource_request_from_form(
             cpus=cpus,
             memory_gb=memory_gb,
             walltime=walltime,
             queue=queue,
         )
+        execution_resources = SelectedResources(request=resource_request)
         structure_obj = parse_structure(structure, fmt)
         workflow_spec, default_treatment_resolution = resolve_workflow_for_structure(
             structure_obj,
@@ -1526,10 +1718,14 @@ def submit_workflow(
             structure_text=structure,
             fmt=fmt,
             workflow_spec=workflow_spec,
-            execution_resources=execution_resources,
+            execution_resources=resource_request,
             timestamp=identity["run_timestamp"],
             submission_attempt_id=identity["attempt_id"],
             default_treatment_resolution=default_treatment_resolution,
+            planned_resources=optional_form_value(planned_resources),
+        )
+        execution_resources = selected_resources_from_submission(
+            submission_spec, resource_request
         )
     except StructureValidationError as exc:
         return structure_error_response(
@@ -1619,7 +1815,8 @@ def refresh_monitoring(
     del created_at
     calculation_spec = default_calculation_spec()
     workflow_spec = default_workflow_spec()
-    execution_resources = default_execution_resources()
+    resource_request = ResourceRequest()
+    execution_resources = SelectedResources(request=resource_request)
     monitor_state = {}
     summary = None
     calculation_summary = None
@@ -1639,12 +1836,13 @@ def refresh_monitoring(
             calculation_spec_from_workflow_spec(workflow_spec)
             or default_calculation_spec()
         )
-        execution_resources = execution_resources_from_form(
+        resource_request = resource_request_from_form(
             cpus=cpus,
             memory_gb=memory_gb,
             walltime=walltime,
             queue=queue,
         )
+        execution_resources = SelectedResources(request=resource_request)
         summary = monitor_state.get("summary")
         calculation_summary = monitor_state.get("calculation")
         generated_inputs = monitor_state.get("generated_inputs")
@@ -1712,6 +1910,13 @@ def refresh_monitoring(
         if submission_spec is not None
         else None
     )
+    if submission_spec is not None:
+        try:
+            execution_resources = selected_resources_from_submission(
+                submission_spec, resource_request
+            )
+        except (CalculationValidationError, KeyError, TypeError, ValueError):
+            pass
     monitor_state_override = None
     if (
         submission_spec is None

@@ -75,6 +75,10 @@ DEFAULT_LOGS_DIR = f"{DEFAULT_REMOTE_WORKSPACE_ROOT}/logs"
 
 DEFAULT_PARTITION = "leeburton-pool"
 DEFAULT_ACCOUNT = "power-leeburton-users_v2"
+# Standard QOS for every BMD Compute submission under DEFAULT_ACCOUNT
+# (confirmed by the POWER administrators; walltimes up to 100 days). Requested
+# walltimes stay realistic: the automatic estimator decides them.
+DEFAULT_QOS = "owner100d"
 
 DEFAULT_RESOURCES = {
     "nodes": 1,

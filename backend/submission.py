@@ -32,6 +32,7 @@ from backend.calculations.resources import validate_queue
 from backend.config import (
     DEFAULT_ACCOUNT,
     DEFAULT_PARTITION,
+    DEFAULT_QOS,
     DEFAULT_POTCAR_FUNCTIONAL,
     DEFAULT_REMOTE_PYTHON,
     DEFAULT_RESOURCES,
@@ -79,7 +80,7 @@ RELATIVE_FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,95}$")
 SLURM_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SAFE_REMOTE_PATH_PATTERN = re.compile(r"^/[A-Za-z0-9._/+\-]+$")
 SAFE_MODULE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/+\-]{0,127}$")
-WALLTIME_PATTERN = re.compile(r"^[0-9]{1,3}:[0-9]{2}:[0-9]{2}$")
+WALLTIME_PATTERN = re.compile(r"^[0-9]{1,4}:[0-5][0-9]:[0-5][0-9]$")
 _EPHEMERAL_SUBMISSION_IDENTITY_SECRET = secrets.token_bytes(32)
 
 def sanitize_label(label: str) -> str:
@@ -344,6 +345,8 @@ def _validate_submission_script_fields(submission_spec: dict) -> None:
     _require_pattern("partition", cluster.get("partition"), SLURM_IDENTIFIER_PATTERN)
     _require_pattern("account", cluster.get("account"), SLURM_IDENTIFIER_PATTERN)
     _require_pattern("walltime", resources.get("walltime"), WALLTIME_PATTERN)
+    if cluster.get("qos") is not None:
+        _require_pattern("QOS", cluster.get("qos"), SLURM_IDENTIFIER_PATTERN)
     if submission.get("attempt_comment"):
         _require_pattern(
             "submission comment",
@@ -699,10 +702,12 @@ def build_sbatch_script(submission_spec: dict) -> str:
     export_block = "\n".join(exports)
     attempt_comment = (submission_spec.get("submission") or {}).get("attempt_comment")
     comment_line = f"#SBATCH --comment={attempt_comment}\n" if attempt_comment else ""
+    qos_line = f"#SBATCH --qos={cluster['qos']}\n" if cluster.get("qos") else ""
 
     header = (
         f"#SBATCH -p {cluster['partition']}\n"
         f"#SBATCH --account={cluster['account']}\n"
+        f"{qos_line}"
         f"#SBATCH --job-name={run_name}\n"
         f"{comment_line}"
         f"#SBATCH --time={resources['walltime']}\n"
@@ -797,6 +802,7 @@ def build_standalone_slurm_example(submission_spec: dict) -> dict:
         "",
         f"#SBATCH -p {cluster.get('partition')}",
         f"#SBATCH --account={cluster.get('account')}",
+        *([f"#SBATCH --qos={cluster.get('qos')}"] if cluster.get("qos") else []),
         f"#SBATCH -J {submission_spec.get('label')}",
         f"#SBATCH --time={resources.get('walltime')}",
         f"#SBATCH --nodes={int(resources.get('nodes'))}",
@@ -852,6 +858,7 @@ def build_submission_summary(submission_spec: dict) -> dict:
         "resources": {
             "partition": (submission_spec.get("cluster") or {}).get("partition"),
             "account": (submission_spec.get("cluster") or {}).get("account"),
+            "qos": (submission_spec.get("cluster") or {}).get("qos"),
             "walltime": (submission_spec.get("resources") or {}).get("walltime"),
             "nodes": (submission_spec.get("resources") or {}).get("nodes"),
             "tasks": (submission_spec.get("resources") or {}).get("ntasks"),
@@ -1023,6 +1030,16 @@ def remote_preparation_file_groups(submission_spec: dict) -> list[dict]:
     ]
 
 
+def _qos_argument(qos) -> str:
+    return f"--qos={shlex.quote(str(qos))} " if qos else ""
+
+
+def qos_for_account(account: str | None) -> str | None:
+    """The standard QOS, which is authorised only for the BMD Compute account."""
+
+    return DEFAULT_QOS if account == DEFAULT_ACCOUNT else None
+
+
 def build_submission_command(submission_spec: dict, *, dry_run: bool = False) -> str:
     paths = submission_spec["paths"]
     resources = submission_spec["resources"]
@@ -1055,6 +1072,7 @@ def build_submission_command(submission_spec: dict, *, dry_run: bool = False) ->
     sbatch_line = (
         f"sbatch -p {shlex.quote(str(cluster['partition']))} "
         f"-A {shlex.quote(str(cluster['account']))} "
+        f"{_qos_argument(cluster.get('qos'))}"
         f"-N {int(resources['nodes'])} "
         f"-n {int(resources['ntasks'])} "
         f"--mem={int(resources['mem_gb'])}G "
@@ -1444,6 +1462,7 @@ def create_submission_spec(
             "port": NOTEBOOK_DEFAULTS["port"],
             "partition": resolved_partition,
             "account": resolved_account,
+            "qos": qos_for_account(resolved_account),
         },
         "resources": {
             "nodes": resolved_nodes,
