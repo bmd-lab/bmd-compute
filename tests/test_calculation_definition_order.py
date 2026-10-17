@@ -1,7 +1,8 @@
 """Presentation order of the calculation page.
 
 Required order: structure input and Structure Summary; Desired Output / Custom
-workflow selection; Execution Resources; the Build Calculation button; Method
+workflow selection; the Build Calculation button, with the Hardware Specification
+shown above it only for a built calculation; Method
 Considerations (only for a successfully built calculation); Calculation
 Summary; Generated Inputs; Prepare / Submit / Monitor / Results. Moving the
 panels must not change any form field, identifier or request contract.
@@ -100,10 +101,13 @@ def test_analyzed_structure_without_a_build_shows_no_method_considerations():
             "<h2>Structure Summary</h2>",
             "<h2>Calculation Definition</h2>",
             'id="desired-output-select"',
-            "<h3>Execution Resources</h3>",
             "data-build-calculation-button",
         ],
     )
+    # Hardware is a result of the Build: no controls or recommendations before it.
+    assert "<h3>Hardware Specification</h3>" not in html
+    assert '<select name="cpus"' not in html
+    assert "data-resource-recommendation" not in html
 
 
 def test_built_page_follows_the_required_section_order():
@@ -117,7 +121,7 @@ def test_built_page_follows_the_required_section_order():
             "<h2>Calculation Definition</h2>",
             'id="desired-output-select"',
             'id="workflow-stage-list"',
-            "<h3>Execution Resources</h3>",
+            "<h3>Hardware Specification</h3>",
             'name="cpus"',
             "data-build-calculation-button",
             "<h3>Method Considerations</h3>",
@@ -224,7 +228,7 @@ def test_si_page_has_no_considerations_panel_after_build():
     assert "<h3>Method Considerations</h3>" not in html
     assert_in_order(
         html,
-        ["<h3>Scientific Specification</h3>", "<h3>Execution Resources</h3>",
+        ["<h3>Scientific Specification</h3>", "<h3>Hardware Specification</h3>",
          "data-build-calculation-button", "<h2>Calculation Summary</h2>"],
     )
 

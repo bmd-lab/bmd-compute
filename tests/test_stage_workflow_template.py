@@ -34,13 +34,13 @@ structure_details_block = source[
 assert "details-wide" in structure_details_block
 assert "{% if not collapse_structure_input %}open{% endif %}" in structure_details_block
 calculation_definition = source[source.index('<form\n                id="calculation-review-form"'):]
-# Workflow choice, Execution Resources, the Build button, and only then the
+# Workflow choice, Hardware Specification (built calculations only), the Build button, and only then the
 # Method Considerations of the built calculation (outside the form).
-assert calculation_definition.index("<h3>Scientific Specification</h3>") < calculation_definition.index("<h3>Execution Resources</h3>")
-assert calculation_definition.index("<h3>Execution Resources</h3>") < calculation_definition.index("data-build-calculation-button")
+assert calculation_definition.index("<h3>Scientific Specification</h3>") < calculation_definition.index("<h3>Hardware Specification</h3>")
+assert calculation_definition.index("<h3>Hardware Specification</h3>") < calculation_definition.index("data-build-calculation-button")
 assert calculation_definition.index("</form>") < calculation_definition.index("<h3>Method Considerations</h3>")
 resource_panel = calculation_definition[
-    calculation_definition.index("<h3>Execution Resources</h3>"):
+    calculation_definition.index("<h3>Hardware Specification</h3>"):
     calculation_definition.index("data-build-calculation-button")
 ]
 assert resource_panel.index('name="cpus"') < resource_panel.index('name="memory_gb"')
@@ -53,7 +53,7 @@ memory_select_block = resource_panel[memory_select_index:memory_select_end]
 assert memory_label_index < memory_select_index
 assert "selected_resources.allowed_memory_gb" in memory_select_block
 assert 'value="{{ memory_gb }}"' in memory_select_block
-assert "{% if selected_resources.requested.memory_gb == memory_gb %}selected{% endif %}" in memory_select_block
+assert "{% if selected_resources.requested.memory_gb|string == memory_gb|string %}selected{% endif %}" in memory_select_block
 assert "{{ memory_gb }} GB" in memory_select_block
 # Automatic is an explicit choice for every automatically selected resource.
 assert '<option value="" {% if selected_resources.requested.memory_gb == "" %}selected{% endif %}>Automatic' in memory_select_block

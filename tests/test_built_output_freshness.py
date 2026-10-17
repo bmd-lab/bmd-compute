@@ -1,10 +1,14 @@
 """All outputs of a Build share one freshness state.
 
-Method Considerations, Calculation Summary, Generated Inputs, Execution
-Summary and the submission controls (``data-built-output``) describe the build
-that rendered the page. The browser hides them together while any field the
-build form submits differs from that build, and shows them again only when
-the whole build-defining form state matches it.
+The Hardware Specification, Method Considerations, Calculation Summary,
+Generated Inputs, Execution Summary and the submission controls
+(``data-built-output``) describe the build that rendered the page. The browser
+hides them together while any scientific field the build form submits differs
+from that build, and shows them again only when the whole build-defining form
+state matches it. A change to the hardware fields alone keeps the Hardware
+Specification visible for editing and hides every other build output,
+including Prepare and Submit, until Update Calculation re-plans the
+calculation.
 
 The behavioural tests run the page's own script in jsdom when Node.js and
 jsdom are available (``node`` on PATH, jsdom resolvable, e.g. via
@@ -122,6 +126,7 @@ def test_script_compares_the_whole_form_state_and_listens_to_every_field():
     assert update.rstrip().endswith("syncBuiltOutputs();")
     assert (
         "updateHiddenWorkflow();\n    builtFormState = formState();\n"
+        "    builtScientificState = formState(true);\n"
         '    form.addEventListener("change", syncBuiltOutputs);\n'
         '    form.addEventListener("input", syncBuiltOutputs);\n});'
     ) in script
@@ -154,6 +159,8 @@ const snapshot = (label) => ({
   label,
   hidden: Array.from(d.querySelectorAll("[data-built-output]")).map((e) => e.hidden),
   notice: d.querySelector("[data-built-output-notice]") ? !d.querySelector("[data-built-output-notice]").hidden : null,
+  hardwareNotice: d.querySelector("[data-hardware-changed-notice]") ? !d.querySelector("[data-hardware-changed-notice]").hidden : null,
+  hardware: d.querySelector("[data-hardware-specification]") ? !d.querySelector("[data-hardware-specification]").hidden : null,
   submitDisabled: d.querySelector("[data-submit-calculation-button]") ? d.querySelector("[data-submit-calculation-button]").disabled : null,
   form: Array.from(new w.FormData(d.getElementById("calculation-review-form")).keys()),
 });
@@ -194,6 +201,17 @@ def all_hidden(state):
     return state["hidden"] and all(state["hidden"]) and state["notice"] is True
 
 
+def hardware_only_changed(state):
+    """Hardware edited: only the Hardware Specification stays visible."""
+
+    return (
+        state["hardware"] is True
+        and state["hidden"].count(False) == 1
+        and state["notice"] is False
+        and state["hardwareNotice"] is True
+    )
+
+
 @requires_jsdom
 def test_switching_desired_outputs_after_build_hides_all_outputs_until_restored(tmp_path):
     states = run_page(
@@ -206,7 +224,8 @@ def test_switching_desired_outputs_after_build_hides_all_outputs_until_restored(
         tmp_path,
     )
 
-    assert len(states[0]["hidden"]) == 5  # considerations + four sections
+    assert len(states[0]["hidden"]) == 6  # hardware, considerations + four sections
+    assert states[1]["hardware"] is False and states[1]["hardwareNotice"] is False
     assert all_shown(states[0])
     assert all_hidden(states[1]) and all_hidden(states[2])
     assert all_shown(states[3])
@@ -217,20 +236,24 @@ def test_restoring_the_label_alone_is_not_enough_when_other_inputs_differ(tmp_pa
     states = run_page(
         render(built_response()),
         [
-            {"op": "select", "name": "cpus", "value": "48"},
+            {"op": "select", "name": "cpus", "value": "48", "label": "CPU override"},
             {"op": "desired", "value": "energy_only"},
             {"op": "desired", "value": "electronic_dos", "label": "label restored, cpus still 48"},
-            {"op": "select", "name": "cpus", "value": "24", "label": "fully restored"},
+            {"op": "select", "name": "cpus", "value": "", "label": "CPUs back to Automatic"},
             {"op": "input", "name": "walltime", "value": "12:00:00"},
-            {"op": "input", "name": "walltime", "value": "72:00:00", "label": "walltime restored"},
+            {"op": "input", "name": "walltime", "value": "", "label": "walltime back to Automatic"},
         ],
         tmp_path,
     )
 
-    assert all_hidden(states[1])
-    assert all_hidden(states[3])
-    assert all_shown(states[4])
-    assert all_hidden(states[5])
+    # A hardware override keeps the Hardware Specification editable and hides
+    # Prepare/Submit (and every other build output) until it is re-planned.
+    assert hardware_only_changed(states[1])
+    # A scientific change hides the hardware recommendation too.
+    assert all_hidden(states[2]) and states[2]["hardwareNotice"] is False
+    assert hardware_only_changed(states[3])
+    assert all_shown(states[4]) and states[4]["hardwareNotice"] is False
+    assert hardware_only_changed(states[5])
     assert all_shown(states[6])
 
 

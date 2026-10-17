@@ -1290,7 +1290,7 @@ button.resource-reset {
                         <h2>Calculation Definition</h2>
                     </div>
                     <div class="summary-line">
-                        Choose the workflow and execution resources, then build the calculation.
+                        Choose the workflow, then build the calculation. BMD Compute then selects its hardware.
                     </div>
                 </div>
                 <div class="stage-status">
@@ -1410,8 +1410,13 @@ button.resource-reset {
                             </div>
                         </div>
 
-                        <div class="configuration-panel" data-resource-panel>
-                            <h3>Execution Resources</h3>
+                        {# Hardware is a result of the Build: shown only for a successful
+                           build, with the resolved values and per-resource overrides.
+                           Before a build (or after a failed one) the requested values
+                           are carried unchanged and nothing is displayed. #}
+                        {% if calculation and selected_resources.resolved %}
+                        <div class="configuration-panel" data-resource-panel data-built-output data-hardware-specification>
+                            <h3>Hardware Specification</h3>
                             <div class="resource-grid">
                                 <div>
                                     <label>CPUs <span class="resource-source {{ selected_resources.sources.cpus }}" data-resource-source="cpus">{{ "Automatic" if selected_resources.sources.cpus == "automatic" else "Manual" }}</span></label>
@@ -1420,7 +1425,7 @@ button.resource-reset {
                                         {% for cpu_count in selected_resources.allowed_cpu_counts %}
                                         <option
                                             value="{{ cpu_count }}"
-                                            {% if selected_resources.requested.cpus == cpu_count %}selected{% endif %}>
+                                            {% if selected_resources.requested.cpus|string == cpu_count|string %}selected{% endif %}>
                                             {{ cpu_count }}
                                         </option>
                                         {% endfor %}
@@ -1433,7 +1438,7 @@ button.resource-reset {
                                         {% for memory_gb in selected_resources.allowed_memory_gb %}
                                         <option
                                             value="{{ memory_gb }}"
-                                            {% if selected_resources.requested.memory_gb == memory_gb %}selected{% endif %}>
+                                            {% if selected_resources.requested.memory_gb|string == memory_gb|string %}selected{% endif %}>
                                             {{ memory_gb }} GB
                                         </option>
                                         {% endfor %}
@@ -1505,12 +1510,18 @@ button.resource-reset {
                                 </details>
                                 {% endif %}
                             </div>
-                            {% else %}
-                            <div class="resource-recommendation" data-resource-recommendation>
-                                <p>Resources left on Automatic are chosen by BMD Compute when you build the calculation: 24 CPUs, 128 GB and a walltime estimated from the structure and workflow. Any value can be set manually.</p>
-                            </div>
                             {% endif %}
+                            <p class="built-output-notice" data-hardware-changed-notice role="status" hidden>
+                                Hardware changed. Update Calculation to approve these resources before preparing or submitting.
+                            </p>
                         </div>
+                        {% else %}
+                        <input type="hidden" name="cpus" value="{{ selected_resources.requested.cpus }}">
+                        <input type="hidden" name="memory_gb" value="{{ selected_resources.requested.memory_gb }}">
+                        <input type="hidden" name="walltime" value="{{ selected_resources.requested.walltime }}">
+                        <input type="hidden" name="queue" value="{{ selected_resources.queue }}">
+                        <input type="hidden" name="nodes" value="{{ selected_resources.nodes }}">
+                        {% endif %}
                     </div>
 
                     <div class="calculation-actions">
@@ -2910,13 +2921,23 @@ document.addEventListener("DOMContentLoaded", function () {
     // build only. They are shown while the whole build-defining form state
     // (every field this form submits) still equals the state the page was
     // built from, and hidden together as soon as it differs.
+    // A change to the hardware fields alone keeps the Hardware Specification
+    // visible (so it can be edited) but hides every other build output,
+    // including Prepare and Submit, until Update Calculation re-plans it. Any
+    // change to the scientific fields hides the hardware recommendation too.
     var builtOutputs = document.querySelectorAll("[data-built-output]");
     var builtOutputNotice = document.querySelector("[data-built-output-notice]");
+    var hardwareChangedNotice = document.querySelector("[data-hardware-changed-notice]");
+    var hardwareFields = ["cpus", "memory_gb", "walltime", "queue", "nodes"];
     var builtFormState = null;
+    var builtScientificState = null;
 
-    function formState() {
+    function formState(excludeHardware) {
         var entries = [];
         new FormData(form).forEach(function (value, key) {
+            if (excludeHardware && hardwareFields.indexOf(key) !== -1) {
+                return;
+            }
             entries.push([key, String(value)]);
         });
         return JSON.stringify(entries);
@@ -2927,11 +2948,16 @@ document.addEventListener("DOMContentLoaded", function () {
             return;
         }
         var changed = formState() !== builtFormState;
+        var scientificChanged = formState(true) !== builtScientificState;
+        var hardwareOnly = changed && !scientificChanged;
         Array.prototype.forEach.call(builtOutputs, function (element) {
-            element.hidden = changed;
+            element.hidden = changed && !(hardwareOnly && element.hasAttribute("data-hardware-specification"));
         });
         if (builtOutputNotice) {
-            builtOutputNotice.hidden = !changed;
+            builtOutputNotice.hidden = !scientificChanged;
+        }
+        if (hardwareChangedNotice) {
+            hardwareChangedNotice.hidden = !hardwareOnly;
         }
     }
 
@@ -3198,6 +3224,7 @@ document.addEventListener("DOMContentLoaded", function () {
     form.addEventListener("submit", updateHiddenWorkflow);
     updateHiddenWorkflow();
     builtFormState = formState();
+    builtScientificState = formState(true);
     form.addEventListener("change", syncBuiltOutputs);
     form.addEventListener("input", syncBuiltOutputs);
 });
