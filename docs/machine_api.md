@@ -21,7 +21,7 @@ unchanged and do not use this authentication. The API is not listed in
 
 `POST /api/v1/plans` calls `main.plan_calculation_request`, which runs the same
 module-level functions, in the same order, as the browser's Build route:
-`workflow_spec_from_form`, `execution_resources_from_form`, `parse_structure`,
+`workflow_spec_from_form`, `resource_request_from_form`, `parse_structure`,
 `resolve_workflow_for_structure` (automatic treatments),
 `method_considerations_for_workflow_state`, and
 `build_submission_state_from_structure` (new-calculation admission, generated
@@ -110,9 +110,11 @@ returned.
   `validate_user_workflow_spec`, which rejects free-form INCAR/KPOINTS and
   BMD-generated options.
 - `resources` (optional; each key optional): `cpus`, `memory_gb`, `walltime`
-  (`HH:MM:SS`), `queue`. Values are validated by the existing
-  `ExecutionResources` allowlists. Nodes, account and partition are not
-  accepted.
+  (`H:MM:SS`, up to four hour digits), `queue`. An omitted key means
+  Automatic: BMD Compute resolves it with the same estimator as the browser
+  (`docs/automatic_resources.md`). Explicit values are kept exactly and
+  validated by the existing `ExecutionResources` allowlists. Nodes, account,
+  partition and QOS are not accepted.
 - Every object is closed: unknown fields (for example `cluster`, `paths`, SSH
   settings, scripts, commands) are rejected with 422 `invalid_request`, naming
   the field but never echoing its value.
@@ -135,13 +137,17 @@ returned.
   (`applied`, `omitted_unsupported_combination`, `not_applicable`, `advisory`), trigger
   elements and classes, applicable stage types, policy source, and the stages
   it was applied to;
-- `resources`: nodes, CPUs, memory, walltime, partition and account;
+- `resources`: nodes, CPUs, memory, walltime, partition, account and QOS;
+- `resource_selection`: automatic-resource policy, the source (`automatic` or
+  `manual`) of each resource, and the walltime recommendation with its basis
+  (`empirical_estimate` or `conservative_fallback`), explanation and per-stage
+  classes and allowances;
 - `scientific_inputs`: POTCAR functional and, per stage, INCAR settings and
   their text hash, a KPOINTS summary and text hash, POTCAR symbols and a POSCAR
   summary and hash;
 - `software`: loaded modules and the parity-critical package versions;
 - `policies`: admission, automatic DFT+U, method considerations, Custodian,
-  runtime parity and plan-digest versions;
+  runtime parity, automatic resources and plan-digest versions;
 - `capability_schema_version`.
 
 The response never contains submission identity tokens, attempt IDs or
@@ -169,10 +175,12 @@ properties); the resolved workflow (stages, theories, modifiers, options); the
 automatic-treatment record; per stage the VASP executable, INCAR settings,
 KPOINTS text, the SHA-256 of the generated POSCAR text and POTCAR symbols; the
 POTCAR functional and symbol record;
-nodes, MPI tasks, memory, walltime, partition and account; loaded modules and
-the VASP command template; parity-critical package versions; and the versions
-of the admission, automatic DFT+U, method-consideration, Custodian,
-runtime-parity and plan-digest policies.
+nodes, MPI tasks, memory, walltime, partition, account and QOS; the resource
+selection (sources, recommended walltime, basis and stage classes); loaded
+modules and the VASP command template; parity-critical package versions; and
+the versions of the admission, automatic DFT+U, method-consideration,
+Custodian, runtime-parity, automatic-resource and plan-digest policies
+(plan-digest version 2).
 
 Not covered: run timestamp, run name, label and creation time; attempt ID,
 fingerprint and identity token; remote paths, POTCAR repository location,
@@ -253,11 +261,25 @@ binding the attempt ID to:
 
 Every later PUT for that ID must come from the same principal (otherwise 403
 `attempt_forbidden`) with the identical request (otherwise 409
-`attempt_request_mismatch`). It rebuilds the submission specification with the
+`attempt_request_mismatch`).
+
+An exact retry of an attempt whose submission has already started (ledger
+submission status reserved, uncertain or submitted, and `expected_plan_digest`
+equal to the recorded plan digest) is recognised from the ledger alone, before
+the current planning policy is applied, and is reconciled from the remote
+attempt state: SUBMITTED returns the recorded job and SUBMITTING answers
+`submission_uncertain`, without replanning or resubmitting. This keeps retries
+idempotent for attempts registered under an earlier plan-digest version or
+resource policy.
+
+Any other PUT for an existing attempt, including a reserved attempt whose
+remote state is still PREPARED, rebuilds the submission specification with the
 recorded run timestamp and attempt ID, so the run directory, run name and
 fingerprint are unchanged, and it must still resolve to the recorded plan
 digest (409 `plan_changed`) and fingerprint (409
-`attempt_fingerprint_mismatch`).
+`attempt_fingerprint_mismatch`). An attempt registered under an earlier policy
+that still needs preparation or submission therefore fails closed and needs a
+new attempt ID.
 
 The remote attempt state on POWER stays the authority. The PUT then:
 
@@ -288,8 +310,8 @@ happened.
 
 ### Resource policy
 
-Machine plans and attempts use the same `ExecutionResources` validation as
-the browser. CPU and memory values must be among the browser's offered
+Machine plans and attempts use the same automatic resource selection and the
+same `ExecutionResources` validation as the browser. CPU and memory values must be among the browser's offered
 choices, walltime uses the same accepted value, and partition and account are
 always Compute's server-owned values. The API does not add separate CPU,
 memory, walltime, active-job, submission-rate or attempt-rate ceilings; POWER

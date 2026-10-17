@@ -14,8 +14,9 @@ Request (``schema_version`` 1)::
       "workflow": {"desired_output": "<Desired Output id>"}
                | {"custom": {"stages": [{"stage_type": ..., "theory": ...,
                                          "modifiers": [...], "options": {...}}]}},
-      "resources": {"cpus": int, "memory_gb": int, "walltime": "HH:MM:SS",
-                    "queue": str}            # optional; every key optional
+      "resources": {"cpus": int, "memory_gb": int, "walltime": "H:MM:SS",
+                    "queue": str}            # optional; every key optional;
+                                             # an omitted key means Automatic
     }
 """
 
@@ -34,7 +35,7 @@ MAX_IDENTIFIER_CHARS = 64
 STRUCTURE_FORMATS = ("poscar", "cif")
 
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
-_WALLTIME = re.compile(r"^[0-9]{1,3}:[0-5][0-9]:[0-5][0-9]$")
+_WALLTIME = re.compile(r"^[0-9]{1,4}:[0-5][0-9]:[0-5][0-9]$")
 _QUEUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 TOP_LEVEL_KEYS = frozenset({"structure", "workflow", "resources"})

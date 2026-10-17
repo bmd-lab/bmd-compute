@@ -965,6 +965,7 @@ class ParamikoRemoteRunner(RemoteRunner):
         command = (
             f"sbatch -p {shlex.quote(request.partition)} "
             f"-A {shlex.quote(request.account)} "
+            f"{('--qos=' + shlex.quote(request.qos) + ' ') if request.qos else ''}"
             f"-N {int(request.nodes)} "
             f"-n {int(request.ntasks)} "
             f"--mem={int(request.mem_gb)}G "
@@ -1854,6 +1855,7 @@ def _batch_request_from_submission_spec(submission_spec: dict) -> BatchSubmissio
         mem_gb=int(resources["mem_gb"]),
         walltime=str(resources["walltime"]),
         parsable=True,
+        qos=str(cluster["qos"]) if cluster.get("qos") else None,
     )
 
 

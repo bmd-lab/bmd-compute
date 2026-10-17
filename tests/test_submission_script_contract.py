@@ -191,6 +191,7 @@ def test_submission_summary_is_structured_from_submission_and_provenance():
     assert summary["resources"] == {
         "partition": submission_spec["cluster"]["partition"],
         "account": submission_spec["cluster"]["account"],
+        "qos": submission_spec["cluster"].get("qos"),
         "walltime": submission_spec["resources"]["walltime"],
         "nodes": submission_spec["resources"]["nodes"],
         "tasks": submission_spec["resources"]["ntasks"],

@@ -353,6 +353,7 @@ def test_execution_uses_the_browser_resource_policy(client, tokens, power):
         "walltime": browser.walltime,
         "partition": browser.partition,
         "account": browser.account,
+        "qos": "owner100d",
     }
 
 
@@ -842,3 +843,128 @@ def test_execution_and_planning_resolve_the_same_plan(client, tokens, power):
     response = put(client, tokens["runner"], new_id(), body)
     assert response.status_code == 200
     assert response.json()["plan_digest"] == body["expected_plan_digest"]
+
+
+# ------------------------------------- attempts registered under an earlier plan digest
+
+
+HISTORICAL_DIGEST = "sha256:" + "1" * 64
+HISTORICAL_FINGERPRINT = "a" * 64
+
+
+def _as_historical_attempt(power, state_dir, attempt_id):
+    """Rewrite an attempt as if registered before plan-digest v2 (and the
+    automatic-resource policy): its bound digest and fingerprint no longer
+    match what the current service rebuilds from the same request."""
+
+    record = ledger_record(state_dir, attempt_id)
+    record["plan_digest"] = HISTORICAL_DIGEST
+    record["attempt_fingerprint"] = HISTORICAL_FINGERPRINT
+    write_ledger_record(state_dir, record)
+    state_path = record["remote"]["attempt_state"]
+    remote = json.loads(power.files[state_path])
+    remote["fingerprint"] = HISTORICAL_FINGERPRINT
+    power.files[state_path] = json.dumps(remote)
+    return record
+
+
+def test_exact_retry_of_a_historical_submitted_attempt_returns_the_existing_job(client, tokens, power, state_dir):
+    attempt_id = new_id()
+    body = attempt_body(client, tokens, submit=True)
+    first = put(client, tokens["runner"], attempt_id, body)
+    assert first.json()["state"] == "submitted"
+    job_id = first.json()["submission"]["job_id"]
+    _as_historical_attempt(power, state_dir, attempt_id)
+    historical = {**body, "expected_plan_digest": HISTORICAL_DIGEST}
+
+    for submit in (True, True, False):
+        retry = put(client, tokens["runner"], attempt_id, {**historical, "submit": submit})
+        assert retry.status_code == 200, retry.text
+        assert retry.json()["state"] == "submitted"
+        assert retry.json()["submission"]["job_id"] == job_id
+        assert retry.json()["plan_digest"] == HISTORICAL_DIGEST
+    assert power.sbatch_calls == 1
+    assert len(power.run_dirs()) == 1
+    assert get(client, tokens["runner"], attempt_id).json()["submission"]["job_id"] == job_id
+
+
+def test_exact_retry_of_a_historical_uncertain_attempt_is_never_resubmitted(client, tokens, power, state_dir):
+    attempt_id = new_id()
+    body = attempt_body(client, tokens, submit=True)
+    power.submit_exception = TimeoutError("connection lost after sbatch")
+    assert put(client, tokens["runner"], attempt_id, body).json()["error"]["code"] == "submission_uncertain"
+    power.submit_exception = None
+    _as_historical_attempt(power, state_dir, attempt_id)
+    historical = {**body, "expected_plan_digest": HISTORICAL_DIGEST}
+
+    for _ in range(2):
+        retry = put(client, tokens["runner"], attempt_id, historical)
+        assert retry.status_code == 409
+        assert retry.json()["error"]["code"] == "submission_uncertain"
+        assert retry.json()["error"]["attempt"]["state"] == "submission_uncertain"
+    assert power.sbatch_calls == 1
+    assert ledger_record(state_dir, attempt_id)["submission"]["status"] == "uncertain"
+    assert get(client, tokens["runner"], attempt_id).json()["state"] == "submission_uncertain"
+
+
+def test_historical_attempt_id_cannot_be_reused_for_a_changed_request(client, tokens, power, state_dir):
+    attempt_id = new_id()
+    body = attempt_body(client, tokens, submit=True)
+    assert put(client, tokens["runner"], attempt_id, body).json()["state"] == "submitted"
+    _as_historical_attempt(power, state_dir, attempt_id)
+    connections = power.connections
+
+    changed = attempt_body(client, tokens, submit=True, resources={"cpus": 48})
+    for expected in (HISTORICAL_DIGEST, changed["expected_plan_digest"]):
+        response = put(client, tokens["runner"], attempt_id, {**changed, "expected_plan_digest": expected})
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "attempt_request_mismatch"
+    assert power.connections == connections
+    # The same request re-planned under the current policy is a different plan.
+    replanned = put(client, tokens["runner"], attempt_id, body)
+    assert replanned.status_code == 409
+    assert replanned.json()["error"]["code"] == "plan_changed"
+    assert power.sbatch_calls == 1
+
+
+@pytest.mark.parametrize("submission_started", [False, True])
+def test_historical_attempt_that_still_needs_submission_fails_closed(
+    client, tokens, power, state_dir, submission_started
+):
+    attempt_id = new_id()
+    body = attempt_body(client, tokens, submit=False)
+    assert put(client, tokens["runner"], attempt_id, body).json()["state"] == "prepared"
+    record = _as_historical_attempt(power, state_dir, attempt_id)
+    if submission_started:
+        # Reserved for submission, but sbatch never ran (the remote is still PREPARED).
+        record["submission"]["status"] = "reserved"
+        write_ledger_record(state_dir, record)
+    snapshot = dict(power.files)
+
+    for submit in (False, True):
+        response = put(client, tokens["runner"], attempt_id, {**body, "expected_plan_digest": HISTORICAL_DIGEST, "submit": submit})
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "plan_changed"
+    assert power.files == snapshot
+    assert power.sbatch_calls == 0
+
+
+def test_new_attempts_use_the_current_digest_and_resource_policy(client, tokens, power, state_dir):
+    from compute_api.plan_digest import PLAN_DIGEST_VERSION
+
+    attempt_id = new_id()
+    body = attempt_body(client, tokens, submit=True)
+    response = put(client, tokens["runner"], attempt_id, body)
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "submitted"
+    assert response.json()["plan_digest"] == body["expected_plan_digest"]
+    assert ledger_record(state_dir, attempt_id)["plan_digest"] == body["expected_plan_digest"]
+    assert PLAN_DIGEST_VERSION == 2
+    assert response.json()["resources"]["qos"] == "owner100d"
+    submission = json.loads(next(text for path, text in power.files.items() if path.endswith("/submission.json")))
+    assert submission["flow_spec"]["resource_selection"]["fields"]["walltime"]["source"] == "automatic"
+    # A stale (earlier-policy) digest is not accepted for a new attempt.
+    stale = put(client, tokens["runner"], new_id(), {**body, "expected_plan_digest": HISTORICAL_DIGEST})
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "plan_digest_mismatch"
+    assert power.sbatch_calls == 1

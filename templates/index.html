@@ -693,6 +693,78 @@ ul {
     grid-column: 1 / -1;
 }
 
+.resource-source {
+    border: 1px solid var(--bmd-border-strong);
+    border-radius: 999px;
+    color: var(--bmd-text-muted);
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    margin-left: 6px;
+    padding: 3px 7px;
+    vertical-align: 1px;
+}
+
+.resource-source.automatic {
+    background: var(--bmd-accent-soft);
+    color: var(--bmd-accent);
+}
+
+.walltime-field {
+    display: flex;
+    gap: 8px;
+}
+
+.walltime-field input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+button.resource-reset {
+    background: var(--bmd-surface);
+    border: 1px solid var(--bmd-border-strong);
+    color: var(--bmd-text-soft);
+    font-size: 12px;
+    margin-top: 0;
+    padding: 4px 8px;
+    white-space: nowrap;
+    width: auto;
+}
+
+.resource-recommendation {
+    background: var(--bmd-surface-secondary);
+    border: 1px solid var(--bmd-border);
+    border-radius: 8px;
+    color: var(--bmd-text-soft);
+    font-size: 14px;
+    line-height: 1.5;
+    margin-top: 14px;
+    padding: 12px 16px;
+}
+
+.resource-recommendation.fallback {
+    background: var(--bmd-advisory-soft);
+    border-color: var(--bmd-advisory);
+}
+
+.resource-recommendation p {
+    margin: 0;
+}
+
+.resource-recommendation p + p {
+    margin-top: 6px;
+}
+
+.resource-recommendation details {
+    margin-top: 8px;
+}
+
+.resource-recommendation summary {
+    cursor: pointer;
+    font-weight: 700;
+}
+
 .calculation-actions {
     align-self: flex-start;
 }
@@ -1338,36 +1410,51 @@ ul {
                             </div>
                         </div>
 
-                        <div class="configuration-panel">
+                        <div class="configuration-panel" data-resource-panel>
                             <h3>Execution Resources</h3>
                             <div class="resource-grid">
                                 <div>
-                                    <label>CPUs</label>
-                                    <select name="cpus">
+                                    <label>CPUs <span class="resource-source {{ selected_resources.sources.cpus }}" data-resource-source="cpus">{{ "Automatic" if selected_resources.sources.cpus == "automatic" else "Manual" }}</span></label>
+                                    <select name="cpus" data-resource-field="cpus">
+                                        <option value="" {% if selected_resources.requested.cpus == "" %}selected{% endif %}>Automatic ({{ selected_resources.automatic_cpus }})</option>
                                         {% for cpu_count in selected_resources.allowed_cpu_counts %}
                                         <option
                                             value="{{ cpu_count }}"
-                                            {% if selected_resources.cpus == cpu_count %}selected{% endif %}>
+                                            {% if selected_resources.requested.cpus == cpu_count %}selected{% endif %}>
                                             {{ cpu_count }}
                                         </option>
                                         {% endfor %}
                                     </select>
                                 </div>
                                 <div>
-                                    <label>Memory (GB)</label>
-                                    <select name="memory_gb">
+                                    <label>Memory (GB) <span class="resource-source {{ selected_resources.sources.memory_gb }}" data-resource-source="memory_gb">{{ "Automatic" if selected_resources.sources.memory_gb == "automatic" else "Manual" }}</span></label>
+                                    <select name="memory_gb" data-resource-field="memory_gb">
+                                        <option value="" {% if selected_resources.requested.memory_gb == "" %}selected{% endif %}>Automatic ({{ selected_resources.automatic_memory_gb }} GB)</option>
                                         {% for memory_gb in selected_resources.allowed_memory_gb %}
                                         <option
                                             value="{{ memory_gb }}"
-                                            {% if selected_resources.memory_gb == memory_gb %}selected{% endif %}>
+                                            {% if selected_resources.requested.memory_gb == memory_gb %}selected{% endif %}>
                                             {{ memory_gb }} GB
                                         </option>
                                         {% endfor %}
                                     </select>
                                 </div>
                                 <div>
-                                    <label>Walltime</label>
-                                    <input name="walltime" value="{{ selected_resources.walltime }}">
+                                    <label>Walltime <span class="resource-source {{ selected_resources.sources.walltime }}" data-resource-source="walltime">{{ "Automatic" if selected_resources.sources.walltime == "automatic" else "Manual" }}</span></label>
+                                    <div class="walltime-field">
+                                        <input
+                                            name="walltime"
+                                            value="{{ selected_resources.requested.walltime }}"
+                                            placeholder="{% if selected_resources.recommended_walltime %}Automatic: {{ selected_resources.recommended_walltime }}{% else %}Automatic{% endif %}"
+                                            autocomplete="off"
+                                            data-resource-field="walltime">
+                                        <button
+                                            type="button"
+                                            id="walltime-automatic"
+                                            class="resource-reset"
+                                            data-resource-reset="walltime"
+                                            {% if selected_resources.requested.walltime == "" %}hidden{% endif %}>Automatic</button>
+                                    </div>
                                 </div>
                                 <div>
                                     <label>Queue</label>
@@ -1386,6 +1473,43 @@ ul {
                                     name="nodes"
                                     value="{{ selected_resources.nodes }}">
                             </div>
+                            {% if selected_resources.resolved %}
+                            <div class="resource-recommendation {% if selected_resources.walltime_basis == 'conservative_fallback' %}fallback{% endif %}" data-resource-recommendation>
+                                <p><strong>Resources that will be submitted:</strong>
+                                    {{ selected_resources.cpus }} CPUs ·
+                                    {{ selected_resources.memory_gb }} GB ·
+                                    walltime {{ selected_resources.walltime }}{% if selected_resources.qos %} ·
+                                    QOS {{ selected_resources.qos }}{% endif %}</p>
+                                {% if selected_resources.sources.walltime == "automatic" %}
+                                <p>{{ selected_resources.walltime_explanation }}</p>
+                                {% elif selected_resources.recommended_walltime %}
+                                <p>Walltime set manually. The automatic recommendation would be {{ selected_resources.recommended_walltime }} ({{ "empirical estimate" if selected_resources.walltime_basis == "empirical_estimate" else "conservative fallback" }}).</p>
+                                {% endif %}
+                                {% if selected_resources.sources.cpus == "automatic" or selected_resources.sources.memory_gb == "automatic" %}
+                                <p>Automatic CPUs and memory use BMD Compute's conservative defaults (24 CPUs, 128 GB).</p>
+                                {% endif %}
+                                {% if selected_resources.walltime_stages %}
+                                <details>
+                                    <summary>Walltime basis by stage</summary>
+                                    <table class="compact-table">
+                                        {% for stage in selected_resources.walltime_stages %}
+                                        <tr>
+                                            <td>Stage {{ stage.index }}</td>
+                                            <td>{{ stage.theory | upper }} {{ stage.stage_type | replace("_", " ") }}</td>
+                                            <td>{% if stage.class == "calibrated" %}empirical estimate{% elif stage.class == "extrapolated" %}outside calibrated range{% else %}conservative fallback{% endif %}</td>
+                                            <td>{{ stage.hours }} h</td>
+                                            <td>{{ stage.reason or "" }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                    </table>
+                                </details>
+                                {% endif %}
+                            </div>
+                            {% else %}
+                            <div class="resource-recommendation" data-resource-recommendation>
+                                <p>Resources left on Automatic are chosen by BMD Compute when you build the calculation: 24 CPUs, 128 GB and a walltime estimated from the structure and workflow. Any value can be set manually.</p>
+                            </div>
+                            {% endif %}
                         </div>
                     </div>
 
@@ -1591,6 +1715,9 @@ ul {
                                     <tr><td>Job name</td><td class="mono">{{ generated_inputs.submission_summary.job_name }}</td></tr>
                                     <tr><td>Partition</td><td>{{ generated_inputs.submission_summary.resources.partition }}</td></tr>
                                     <tr><td>Account</td><td>{{ generated_inputs.submission_summary.resources.account }}</td></tr>
+                                    {% if generated_inputs.submission_summary.resources.qos %}
+                                    <tr><td>QOS</td><td>{{ generated_inputs.submission_summary.resources.qos }}</td></tr>
+                                    {% endif %}
                                     <tr><td>Walltime</td><td>{{ generated_inputs.submission_summary.resources.walltime }}</td></tr>
                                     <tr><td>Nodes</td><td>{{ generated_inputs.submission_summary.resources.nodes }}</td></tr>
                                     <tr><td>Tasks / CPUs</td><td>{{ generated_inputs.submission_summary.resources.tasks }}</td></tr>
@@ -1923,10 +2050,11 @@ ul {
                     {% for modifier in selected_calculation.modifiers %}
                     <input type="hidden" name="modifiers" value="{{ modifier }}">
                     {% endfor %}
-                    <input type="hidden" name="cpus" value="{{ selected_resources.cpus }}">
-                    <input type="hidden" name="memory_gb" value="{{ selected_resources.memory_gb }}">
-                    <input type="hidden" name="walltime" value="{{ selected_resources.walltime }}">
+                    <input type="hidden" name="cpus" value="{{ selected_resources.requested.cpus }}">
+                    <input type="hidden" name="memory_gb" value="{{ selected_resources.requested.memory_gb }}">
+                    <input type="hidden" name="walltime" value="{{ selected_resources.requested.walltime }}">
                     <input type="hidden" name="queue" value="{{ selected_resources.queue }}">
+                    <input type="hidden" name="planned_resources" value="{{ selected_resources.planned_token }}">
                     <input type="hidden" name="submission_attempt_id" value="{{ submission_spec.submission.attempt_id }}">
                     <input type="hidden" name="submission_identity_token" value="{{ submission_spec.submission.identity_token }}">
                     <button
@@ -1946,10 +2074,11 @@ ul {
                     {% for modifier in selected_calculation.modifiers %}
                     <input type="hidden" name="modifiers" value="{{ modifier }}">
                     {% endfor %}
-                    <input type="hidden" name="cpus" value="{{ selected_resources.cpus }}">
-                    <input type="hidden" name="memory_gb" value="{{ selected_resources.memory_gb }}">
-                    <input type="hidden" name="walltime" value="{{ selected_resources.walltime }}">
+                    <input type="hidden" name="cpus" value="{{ selected_resources.requested.cpus }}">
+                    <input type="hidden" name="memory_gb" value="{{ selected_resources.requested.memory_gb }}">
+                    <input type="hidden" name="walltime" value="{{ selected_resources.requested.walltime }}">
                     <input type="hidden" name="queue" value="{{ selected_resources.queue }}">
+                    <input type="hidden" name="planned_resources" value="{{ selected_resources.planned_token }}">
                     <input type="hidden" name="submission_attempt_id" value="{{ submission_spec.submission.attempt_id }}">
                     <input type="hidden" name="submission_identity_token" value="{{ submission_spec.submission.identity_token }}">
                     <input
@@ -2153,9 +2282,9 @@ ul {
                 {% for modifier in selected_calculation.modifiers %}
                 <input type="hidden" name="modifiers" value="{{ modifier }}">
                 {% endfor %}
-                <input type="hidden" name="cpus" value="{{ selected_resources.cpus }}">
-                <input type="hidden" name="memory_gb" value="{{ selected_resources.memory_gb }}">
-                <input type="hidden" name="walltime" value="{{ selected_resources.walltime }}">
+                <input type="hidden" name="cpus" value="{{ selected_resources.requested.cpus }}">
+                <input type="hidden" name="memory_gb" value="{{ selected_resources.requested.memory_gb }}">
+                <input type="hidden" name="walltime" value="{{ selected_resources.requested.walltime }}">
                 <input type="hidden" name="queue" value="{{ selected_resources.queue }}">
                 <input type="hidden" name="job_id" value="{{ submission_result.job_id if submission_result else monitoring_result.job_id }}">
                 <input type="hidden" name="submitted_at" value="{{ submission_result.job_record.submitted_at if submission_result else '' }}">
@@ -3071,6 +3200,44 @@ document.addEventListener("DOMContentLoaded", function () {
     builtFormState = formState();
     form.addEventListener("change", syncBuiltOutputs);
     form.addEventListener("input", syncBuiltOutputs);
+});
+</script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    // Automatic / manual state of each execution resource (display only; the
+    // backend resolves every Automatic value).
+    var resourcePanel = document.querySelector("[data-resource-panel]");
+    if (!resourcePanel) {
+        return;
+    }
+    function syncResourceSource(field) {
+        var badge = resourcePanel.querySelector('[data-resource-source="' + field.dataset.resourceField + '"]');
+        var automatic = field.value.trim() === "";
+        if (badge) {
+            badge.textContent = automatic ? "Automatic" : "Manual";
+            badge.classList.toggle("automatic", automatic);
+            badge.classList.toggle("manual", !automatic);
+        }
+        var reset = resourcePanel.querySelector('[data-resource-reset="' + field.dataset.resourceField + '"]');
+        if (reset) {
+            reset.hidden = automatic;
+        }
+    }
+    resourcePanel.querySelectorAll("[data-resource-field]").forEach(function (field) {
+        field.addEventListener("change", function () { syncResourceSource(field); });
+        field.addEventListener("input", function () { syncResourceSource(field); });
+    });
+    resourcePanel.querySelectorAll("[data-resource-reset]").forEach(function (button) {
+        button.addEventListener("click", function () {
+            var field = resourcePanel.querySelector('[data-resource-field="' + button.dataset.resourceReset + '"]');
+            if (field) {
+                field.value = "";
+                field.dispatchEvent(new Event("input", { bubbles: true }));
+                field.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+        });
+    });
 });
 </script>
 
