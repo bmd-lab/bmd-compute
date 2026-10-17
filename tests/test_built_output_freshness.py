@@ -167,8 +167,10 @@ const snapshot = (label) => ({
 const out = [snapshot("initial")];
 for (const step of steps) {
   if (step.op === "desired") { const s = d.getElementById("desired-output-select"); s.value = step.value; fire(s, "change"); }
-  if (step.op === "select") { const s = d.querySelector(`#calculation-review-form select[name="${step.name}"]`); s.value = step.value; fire(s, "change"); }
-  if (step.op === "input") { const s = d.querySelector(`#calculation-review-form input[name="${step.name}"]`); s.value = step.value; fire(s, "input"); }
+  if (step.op === "select") { const s = d.querySelector(`#calculation-review-form [data-resource-control="${step.name}"]`); s.value = step.value; fire(s, "change"); }
+  if (step.op === "input") { const s = d.querySelector(`#calculation-review-form [data-resource-control="${step.name}"]`); s.value = step.value; fire(s, "input"); }
+  if (step.op === "custom") { d.querySelector("[data-hardware-custom-toggle]").click(); }
+  if (step.op === "restore") { d.querySelector("[data-resource-restore]").click(); }
   if (step.op === "theory") { const s = card(step.stage).querySelector("[data-stage-theory]"); s.value = step.value; fire(s, "change"); }
   if (step.op === "modifier") { const s = card(step.stage).querySelector(`[data-stage-modifier][value="${step.value}"]`); s.checked = step.checked; fire(s, "change"); }
   if (step.op === "add") { d.getElementById("add-workflow-stage").click(); }
@@ -239,9 +241,9 @@ def test_restoring_the_label_alone_is_not_enough_when_other_inputs_differ(tmp_pa
             {"op": "select", "name": "cpus", "value": "48", "label": "CPU override"},
             {"op": "desired", "value": "energy_only"},
             {"op": "desired", "value": "electronic_dos", "label": "label restored, cpus still 48"},
-            {"op": "select", "name": "cpus", "value": "", "label": "CPUs back to Automatic"},
+            {"op": "restore", "label": "Restore Recommended"},
             {"op": "input", "name": "walltime", "value": "12:00:00"},
-            {"op": "input", "name": "walltime", "value": "", "label": "walltime back to Automatic"},
+            {"op": "restore", "label": "Restore Recommended again"},
         ],
         tmp_path,
     )

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import warnings
+from pathlib import Path
 
 import pytest
 from starlette.requests import Request
@@ -99,24 +100,77 @@ def test_no_hardware_controls_or_recommendations_before_build():
     assert '<input type="hidden" name="queue" value="leeburton-pool">' in form
 
 
-def test_successful_build_shows_the_resolved_hardware_specification():
+def _panel(form: str) -> str:
+    start = form.index("data-resource-panel")
+    return form[start:form.index("data-hardware-changed-notice", start)]
+
+
+def _summary_values(panel: str) -> dict:
+    return dict(re.findall(r'data-hardware-value="([a-z_]+)"[^>]*>([^<]*)<', panel))
+
+
+def _selected(panel: str, control: str) -> str:
+    start = panel.index(f'data-resource-control="{control}"')
+    block = panel[start:panel.index("</select>", start)]
+    return re.findall(r'<option value="([^"]*)" selected>', block)
+
+
+def _submitted(panel: str) -> dict:
+    return dict(re.findall(r'<input type="hidden" name="([a-z_]+)" value="([^"]*)">', panel))
+
+
+def test_successful_build_shows_three_recommended_values_and_nothing_else():
     response = _build()
     html = _html(response)
     form = _calculation_form(html)
+    panel = _panel(form)
 
     assert response.status_code == 200
-    assert "<h3>Hardware Specification</h3>" in form
     assert form.index("<h3>Scientific Specification</h3>") < form.index("<h3>Hardware Specification</h3>")
     assert form.index("<h3>Hardware Specification</h3>") < form.index("data-build-calculation-button")
-    assert "data-hardware-specification" in form and "data-built-output" in form
-    assert '<option value="" selected>Automatic (24)</option>' in form
-    assert '<option value="" selected>Automatic (128 GB)</option>' in form
-    assert 'placeholder="Automatic: 01:00:00"' in form
-    assert re.search(
-        r"Resources that will be submitted:</strong>\s*24 CPUs ·\s*128 GB ·\s*walltime 01:00:00 ·\s*QOS owner100d", form
-    )
-    # The hardware recommendation is a build output: hidden if the scientific selection changes.
+    assert "data-hardware-specification" in panel and "data-built-output" in panel
+    assert "Recommended resources for this calculation" in panel
+    assert _summary_values(panel) == {"cpus": "24", "memory_gb": "128 GB", "walltime": "1 hour"}
+    # One Custom button in the header; the controls are collapsed.
+    assert panel.count("data-hardware-custom-toggle") == 1
+    assert 'aria-expanded="false"' in panel
+    assert "data-hardware-custom hidden" in panel
+    # No estimator machinery or infrastructure details in this section.
+    for absent in ("Automatic", "Manual", "Queue", "queue</", "QOS", "owner100d", "Account", "power-leeburton",
+                   "Partition", "leeburton-pool<", "empirical", "fallback", "Stage 1", "safety", "policy", "Resources that will be submitted"):
+        assert absent not in panel, absent
+    # The scientific-change notice is shared; the hardware notice starts hidden.
     assert 'data-hardware-changed-notice role="status" hidden' in form
+
+
+@pytest.mark.parametrize(
+    ("workflow", "walltime"),
+    [("relaxed_structure", "1 hour 45 min"), ("phonons", "4 hours 30 min"), ("electronic_band_structure", "3 days 1 hour")],
+)
+def test_summary_shows_the_resolved_values_for_each_workflow(workflow, walltime):
+    context = _build(workflow=workflow).context
+    panel = _panel(_calculation_form(_html(_build(workflow=workflow))))
+    values = _summary_values(panel)
+    assert values["walltime"] == walltime
+    assert values["cpus"] == str(context["submission_spec"]["resources"]["ntasks"])
+    assert values["memory_gb"] == f'{context["submission_spec"]["resources"]["mem_gb"]} GB'
+
+
+def test_custom_controls_start_from_the_approved_values_and_submit_automatic():
+    panel = _panel(_calculation_form(_html(_build())))
+    # Only CPU, memory and walltime are editable.
+    assert sorted(re.findall(r'data-resource-control="([a-z_]+)"', panel)) == ["cpus", "memory_gb", "walltime"]
+    assert '<select name="queue"' not in panel and "<select" not in panel.replace('<select id="hardware-cpus"', "").replace(
+        '<select id="hardware-memory"', ""
+    )
+    assert _selected(panel, "cpus") == ["24"]
+    assert _selected(panel, "memory_gb") == ["128"]
+    assert re.search(r'id="hardware-walltime"\s+value="01:00:00"', panel)
+    # No Automatic option: the controls show values, and what is submitted stays Automatic
+    # until the user changes a control.
+    assert 'value=""' not in panel.split("data-hardware-custom", 1)[1].split('<input type="hidden"', 1)[0]
+    assert _submitted(panel) == {"cpus": "", "memory_gb": "", "walltime": "", "queue": "leeburton-pool", "nodes": "1"}
+    assert "Restore Recommended" in panel
 
 
 def test_failed_build_reveals_no_hardware_recommendation_and_keeps_the_request():
@@ -210,19 +264,29 @@ def test_prepare_and_submit_forms_carry_the_approved_plan_only():
         assert 'name="planned_resources" value="cpus=48:manual;memory_gb=128:automatic;walltime=01:00:00:automatic;' in form
 
 
-def test_manual_override_stays_selected_after_update_calculation():
-    # Form values arrive as text; the rendered controls must still select the
-    # manual values, so a later Update Calculation does not silently revert them.
-    response = _build(cpus="48", memory_gb="256")
-    form = _calculation_form(_html(response))
-    cpus = form[form.index('<select name="cpus"'):]
-    cpus = cpus[:cpus.index("</select>")]
-    memory = form[form.index('<select name="memory_gb"'):]
-    memory = memory[:memory.index("</select>")]
-    assert re.search(r'value="48"\s*selected>', cpus)
-    assert '<option value="" selected>' not in cpus
-    assert re.search(r'value="256"\s*selected>', memory)
-    assert '<option value="" selected>' not in memory
+def test_reopening_custom_shows_the_manual_values_after_update_calculation():
+    # Form values arrive as text; the controls must still show the manual values
+    # and the submitted fields must keep them, so a later Update never reverts them.
+    panel = _panel(_calculation_form(_html(_build(cpus="48", memory_gb="256", walltime="10:00:00"))))
+    assert "Custom resources for this calculation" in panel
+    assert _summary_values(panel) == {"cpus": "48", "memory_gb": "256 GB", "walltime": "10 hours"}
+    assert _selected(panel, "cpus") == ["48"]
+    assert _selected(panel, "memory_gb") == ["256"]
+    assert re.search(r'id="hardware-walltime"\s+value="10:00:00"', panel)
+    assert _submitted(panel)["cpus"] == "48"
+    assert _submitted(panel)["memory_gb"] == "256"
+    assert _submitted(panel)["walltime"] == "10:00:00"
+    # Restore Recommended returns the controls to the estimator's values.
+    assert 'data-recommended="24"' in panel and 'data-recommended="128"' in panel
+    assert 'data-recommended="01:00:00"' in panel
+
+
+def test_manual_values_equal_to_the_recommendation_stay_manual():
+    automatic = _build(queue="leeburton-pool").context
+    manual = _build(cpus="24", queue="leeburton-pool").context
+    assert manual["submission_spec"]["resources"] == automatic["submission_spec"]["resources"]
+    assert manual["selected_resources"]["sources"]["cpus"] == "manual"
+    assert _digest(manual) != _digest(automatic)
 
 
 def test_browser_update_back_to_automatic_restores_the_original_plan_digest():
@@ -234,3 +298,42 @@ def test_browser_update_back_to_automatic_restores_the_original_plan_digest():
     assert _digest(manual) != _digest(first)
     assert back["selected_resources"]["planned_token"] == first["selected_resources"]["planned_token"]
     assert _digest(back) == _digest(first)
+
+
+def _walltime_text(value: str) -> str:
+    from jinja2 import Environment
+
+    source = Path("templates/index.html").read_text(encoding="utf-8")
+    start = source.index("{% macro walltime_text")
+    end = source.index("{%- endmacro %}") + len("{%- endmacro %}")
+    return Environment().from_string(source[start:end] + "{{ walltime_text(v) }}").render(v=value)
+
+
+@pytest.mark.parametrize(
+    ("value", "text"),
+    [
+        ("01:00:00", "1 hour"),
+        ("01:45:00", "1 hour 45 min"),
+        ("10:00:00", "10 hours"),
+        ("73:00:00", "3 days 1 hour"),
+        ("00:05:00", "5 min"),
+        ("01:30:45", "1 hour 30 min 45 sec"),
+        ("00:00:30", "30 sec"),
+        ("00:01:01", "1 min 1 sec"),
+        ("72:00:30", "72 hours 30 sec"),
+    ],
+)
+def test_walltime_summary_keeps_nonzero_seconds(value, text):
+    assert _walltime_text(value) == text
+
+
+@pytest.mark.parametrize(("walltime", "text"), [("01:30:45", "1 hour 30 min 45 sec"), ("00:00:30", "30 sec")])
+def test_manual_walltime_with_seconds_is_shown_exactly(walltime, text):
+    response = _build(walltime=walltime)
+    panel = _panel(_calculation_form(_html(response)))
+    assert response.context["submission_spec"]["resources"]["walltime"] == walltime
+    assert _summary_values(panel)["walltime"] == text
+    # The exact H:MM:SS value is kept in the tooltip, the Custom input and the submitted field.
+    assert f'data-hardware-value="walltime" title="{walltime}">' in panel
+    assert re.search(rf'id="hardware-walltime"\s+value="{walltime}"', panel)
+    assert _submitted(panel)["walltime"] == walltime

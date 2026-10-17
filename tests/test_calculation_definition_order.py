@@ -278,11 +278,10 @@ def test_keyboard_order_follows_the_visual_order():
     order = parsed.focus_order
     assert order[0] == "workflow"  # Desired Output select
     assert order.index("workflow") < order.index("stage-type") < order.index("add-workflow-stage")
-    assert order.index("add-workflow-stage") < order.index("cpus")
-    # The walltime "Automatic" button follows its field; the built
-    # recommendation adds its stage-basis disclosure before Build.
-    assert order[order.index("cpus"):] == [
-        "cpus", "memory_gb", "walltime", "walltime-automatic", "queue", "summary", "build",
+    assert order.index("add-workflow-stage") < order.index("hardware-custom-toggle")
+    # Custom, then (when opened) CPU, memory and walltime and Restore Recommended, then Build.
+    assert order[order.index("hardware-custom-toggle"):] == [
+        "hardware-custom-toggle", "hardware-cpus", "hardware-memory", "hardware-walltime", "hardware-restore", "build",
     ]
 
 
@@ -295,9 +294,9 @@ def test_custom_workflow_keyboard_order_reaches_advanced_options_before_resource
     order = controls(calculation_form(response.template.render(response.context))).focus_order
 
     assert order.index("workflow") < order.index("stage-theory") < order.index("modifier:soc")
-    assert order.index("modifier:soc") < order.index("add-workflow-stage") < order.index("cpus")
-    assert order[-7:] == [
-        "cpus", "memory_gb", "walltime", "walltime-automatic", "queue", "summary", "build",
+    assert order.index("modifier:soc") < order.index("add-workflow-stage") < order.index("hardware-custom-toggle")
+    assert order[-6:] == [
+        "hardware-custom-toggle", "hardware-cpus", "hardware-memory", "hardware-walltime", "hardware-restore", "build",
     ]
 
 

@@ -835,14 +835,10 @@ resource_panel = calculation_definition[
     calculation_definition.index("<h3>Hardware Specification</h3>"):
     calculation_definition.index("data-build-calculation-button")
 ]
-queue_label_index = resource_panel.index("<label>Queue</label>")
-queue_select_index = resource_panel.index('<select name="queue">')
-queue_select_end = resource_panel.index("</select>", queue_select_index)
-queue_select_block = resource_panel[queue_select_index:queue_select_end]
-assert queue_label_index < queue_select_index
-assert "selected_resources.allowed_queues" in queue_select_block
-assert 'value="{{ queue }}"' in queue_select_block
-assert "{% if selected_resources.queue == queue %}selected{% endif %}" in queue_select_block
+# The queue is infrastructure: carried unchanged, not shown or editable.
+assert '<select name="queue">' not in resource_panel
+assert "<label>Queue</label>" not in resource_panel
+assert '<input type="hidden" name="queue" value="{{ selected_resources.queue }}">' in resource_panel
 assert 'name="account"' not in template_source
 assert "<label>Account</label>" not in template_source
 assert "submission_spec.cluster.account" not in template_source
