@@ -693,76 +693,58 @@ ul {
     grid-column: 1 / -1;
 }
 
-.resource-source {
-    border: 1px solid var(--bmd-border-strong);
-    border-radius: 999px;
-    color: var(--bmd-text-muted);
-    display: inline-block;
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1;
-    margin-left: 6px;
-    padding: 3px 7px;
-    vertical-align: 1px;
-}
-
-.resource-source.automatic {
-    background: var(--bmd-accent-soft);
-    color: var(--bmd-accent);
-}
-
-.walltime-field {
+.hardware-header {
+    align-items: flex-start;
     display: flex;
-    gap: 8px;
+    gap: 16px;
+    justify-content: space-between;
 }
 
-.walltime-field input {
-    flex: 1 1 auto;
-    min-width: 0;
+.hardware-header h3 {
+    margin-bottom: 4px;
 }
 
-button.resource-reset {
-    background: var(--bmd-surface);
-    border: 1px solid var(--bmd-border-strong);
-    color: var(--bmd-text-soft);
-    font-size: 12px;
-    margin-top: 0;
-    padding: 4px 8px;
-    white-space: nowrap;
-    width: auto;
-}
-
-.resource-recommendation {
-    background: var(--bmd-surface-secondary);
-    border: 1px solid var(--bmd-border);
-    border-radius: 8px;
+.hardware-subtitle {
     color: var(--bmd-text-soft);
     font-size: 14px;
     line-height: 1.5;
-    margin-top: 14px;
-    padding: 12px 16px;
-}
-
-.resource-recommendation.fallback {
-    background: var(--bmd-advisory-soft);
-    border-color: var(--bmd-advisory);
-}
-
-.resource-recommendation p {
     margin: 0;
 }
 
-.resource-recommendation p + p {
-    margin-top: 6px;
+button.hardware-custom-toggle {
+    flex: 0 0 auto;
+    padding: 8px 14px;
 }
 
-.resource-recommendation details {
-    margin-top: 8px;
+button.hardware-custom-toggle[aria-expanded="true"] {
+    background: var(--bmd-accent-soft);
+    border-color: var(--bmd-accent);
+    color: var(--bmd-accent);
 }
 
-.resource-recommendation summary {
-    cursor: pointer;
-    font-weight: 700;
+.metric-strip.hardware-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin-bottom: 0;
+}
+
+.hardware-custom {
+    margin-top: 16px;
+}
+
+.hardware-custom-grid {
+    grid-template-columns: repeat(3, minmax(140px, 1fr));
+}
+
+.hardware-custom-actions {
+    margin-top: 14px;
+}
+
+.hardware-custom-actions button.secondary-button {
+    padding: 8px 14px;
+}
+
+.hardware-panel .built-output-notice {
+    margin-top: 14px;
 }
 
 .calculation-actions {
@@ -1019,6 +1001,15 @@ button.resource-reset {
         display: block;
     }
 
+    .metric-strip.hardware-summary .metric {
+        border-left: none;
+        border-top: 1px solid var(--bmd-border);
+    }
+
+    .metric-strip.hardware-summary .metric:first-child {
+        border-top: none;
+    }
+
     .stage {
         padding: 22px 18px 24px;
     }
@@ -1029,6 +1020,8 @@ button.resource-reset {
     }
 
     .metric-strip,
+    .metric-strip.hardware-summary,
+    .hardware-custom-grid,
     .details-grid,
     .form-grid,
     .configuration-grid,
@@ -1298,6 +1291,24 @@ button.resource-reset {
                 </div>
             </div>
 
+            {% macro walltime_text(value) -%}
+            {%- set parts = (value or "0:00:00").split(":") -%}
+            {%- set hours = parts[0]|int -%}
+            {%- set minutes = parts[1]|int if parts|length > 1 else 0 -%}
+            {%- set seconds = parts[2]|int if parts|length > 2 else 0 -%}
+            {%- if hours >= 48 and minutes == 0 and seconds == 0 -%}
+            {%- set days = hours // 24 -%}{%- set rest = hours % 24 -%}
+            {{ days }} days{% if rest %} {{ rest }} {{ "hour" if rest == 1 else "hours" }}{% endif %}
+            {%- elif hours == 0 and minutes == 0 and seconds == 0 -%}
+            0 min
+            {%- else -%}
+            {%- set words = [] -%}
+            {%- if hours %}{% set _ = words.append(hours ~ (" hour" if hours == 1 else " hours")) %}{% endif -%}
+            {%- if minutes %}{% set _ = words.append(minutes ~ " min") %}{% endif -%}
+            {%- if seconds %}{% set _ = words.append(seconds ~ " sec") %}{% endif -%}
+            {{ words|join(" ") }}
+            {%- endif -%}
+            {%- endmacro %}
             <form
                 id="calculation-review-form"
                 action="/build-calculation"
@@ -1411,108 +1422,85 @@ button.resource-reset {
                         </div>
 
                         {# Hardware is a result of the Build: shown only for a successful
-                           build, with the resolved values and per-resource overrides.
-                           Before a build (or after a failed one) the requested values
-                           are carried unchanged and nothing is displayed. #}
+                           build. The summary shows the approved resources; Custom reveals
+                           CPU, memory and walltime controls that start from those values.
+                           The submitted fields are the hidden inputs below: empty means
+                           Automatic, and only a control the user changes (or Restore
+                           Recommended) changes them. Before a build, or after a failed
+                           one, the requested values are carried and nothing is shown. #}
                         {% if calculation and selected_resources.resolved %}
-                        <div class="configuration-panel" data-resource-panel data-built-output data-hardware-specification>
-                            <h3>Hardware Specification</h3>
-                            <div class="resource-grid">
+                        {% set hardware_custom = selected_resources.sources.cpus != "automatic" or selected_resources.sources.memory_gb != "automatic" or selected_resources.sources.walltime != "automatic" %}
+                        <div class="configuration-panel hardware-panel" data-resource-panel data-built-output data-hardware-specification>
+                            <div class="hardware-header">
                                 <div>
-                                    <label>CPUs <span class="resource-source {{ selected_resources.sources.cpus }}" data-resource-source="cpus">{{ "Automatic" if selected_resources.sources.cpus == "automatic" else "Manual" }}</span></label>
-                                    <select name="cpus" data-resource-field="cpus">
-                                        <option value="" {% if selected_resources.requested.cpus == "" %}selected{% endif %}>Automatic ({{ selected_resources.automatic_cpus }})</option>
-                                        {% for cpu_count in selected_resources.allowed_cpu_counts %}
-                                        <option
-                                            value="{{ cpu_count }}"
-                                            {% if selected_resources.requested.cpus|string == cpu_count|string %}selected{% endif %}>
-                                            {{ cpu_count }}
-                                        </option>
-                                        {% endfor %}
-                                    </select>
+                                    <h3>Hardware Specification</h3>
+                                    <p class="hardware-subtitle">{% if hardware_custom %}Custom resources for this calculation{% else %}Recommended resources for this calculation{% endif %}</p>
                                 </div>
-                                <div>
-                                    <label>Memory (GB) <span class="resource-source {{ selected_resources.sources.memory_gb }}" data-resource-source="memory_gb">{{ "Automatic" if selected_resources.sources.memory_gb == "automatic" else "Manual" }}</span></label>
-                                    <select name="memory_gb" data-resource-field="memory_gb">
-                                        <option value="" {% if selected_resources.requested.memory_gb == "" %}selected{% endif %}>Automatic ({{ selected_resources.automatic_memory_gb }} GB)</option>
-                                        {% for memory_gb in selected_resources.allowed_memory_gb %}
-                                        <option
-                                            value="{{ memory_gb }}"
-                                            {% if selected_resources.requested.memory_gb|string == memory_gb|string %}selected{% endif %}>
-                                            {{ memory_gb }} GB
-                                        </option>
-                                        {% endfor %}
-                                    </select>
+                                <button
+                                    type="button"
+                                    id="hardware-custom-toggle"
+                                    class="secondary-button hardware-custom-toggle"
+                                    data-hardware-custom-toggle
+                                    aria-expanded="false"
+                                    aria-controls="hardware-custom">Custom</button>
+                            </div>
+                            <div class="metric-strip hardware-summary" data-hardware-summary>
+                                <div class="metric">
+                                    <div class="metric-label">CPUs</div>
+                                    <div class="metric-value" data-hardware-value="cpus">{{ selected_resources.cpus }}</div>
                                 </div>
-                                <div>
-                                    <label>Walltime <span class="resource-source {{ selected_resources.sources.walltime }}" data-resource-source="walltime">{{ "Automatic" if selected_resources.sources.walltime == "automatic" else "Manual" }}</span></label>
-                                    <div class="walltime-field">
+                                <div class="metric">
+                                    <div class="metric-label">Memory</div>
+                                    <div class="metric-value" data-hardware-value="memory_gb">{{ selected_resources.memory_gb }} GB</div>
+                                </div>
+                                <div class="metric">
+                                    <div class="metric-label">Walltime</div>
+                                    <div class="metric-value" data-hardware-value="walltime" title="{{ selected_resources.walltime }}">{{ walltime_text(selected_resources.walltime) }}</div>
+                                </div>
+                            </div>
+                            <div class="hardware-custom" id="hardware-custom" data-hardware-custom hidden>
+                                <div class="resource-grid hardware-custom-grid">
+                                    <div>
+                                        <label for="hardware-cpus">CPUs</label>
+                                        <select id="hardware-cpus" data-resource-control="cpus" data-recommended="{{ selected_resources.automatic_cpus }}">
+                                            {% for cpu_count in selected_resources.allowed_cpu_counts %}
+                                            <option value="{{ cpu_count }}" {% if selected_resources.cpus|string == cpu_count|string %}selected{% endif %}>{{ cpu_count }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label for="hardware-memory">Memory (GB)</label>
+                                        <select id="hardware-memory" data-resource-control="memory_gb" data-recommended="{{ selected_resources.automatic_memory_gb }}">
+                                            {% for memory_gb in selected_resources.allowed_memory_gb %}
+                                            <option value="{{ memory_gb }}" {% if selected_resources.memory_gb|string == memory_gb|string %}selected{% endif %}>{{ memory_gb }} GB</option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label for="hardware-walltime">Walltime (hours:minutes:seconds)</label>
                                         <input
-                                            name="walltime"
-                                            value="{{ selected_resources.requested.walltime }}"
-                                            placeholder="{% if selected_resources.recommended_walltime %}Automatic: {{ selected_resources.recommended_walltime }}{% else %}Automatic{% endif %}"
+                                            id="hardware-walltime"
+                                            value="{{ selected_resources.walltime }}"
+                                            data-resource-control="walltime"
+                                            data-recommended="{{ selected_resources.recommended_walltime }}"
+                                            pattern="[0-9]{1,4}:[0-5][0-9]:[0-5][0-9]"
+                                            title="Hours:minutes:seconds, for example 12:00:00"
+                                            required
                                             autocomplete="off"
-                                            data-resource-field="walltime">
-                                        <button
-                                            type="button"
-                                            id="walltime-automatic"
-                                            class="resource-reset"
-                                            data-resource-reset="walltime"
-                                            {% if selected_resources.requested.walltime == "" %}hidden{% endif %}>Automatic</button>
+                                            spellcheck="false">
                                     </div>
                                 </div>
-                                <div>
-                                    <label>Queue</label>
-                                    <select name="queue">
-                                        {% for queue in selected_resources.allowed_queues %}
-                                        <option
-                                            value="{{ queue }}"
-                                            {% if selected_resources.queue == queue %}selected{% endif %}>
-                                            {{ queue }}
-                                        </option>
-                                        {% endfor %}
-                                    </select>
+                                <div class="hardware-custom-actions">
+                                    <button type="button" id="hardware-restore" class="secondary-button" data-resource-restore>Restore Recommended</button>
                                 </div>
-                                <input
-                                    type="hidden"
-                                    name="nodes"
-                                    value="{{ selected_resources.nodes }}">
                             </div>
-                            {% if selected_resources.resolved %}
-                            <div class="resource-recommendation {% if selected_resources.walltime_basis == 'conservative_fallback' %}fallback{% endif %}" data-resource-recommendation>
-                                <p><strong>Resources that will be submitted:</strong>
-                                    {{ selected_resources.cpus }} CPUs ·
-                                    {{ selected_resources.memory_gb }} GB ·
-                                    walltime {{ selected_resources.walltime }}{% if selected_resources.qos %} ·
-                                    QOS {{ selected_resources.qos }}{% endif %}</p>
-                                {% if selected_resources.sources.walltime == "automatic" %}
-                                <p>{{ selected_resources.walltime_explanation }}</p>
-                                {% elif selected_resources.recommended_walltime %}
-                                <p>Walltime set manually. The automatic recommendation would be {{ selected_resources.recommended_walltime }} ({{ "empirical estimate" if selected_resources.walltime_basis == "empirical_estimate" else "conservative fallback" }}).</p>
-                                {% endif %}
-                                {% if selected_resources.sources.cpus == "automatic" or selected_resources.sources.memory_gb == "automatic" %}
-                                <p>Automatic CPUs and memory use BMD Compute's conservative defaults (24 CPUs, 128 GB).</p>
-                                {% endif %}
-                                {% if selected_resources.walltime_stages %}
-                                <details>
-                                    <summary>Walltime basis by stage</summary>
-                                    <table class="compact-table">
-                                        {% for stage in selected_resources.walltime_stages %}
-                                        <tr>
-                                            <td>Stage {{ stage.index }}</td>
-                                            <td>{{ stage.theory | upper }} {{ stage.stage_type | replace("_", " ") }}</td>
-                                            <td>{% if stage.class == "calibrated" %}empirical estimate{% elif stage.class == "extrapolated" %}outside calibrated range{% else %}conservative fallback{% endif %}</td>
-                                            <td>{{ stage.hours }} h</td>
-                                            <td>{{ stage.reason or "" }}</td>
-                                        </tr>
-                                        {% endfor %}
-                                    </table>
-                                </details>
-                                {% endif %}
-                            </div>
-                            {% endif %}
+                            <input type="hidden" name="cpus" value="{{ selected_resources.requested.cpus }}">
+                            <input type="hidden" name="memory_gb" value="{{ selected_resources.requested.memory_gb }}">
+                            <input type="hidden" name="walltime" value="{{ selected_resources.requested.walltime }}">
+                            <input type="hidden" name="queue" value="{{ selected_resources.queue }}">
+                            <input type="hidden" name="nodes" value="{{ selected_resources.nodes }}">
                             <p class="built-output-notice" data-hardware-changed-notice role="status" hidden>
-                                Hardware changed. Update Calculation to approve these resources before preparing or submitting.
+                                The hardware specification has changed. Update Calculation to approve it before preparing or submitting.
                             </p>
                         </div>
                         {% else %}
@@ -3232,39 +3220,74 @@ document.addEventListener("DOMContentLoaded", function () {
 
 <script>
 document.addEventListener("DOMContentLoaded", function () {
-    // Automatic / manual state of each execution resource (display only; the
-    // backend resolves every Automatic value).
+    // Hardware Specification: the summary shows the approved resources.
+    // Custom reveals CPU, memory and walltime controls that start from those
+    // values. A control the user changes writes its value into the submitted
+    // hidden field (a manual value); Restore Recommended empties all three
+    // (Automatic). The backend resolves every Automatic value at the next
+    // Update Calculation; the build-freshness script hides Prepare and Submit
+    // until then.
     var resourcePanel = document.querySelector("[data-resource-panel]");
     if (!resourcePanel) {
         return;
     }
-    function syncResourceSource(field) {
-        var badge = resourcePanel.querySelector('[data-resource-source="' + field.dataset.resourceField + '"]');
-        var automatic = field.value.trim() === "";
-        if (badge) {
-            badge.textContent = automatic ? "Automatic" : "Manual";
-            badge.classList.toggle("automatic", automatic);
-            badge.classList.toggle("manual", !automatic);
-        }
-        var reset = resourcePanel.querySelector('[data-resource-reset="' + field.dataset.resourceField + '"]');
-        if (reset) {
-            reset.hidden = automatic;
-        }
+    var form = resourcePanel.closest("form");
+    var toggle = resourcePanel.querySelector("[data-hardware-custom-toggle]");
+    var custom = resourcePanel.querySelector("[data-hardware-custom]");
+    var restore = resourcePanel.querySelector("[data-resource-restore]");
+    var maxWalltimeSeconds = 2400 * 3600;
+
+    function setCustomOpen(open) {
+        custom.hidden = !open;
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
     }
-    resourcePanel.querySelectorAll("[data-resource-field]").forEach(function (field) {
-        field.addEventListener("change", function () { syncResourceSource(field); });
-        field.addEventListener("input", function () { syncResourceSource(field); });
+
+    function submittedField(name) {
+        return resourcePanel.querySelector('input[type="hidden"][name="' + name + '"]');
+    }
+
+    function checkWalltime(input) {
+        var match = /^([0-9]{1,4}):([0-5][0-9]):([0-5][0-9])$/.exec(input.value.trim());
+        var seconds = match ? (+match[1]) * 3600 + (+match[2]) * 60 + (+match[3]) : 0;
+        input.setCustomValidity(
+            match && (seconds <= 0 || seconds > maxWalltimeSeconds)
+                ? "Walltime must be greater than zero and at most 2400:00:00 (100 days)."
+                : ""
+        );
+    }
+
+    toggle.addEventListener("click", function () {
+        setCustomOpen(custom.hidden);
     });
-    resourcePanel.querySelectorAll("[data-resource-reset]").forEach(function (button) {
-        button.addEventListener("click", function () {
-            var field = resourcePanel.querySelector('[data-resource-field="' + button.dataset.resourceReset + '"]');
-            if (field) {
-                field.value = "";
-                field.dispatchEvent(new Event("input", { bubbles: true }));
-                field.dispatchEvent(new Event("change", { bubbles: true }));
+
+    resourcePanel.querySelectorAll("[data-resource-control]").forEach(function (control) {
+        function apply() {
+            if (control.dataset.resourceControl === "walltime") {
+                checkWalltime(control);
             }
-        });
+            submittedField(control.dataset.resourceControl).value = control.value.trim();
+        }
+        control.addEventListener("input", apply);
+        control.addEventListener("change", apply);
     });
+
+    restore.addEventListener("click", function () {
+        resourcePanel.querySelectorAll("[data-resource-control]").forEach(function (control) {
+            control.value = control.dataset.recommended;
+            if (control.dataset.resourceControl === "walltime") {
+                checkWalltime(control);
+            }
+            submittedField(control.dataset.resourceControl).value = "";
+        });
+        submittedField("cpus").dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    if (form) {
+        // An invalid walltime keeps Custom open so the browser can show where.
+        form.addEventListener("invalid", function () {
+            setCustomOpen(true);
+        }, true);
+    }
 });
 </script>
 

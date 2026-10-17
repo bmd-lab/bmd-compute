@@ -331,11 +331,13 @@ def test_browser_rendering_shows_automatic_choices_and_submitted_resources():
             method=None,
         )
     html = response.body.decode()
-    assert '<option value="" selected>Automatic (24)</option>' in html
-    assert '<option value="" selected>Automatic (128 GB)</option>' in html
-    assert 'placeholder="Automatic: 73:00:00"' in html
-    assert re.search(r"Resources that will be submitted:</strong>\s*24 CPUs ·\s*128 GB ·\s*walltime 73:00:00 ·\s*QOS owner100d", html)
-    assert "Conservative fallback" in html
+    # The Hardware Specification shows the three resolved values; the
+    # estimator basis stays in the plan record, not on the page.
+    assert re.search(r'data-hardware-value="cpus">24<', html)
+    assert re.search(r'data-hardware-value="memory_gb">128 GB<', html)
+    assert re.search(r'data-hardware-value="walltime" title="73:00:00">3 days 1 hour<', html)
+    assert response.context["submission_spec"]["flow_spec"]["resource_selection"]["walltime_estimate"]["basis"] == "conservative_fallback"
+    assert response.context["submission_spec"]["cluster"]["qos"] == "owner100d"
     # Prepare and Submit carry the requested (Automatic) values and the planned resources.
     assert html.count('name="planned_resources" value="cpus=24:automatic;memory_gb=128:automatic;walltime=73:00:00:automatic;') == 2
 

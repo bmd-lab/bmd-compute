@@ -43,37 +43,31 @@ resource_panel = calculation_definition[
     calculation_definition.index("<h3>Hardware Specification</h3>"):
     calculation_definition.index("data-build-calculation-button")
 ]
-assert resource_panel.index('name="cpus"') < resource_panel.index('name="memory_gb"')
-assert resource_panel.index('name="memory_gb"') < resource_panel.index('name="walltime"')
-assert resource_panel.index('name="walltime"') < resource_panel.index('name="queue"')
-memory_label_index = resource_panel.index("<label>Memory (GB)")
-memory_select_index = resource_panel.index('<select name="memory_gb" data-resource-field="memory_gb">')
-memory_select_end = resource_panel.index("</select>", memory_select_index)
-memory_select_block = resource_panel[memory_select_index:memory_select_end]
-assert memory_label_index < memory_select_index
-assert "selected_resources.allowed_memory_gb" in memory_select_block
-assert 'value="{{ memory_gb }}"' in memory_select_block
-assert "{% if selected_resources.requested.memory_gb|string == memory_gb|string %}selected{% endif %}" in memory_select_block
-assert "{{ memory_gb }} GB" in memory_select_block
-# Automatic is an explicit choice for every automatically selected resource.
-assert '<option value="" {% if selected_resources.requested.memory_gb == "" %}selected{% endif %}>Automatic' in memory_select_block
-cpu_select_index = resource_panel.index('<select name="cpus" data-resource-field="cpus">')
-cpu_select_block = resource_panel[cpu_select_index:resource_panel.index("</select>", cpu_select_index)]
-assert '<option value="" {% if selected_resources.requested.cpus == "" %}selected{% endif %}>Automatic' in cpu_select_block
-assert 'value="{{ selected_resources.requested.walltime }}"' in resource_panel
-assert 'data-resource-reset="walltime"' in resource_panel
-queue_label_index = resource_panel.index("<label>Queue</label>")
-queue_select_index = resource_panel.index('<select name="queue">')
-queue_select_end = resource_panel.index("</select>", queue_select_index)
-queue_select_block = resource_panel[queue_select_index:queue_select_end]
-assert queue_label_index < queue_select_index
-assert "selected_resources.allowed_queues" in queue_select_block
-assert 'value="{{ queue }}"' in queue_select_block
-assert "{% if selected_resources.queue == queue %}selected{% endif %}" in queue_select_block
+# Compact summary of the approved resources; Custom reveals only CPU, memory
+# and walltime controls, which start from the approved values. The submitted
+# fields are hidden inputs (empty means Automatic).
+assert 'data-hardware-summary' in resource_panel
+assert resource_panel.index('data-hardware-value="cpus"') < resource_panel.index('data-hardware-value="memory_gb"')
+assert resource_panel.index('data-hardware-value="memory_gb"') < resource_panel.index('data-hardware-value="walltime"')
+assert "Recommended resources for this calculation" in resource_panel
+assert 'data-hardware-custom hidden' in resource_panel
+for control in ("cpus", "memory_gb", "walltime"):
+    assert f'data-resource-control="{control}"' in resource_panel
+    assert f'<input type="hidden" name="{control}" value="{{{{ selected_resources.requested.{control} }}}}">' in resource_panel
+assert "{% if selected_resources.memory_gb|string == memory_gb|string %}selected{% endif %}" in resource_panel
+assert "{% if selected_resources.cpus|string == cpu_count|string %}selected{% endif %}" in resource_panel
+assert 'value="{{ selected_resources.walltime }}"' in resource_panel
+assert "data-resource-restore" in resource_panel and "Restore Recommended" in resource_panel
+# Infrastructure details are carried, never shown or editable here.
+assert '<input type="hidden" name="queue" value="{{ selected_resources.queue }}">' in resource_panel
+for hidden_detail in ('<select name="queue"', "Queue", "QOS", "qos", "Account", "Partition", "partition",
+                      "walltime_explanation", "walltime_stages", "Automatic (", "resource-source"):
+    assert hidden_detail not in resource_panel, hidden_detail
 assert 'type="number"' not in resource_panel
 assert 'step="1"' not in resource_panel
 assert "grid-template-columns: minmax(0, 1fr);" in source
 assert "grid-template-columns: repeat(4, minmax(140px, 1fr));" in source
+assert "grid-template-columns: repeat(3, minmax(0, 1fr));" in source
 assert "workflow_spec_json" in source[source.index('<form action="/prepare-remote"'):]
 assert "workflow_spec_json" in source[source.index('<form action="/submit"'):]
 prepare_form = source[source.index('<form action="/prepare-remote"'):]
