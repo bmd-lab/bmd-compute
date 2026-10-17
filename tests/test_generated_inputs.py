@@ -810,7 +810,7 @@ template_source = open("templates/index.html", encoding="utf-8").read()
 for heading in (
     "Calculation Definition",
     "Scientific Specification",
-    "Execution Resources",
+    "Hardware Specification",
     "Calculation Summary",
     "Generated Inputs",
     "Execution Summary",
@@ -832,7 +832,7 @@ calculation_definition = template_source[
     template_source.index('<form\n                id="calculation-review-form"'):
 ]
 resource_panel = calculation_definition[
-    calculation_definition.index("<h3>Execution Resources</h3>"):
+    calculation_definition.index("<h3>Hardware Specification</h3>"):
     calculation_definition.index("data-build-calculation-button")
 ]
 queue_label_index = resource_panel.index("<label>Queue</label>")

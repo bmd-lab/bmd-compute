@@ -204,8 +204,8 @@ def test_bi_containing_structure_renders_method_considerations_only_after_build(
     html = render_response(built)
     assert built.context["method_considerations"]["policy_version"] == 6
     assert html.index("Structure Summary") < html.index("Calculation Definition")
-    assert html.index('id="desired-output-select"') < html.index("<h3>Execution Resources</h3>")
-    assert html.index("<h3>Execution Resources</h3>") < html.index("data-build-calculation-button")
+    assert html.index('id="desired-output-select"') < html.index("<h3>Hardware Specification</h3>")
+    assert html.index("<h3>Hardware Specification</h3>") < html.index("data-build-calculation-button")
     assert html.index("data-build-calculation-button") < html.index("<h3>Method Considerations</h3>")
     assert html.index("<h3>Method Considerations</h3>") < html.index("<h2>Calculation Summary</h2>")
 
