@@ -238,7 +238,7 @@ Result parsing runs remotely where possible and returns JSON-safe compact payloa
 
 Supported now:
 
-- the four Desired Outputs: Energy only, Relaxed structure, Electronic density of states and Electronic band structure (see `methodology.md`)
+- the browser Desired Outputs: Relaxed Energy, Relaxed structure, Electronic density of states, Electronic band structure and Phonons, plus the legacy Energy only identifier kept for the machine API, bmd-run and historical records (see `methodology.md`)
 - Custom PBE relax/static/relax-static/double-relax/DOS/band-structure workflows
 - HSE06 relax/static/relax-static stages and workflows
 - HSE06 DOS after PBE or HSE06 Static Energy, and HSE06 band structure after HSE06 Static Energy

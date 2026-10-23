@@ -257,9 +257,14 @@ def refresh_with_state(monkeypatch, *, state_summary):
         }
     ]
     assert response.status_code == 200
-    assert response.context["summary"]["formula"] == "Si2"
-    assert response.context["calculation"]["flow_name"] == "vasp_run_static"
-    assert response.context["generated_inputs"]["incar"] == "LWAVE = False\n"
+    # Monitoring renders only authoritative state: the Structure Summary only
+    # from a recorded structure (this record has none, so nothing is parsed),
+    # no Generated Inputs, and the calculation summary from the job record.
+    assert response.context["summary"] is None
+    # This record has no label, so its run name is the flow name.
+    assert response.context["calculation"]["flow_name"] == "vasp_run_static-20260817-120000"
+    assert response.context["calculation"]["number_of_jobs"] is None
+    assert response.context["generated_inputs"] is None
     assert response.context["monitoring_result"]["summary"] == state_summary
     assert response.context["collapse_structure_input"] is True
     assert structure_input_is_open(response) is False

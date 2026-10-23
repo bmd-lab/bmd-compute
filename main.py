@@ -53,12 +53,14 @@ from backend.calculations.resources import (
 )
 from backend.config import DEFAULT_PARTITION
 from backend.calculations.registry import (
+    BROWSER_HIDDEN_DESIRED_OUTPUTS,
     CalculationValidationError,
     calculation_spec_from_workflow_spec,
     calculation_display_name,
     calculation_form_options,
+    canonical_custom_workflow_spec,
     calculation_spec_from_legacy,
-    desired_output_from_workflow_spec,
+    desired_output_label,
     desired_output_workflow_spec,
     legacy_potcar_functional_from_spec,
     legacy_workflow_from_spec,
@@ -71,7 +73,7 @@ from backend.calculations.registry import (
     workflow_spec_from_calculation_spec,
 )
 from backend.generated_inputs import generated_input_stage_previews, preview_generated_inputs
-from backend.monitoring import monitor_job, monitor_submitted_job
+from backend.monitoring import RESUMED_SUBMISSION_SPEC_KEY, monitor_job, monitor_submitted_job
 from backend.parser import StructureValidationError, parse_structure
 from backend.remote_preparation import prepare_remote_submission, remembered_successful_preparation
 from backend.remote_submission import remembered_successful_submission, submit_remote_workflow
@@ -84,7 +86,11 @@ from backend.submission import (
     verify_submission_identity_token,
 )
 from backend.summary import summarize_structure
-from backend.workflow_summary import summarize_workflow
+from backend.workflow_summary import (
+    calculation_plan_from_workflow_spec,
+    summarize_workflow,
+    workflow_label_from_spec,
+)
 from compute_api.router import build_machine_api_router
 
 app = FastAPI()
@@ -114,6 +120,9 @@ def page_context(
     calculation_error=None,
     collapse_structure_input: bool = False,
     monitor_state_override: str | None = None,
+    selected_desired_output: str | None = None,
+    workflow_identity_available: bool = True,
+    show_submitted_workflow: bool = False,
 ):
     if selected_workflow is None:
         selected_workflow = (
@@ -134,11 +143,19 @@ def page_context(
         "structure_text": structure_text,
         "fmt": fmt,
         "summary": summary,
-        "selected_calculation": selected_calculation_context(
-            selected_spec,
-            selected_workflow=selected_workflow,
+        "selected_calculation": {
+            **selected_calculation_context(
+                selected_spec,
+                selected_workflow=selected_workflow,
+            ),
+            "unavailable": not workflow_identity_available,
+        },
+        "selected_workflow": selected_workflow_context(
+            selected_workflow,
+            selected_desired_output=selected_desired_output,
+            available=workflow_identity_available,
         ),
-        "selected_workflow": selected_workflow_context(selected_workflow),
+        "show_submitted_workflow": show_submitted_workflow,
         "selected_resources": selected_resources_context(selected_resources),
         "calculation_options": calculation_form_options(),
         "calculation": calculation_summary,
@@ -267,6 +284,8 @@ def structure_error_response(
     selected_spec: CalculationSpec | None = None,
     selected_workflow: WorkflowSpec | None = None,
     selected_resources: "SelectedResources | ExecutionResources | None" = None,
+    selected_desired_output: str | None = None,
+    workflow_identity_available: bool = True,
 ):
     return templates.TemplateResponse(
         request=request,
@@ -277,6 +296,8 @@ def structure_error_response(
             selected_spec=selected_spec,
             selected_workflow=selected_workflow,
             selected_resources=selected_resources,
+            selected_desired_output=selected_desired_output,
+            workflow_identity_available=workflow_identity_available,
             structure_error=structure_error_context(exc),
         ),
         status_code=400,
@@ -302,6 +323,8 @@ def calculation_error_response(
     selected_spec: CalculationSpec | None = None,
     selected_workflow: WorkflowSpec | None = None,
     selected_resources: "SelectedResources | ExecutionResources | None" = None,
+    selected_desired_output: str | None = None,
+    workflow_identity_available: bool = True,
 ):
     summary = None
     try:
@@ -319,6 +342,8 @@ def calculation_error_response(
             selected_spec=selected_spec,
             selected_workflow=selected_workflow,
             selected_resources=selected_resources,
+            selected_desired_output=selected_desired_output,
+            workflow_identity_available=workflow_identity_available,
             calculation_error=calculation_error_context(exc),
         ),
         status_code=400,
@@ -330,7 +355,9 @@ def default_calculation_spec() -> CalculationSpec:
 
 
 def default_workflow_spec() -> WorkflowSpec:
-    return desired_output_workflow_spec("energy_only") or workflow_spec_from_calculation_spec(
+    # The browser's default Desired Output. Energy only is no longer offered in
+    # the browser menu, so its replacement in the same position is the default.
+    return desired_output_workflow_spec("relaxed_energy") or workflow_spec_from_calculation_spec(
         default_calculation_spec()
     )
 
@@ -479,24 +506,180 @@ def selected_calculation_context(
     }
 
 
-def selected_workflow_context(workflow_spec: WorkflowSpec) -> dict:
-    workflow = validate_workflow_spec(workflow_spec)
-    desired_output = (
-        workflow.recipe
-        if workflow.recipe in {
-            "energy_only",
-            "relaxed_structure",
-            "electronic_dos",
-            "electronic_band_structure",
-            "custom",
-        }
-        else desired_output_from_workflow_spec(workflow)
+def authoritative_workflow_identity(submission_spec: dict | None) -> tuple[WorkflowSpec, str] | None:
+    """The submitted workflow and its identity, read from a submission record.
+
+    Identity is taken from what BMD Compute itself recorded, never from the
+    stage sequence: a managed Desired Output is identified by its recorded
+    automatic-treatment resolution (``mode`` ``bmd_managed_desired_output`` and
+    its ``desired_output``), which every managed plan records and must agree
+    with the workflow's recipe. A workflow with no automatic-treatment
+    resolution and no managed recipe is a Custom workflow. Anything else (no
+    readable workflow, an unknown resolution, a managed recipe without its
+    resolution, or a disagreement) cannot be identified and returns ``None``.
+    """
+
+    if not isinstance(submission_spec, dict):
+        return None
+    flow_spec = submission_spec.get("flow_spec")
+    if not isinstance(flow_spec, dict) or not isinstance(flow_spec.get("workflow_spec"), dict):
+        return None
+    try:
+        workflow = validate_workflow_spec(WorkflowSpec.from_dict(flow_spec["workflow_spec"]))
+    except (CalculationValidationError, KeyError, TypeError, ValueError):
+        return None
+    if not workflow.stages:
+        return None
+    treatments = flow_spec.get("automatic_treatments")
+    if treatments:
+        if not isinstance(treatments, dict) or treatments.get("mode") != "bmd_managed_desired_output":
+            return None
+        desired_output = treatments.get("desired_output")
+        if desired_output_workflow_spec(desired_output) is None or workflow.recipe != desired_output:
+            return None
+        return workflow, desired_output
+    if desired_output_workflow_spec(workflow.recipe) is not None:
+        return None
+    return workflow, "custom"
+
+
+def authoritative_structure_summary(submission_spec: dict | None) -> tuple[str | None, dict | None]:
+    """The submitted structure text and its summary, read from a submission record.
+
+    Returns ``(None, None)`` when the record holds no readable structure.
+    """
+
+    if not isinstance(submission_spec, dict):
+        return None, None
+    structure = (submission_spec.get("flow_spec") or {}).get("structure")
+    if not isinstance(structure, dict) or not isinstance(structure.get("text"), str):
+        return None, None
+    try:
+        parsed = parse_structure(structure["text"], str(structure.get("format") or "poscar"))
+        return structure["text"], summarize_structure(parsed)
+    except Exception:  # noqa: BLE001 - an unreadable recorded structure is simply not shown
+        return None, None
+
+
+def authoritative_calculation_summary(submission_spec: dict) -> dict:
+    """The parts of the calculation summary a submission record holds.
+
+    The flow name is the recorded run label (or, for a record without one,
+    its run name). The number of jobs is not
+    recorded, so it is not shown; workflow fields are added by
+    ``calculation_summary_for_workflow`` from the recorded workflow.
+    """
+
+    return {
+        "flow_name": str(submission_spec.get("label") or submission_spec.get("run_name") or ""),
+        "number_of_jobs": None,
+        "job_names": [],
+        "ready_for_submission": True,
+    }
+
+
+def calculation_summary_for_workflow(calculation_summary, workflow: WorkflowSpec):
+    """A carried calculation summary with its workflow fields taken from ``workflow``."""
+
+    if not isinstance(calculation_summary, dict):
+        return None
+    workflow = validate_workflow_spec(workflow)
+    compatible_spec = calculation_spec_from_workflow_spec(workflow)
+    theories = {stage.theory for stage in workflow.stages}
+    calculation_type = (
+        workflow_label_from_spec(compatible_spec)
+        if compatible_spec is not None
+        else workflow_display_name(workflow)
     )
+    return {
+        **calculation_summary,
+        "calculation_type": calculation_type,
+        "workflow_type": calculation_type,
+        "calculation_plan": calculation_plan_from_workflow_spec(workflow),
+        "theory": next(iter(theories)).value if len(theories) == 1 else "mixed",
+        "theory_label": theory_display_name(next(iter(theories))) if len(theories) == 1 else "Mixed",
+    }
+
+
+def selected_desired_output_from_form(workflow: str | None) -> str:
+    """The authoritative Desired Output selection of a browser request.
+
+    The ``workflow`` form field (the Desired Output selector, carried unchanged
+    by the Prepare, Submit and Monitor forms) decides whether a request is a
+    managed Desired Output, exactly as ``workflow_spec_from_form`` and
+    ``resolve_workflow_for_structure`` decide it: a managed identifier selects
+    that Desired Output; any other value (``custom`` or a legacy recipe name)
+    is a user-managed Custom workflow, as is a request with no selection
+    (legacy purpose/theory fields or stage JSON alone), since none of those
+    receive automatic treatments.
+    """
+
+    workflow = optional_form_value(workflow)
+    return workflow if desired_output_workflow_spec(workflow) is not None else "custom"
+
+
+def selected_workflow_context(
+    workflow_spec: WorkflowSpec,
+    *,
+    selected_desired_output: str | None = None,
+    available: bool = True,
+) -> dict:
+    if not available:
+        # The workflow could not be recovered from an authoritative record: its
+        # identity and stages are suppressed rather than shown as the browser
+        # default or as client-posted values.
+        return {
+            "unavailable": True,
+            "json": "",
+            "label": "",
+            "recipe": None,
+            "desired_output": None,
+            "desired_output_label": None,
+            "hidden_desired_output_label": None,
+            "hidden_desired_output_workflow_spec": None,
+            "stages": [],
+        }
+    workflow = validate_workflow_spec(workflow_spec)
+    if selected_desired_output is not None:
+        # The request's own selection is authoritative.
+        desired_output = selected_desired_output
+    elif desired_output_workflow_spec(workflow.recipe) is not None:
+        # No selection was posted (the default page, a legacy request): only a
+        # managed workflow recorded under its own identifier is shown as that
+        # Desired Output.
+        desired_output = workflow.recipe
+    else:
+        # A Desired Output is never inferred from a stage sequence: a workflow
+        # that merely resembles a managed recipe was not resolved with its
+        # automatic treatments, so it is a Custom workflow.
+        desired_output = "custom"
     return {
         "json": json.dumps(workflow.to_dict(), sort_keys=True),
         "label": workflow_display_name(workflow),
         "recipe": workflow.recipe,
+        "unavailable": False,
         "desired_output": desired_output,
+        "desired_output_label": (
+            "Custom workflow" if desired_output == "custom" else desired_output_label(desired_output)
+        ),
+        # A hidden legacy Desired Output (for example ``energy_only`` reached
+        # through a legacy form post or a historical record) is not in the
+        # menu; the selector shows it as its own selected option so the page
+        # never displays a different Desired Output than the one built.
+        "hidden_desired_output_label": (
+            f"{desired_output_label(desired_output)} (legacy)"
+            if desired_output in BROWSER_HIDDEN_DESIRED_OUTPUTS
+            else None
+        ),
+        # The managed workflow of that hidden Desired Output, so that choosing
+        # it again in the selector restores its own stages (the menu's
+        # ``desired_outputs`` deliberately omit it).
+        "hidden_desired_output_workflow_spec": (
+            json.dumps(desired_output_workflow_spec(desired_output).to_dict(), sort_keys=True)
+            if desired_output in BROWSER_HIDDEN_DESIRED_OUTPUTS
+            and desired_output_workflow_spec(desired_output) is not None
+            else None
+        ),
         "stages": [
             {
                 "index": index + 1,
@@ -572,7 +755,7 @@ def workflow_spec_from_form(
         # Client-supplied (Custom) workflow: only user-selectable stage
         # options are accepted; free-form INCAR/KPOINTS and BMD-generated
         # options are rejected here, before any preview or preparation.
-        return validate_user_workflow_spec(WorkflowSpec.from_dict(data))
+        return canonical_custom_workflow_spec(WorkflowSpec.from_dict(data))
 
     return workflow_spec_from_calculation_spec(
         calculation_spec_from_form(
@@ -1379,6 +1562,18 @@ def resume_existing_calculation(
     load_results: str = Form("false"),
 ):
     monitoring_result = monitor_job(job_id)
+    # The submitted workflow comes only from the job record monitoring read;
+    # without one, the workflow is not shown (never the browser default).
+    recorded_spec = (
+        monitoring_result.pop(RESUMED_SUBMISSION_SPEC_KEY, None)
+        if isinstance(monitoring_result, dict)
+        else None
+    )
+    recovered = (
+        authoritative_workflow_identity(recorded_spec)
+        if isinstance(recorded_spec, dict)
+        else None
+    )
     should_load_results = load_results.lower() == "true"
     results_summary = (
         load_results_for_completed_job(monitoring_result)
@@ -1390,6 +1585,10 @@ def resume_existing_calculation(
         request=request,
         name="index.html",
         context=page_context(
+            selected_workflow=recovered[0] if recovered is not None else None,
+            selected_desired_output=recovered[1] if recovered is not None else None,
+            workflow_identity_available=recovered is not None,
+            show_submitted_workflow=True,
             monitoring_result=monitoring_result,
             results_summary=results_summary,
             resume_job_id=job_id,
@@ -1417,6 +1616,9 @@ def build_workflow(
 ):
     calculation_spec = default_calculation_spec()
     workflow_spec = default_workflow_spec()
+    # The authoritative Desired Output selection, once the request's workflow
+    # has been read (None until then: the default page identity is shown).
+    selection = None
     # The selection as requested, before automatic treatments: what a failed
     # request redisplays, so it never looks like a resolved calculation.
     requested_workflow_spec = workflow_spec
@@ -1432,6 +1634,7 @@ def build_workflow(
             workflow=workflow,
             method=method,
         )
+        selection = selected_desired_output_from_form(workflow)
         requested_workflow_spec = workflow_spec
         calculation_spec = (
             calculation_spec_from_workflow_spec(workflow_spec)
@@ -1473,6 +1676,7 @@ def build_workflow(
     except StructureValidationError as exc:
         return structure_error_response(
             request,
+            selected_desired_output=selection,
             structure_text=structure,
             fmt=fmt,
             selected_spec=None,
@@ -1483,6 +1687,7 @@ def build_workflow(
     except CalculationValidationError as exc:
         return calculation_error_response(
             request,
+            selected_desired_output=selection,
             structure_text=structure,
             fmt=fmt,
             selected_spec=None,
@@ -1495,6 +1700,7 @@ def build_workflow(
         request=request,
         name="index.html",
         context=page_context(
+            selected_desired_output=selection,
             structure_text=structure,
             fmt=fmt,
             summary=summary,
@@ -1535,6 +1741,9 @@ def prepare_remote(
     del created_at
     calculation_spec = default_calculation_spec()
     workflow_spec = default_workflow_spec()
+    # The authoritative Desired Output selection, once the request's workflow
+    # has been read (None until then: the default page identity is shown).
+    selection = None
     # The selection as requested, before automatic treatments: what a failed
     # request redisplays, so it never looks like a resolved calculation.
     requested_workflow_spec = workflow_spec
@@ -1554,6 +1763,7 @@ def prepare_remote(
             workflow=workflow,
             method=method,
         )
+        selection = selected_desired_output_from_form(workflow)
         requested_workflow_spec = workflow_spec
         calculation_spec = (
             calculation_spec_from_workflow_spec(workflow_spec)
@@ -1598,6 +1808,7 @@ def prepare_remote(
     except StructureValidationError as exc:
         return structure_error_response(
             request,
+            selected_desired_output=selection,
             structure_text=structure,
             fmt=fmt,
             selected_spec=None,
@@ -1608,6 +1819,7 @@ def prepare_remote(
     except CalculationValidationError as exc:
         return calculation_error_response(
             request,
+            selected_desired_output=selection,
             structure_text=structure,
             fmt=fmt,
             selected_spec=None,
@@ -1626,6 +1838,7 @@ def prepare_remote(
         request=request,
         name="index.html",
         context=page_context(
+            selected_desired_output=selection,
             structure_text=structure,
             fmt=fmt,
             summary=summary,
@@ -1667,6 +1880,9 @@ def submit_workflow(
     del created_at
     calculation_spec = default_calculation_spec()
     workflow_spec = default_workflow_spec()
+    # The authoritative Desired Output selection, once the request's workflow
+    # has been read (None until then: the default page identity is shown).
+    selection = None
     # The selection as requested, before automatic treatments: what a failed
     # request redisplays, so it never looks like a resolved calculation.
     requested_workflow_spec = workflow_spec
@@ -1686,6 +1902,7 @@ def submit_workflow(
             workflow=workflow,
             method=method,
         )
+        selection = selected_desired_output_from_form(workflow)
         requested_workflow_spec = workflow_spec
         calculation_spec = (
             calculation_spec_from_workflow_spec(workflow_spec)
@@ -1730,6 +1947,7 @@ def submit_workflow(
     except StructureValidationError as exc:
         return structure_error_response(
             request,
+            selected_desired_output=selection,
             structure_text=structure,
             fmt=fmt,
             selected_spec=None,
@@ -1740,6 +1958,7 @@ def submit_workflow(
     except CalculationValidationError as exc:
         return calculation_error_response(
             request,
+            selected_desired_output=selection,
             structure_text=structure,
             fmt=fmt,
             selected_spec=None,
@@ -1772,6 +1991,7 @@ def submit_workflow(
         request=request,
         name="index.html",
         context=page_context(
+            selected_desired_output=selection,
             structure_text=structure,
             fmt=fmt,
             summary=summary,
@@ -1813,8 +2033,12 @@ def refresh_monitoring(
 ):
     # Accepted for legacy clients only; monitoring never trusts a client run timestamp.
     del created_at
-    calculation_spec = default_calculation_spec()
-    workflow_spec = default_workflow_spec()
+    # Workflow identity, stages and treatments shown while monitoring come only
+    # from the authenticated job record. The posted workflow fields (purpose,
+    # theory, modifiers, workflow_spec_json, workflow, method) are accepted for
+    # form compatibility and never read: until the record is read, and when it
+    # cannot identify its workflow, the workflow is not shown at all.
+    del purpose, theory, modifiers, workflow_spec_json, workflow, method
     resource_request = ResourceRequest()
     execution_resources = SelectedResources(request=resource_request)
     monitor_state = {}
@@ -1824,18 +2048,6 @@ def refresh_monitoring(
     submission_spec = None
     try:
         monitor_state = monitor_state_from_json(monitor_state_json)
-        workflow_spec = workflow_spec_from_form(
-            workflow_spec_json=workflow_spec_json,
-            purpose=purpose,
-            theory=theory,
-            modifiers=modifiers,
-            workflow=workflow,
-            method=method,
-        )
-        calculation_spec = (
-            calculation_spec_from_workflow_spec(workflow_spec)
-            or default_calculation_spec()
-        )
         resource_request = resource_request_from_form(
             cpus=cpus,
             memory_gb=memory_gb,
@@ -1865,20 +2077,18 @@ def refresh_monitoring(
     except CalculationValidationError as exc:
         return calculation_error_response(
             request,
+            workflow_identity_available=False,
             structure_text=structure,
             fmt=fmt,
-            selected_spec=calculation_spec,
-            selected_workflow=workflow_spec,
             selected_resources=execution_resources,
             exc=exc,
         )
     except StructureValidationError as exc:
         return structure_error_response(
             request,
+            workflow_identity_available=False,
             structure_text=structure,
             fmt=fmt,
-            selected_spec=calculation_spec,
-            selected_workflow=workflow_spec,
             selected_resources=execution_resources,
             exc=exc,
         )
@@ -1917,6 +2127,27 @@ def refresh_monitoring(
             )
         except (CalculationValidationError, KeyError, TypeError, ValueError):
             pass
+    recovered = (
+        authoritative_workflow_identity(submission_spec)
+        if submission_spec is not None
+        else None
+    )
+    # Every panel shown while monitoring comes from the authenticated job record
+    # or is not shown, and the client-carried values are never rendered: the
+    # structure field and Structure Summary come from the recorded structure
+    # (parsing and summarising it takes milliseconds; nothing is rebuilt), the
+    # calculation summary from the recorded workflow and label, and Generated
+    # Inputs are not shown (the record does not hold the generated input files).
+    recorded_structure_text, display_summary = authoritative_structure_summary(submission_spec)
+    display_calculation_summary = (
+        calculation_summary_for_workflow(
+            authoritative_calculation_summary(submission_spec),
+            recovered[0],
+        )
+        if recovered is not None
+        else None
+    )
+    display_generated_inputs = None
     monitor_state_override = None
     if (
         submission_spec is None
@@ -1934,14 +2165,16 @@ def refresh_monitoring(
         request=request,
         name="index.html",
         context=page_context(
-            structure_text=structure,
+            selected_desired_output=recovered[1] if recovered is not None else None,
+            workflow_identity_available=recovered is not None,
+            show_submitted_workflow=True,
+            structure_text=recorded_structure_text if recorded_structure_text is not None else structure,
             fmt=fmt,
-            summary=summary,
-            selected_spec=calculation_spec,
-            selected_workflow=workflow_spec,
+            summary=display_summary,
+            selected_workflow=recovered[0] if recovered is not None else None,
             selected_resources=execution_resources,
-            calculation_summary=calculation_summary,
-            generated_inputs=generated_inputs,
+            calculation_summary=display_calculation_summary,
+            generated_inputs=display_generated_inputs,
             submission_spec=submission_spec,
             remote_preparation=remote_preparation,
             submission_result=submission_result,

@@ -249,6 +249,11 @@ def remote_job_status_from_slurm_outputs(
     )
 
 
+# Key under which a resumed ``monitor_job`` result carries the job's validated
+# submission record, for the caller to remove and use.
+RESUMED_SUBMISSION_SPEC_KEY = "_resumed_submission_spec"
+
+
 def monitor_job(
     job_id: str,
     *,
@@ -277,12 +282,15 @@ def monitor_job(
         if submission_spec is not None
         else default_connection_profile()
     )
+    resumed_submission_spec = None
 
     try:
         with connected_remote_runner(
             profile=profile,
             runner_factory=runner_factory,
         ) as runner:
+            if is_resume:
+                resumed_submission_spec = _resumed_submission_spec(runner, stripped_job_id)
             status = runner.query_job(stripped_job_id)
     except Exception as exc:
         stage = "SSH Connection" if _looks_like_connection_failure(exc) else "Monitoring"
@@ -293,9 +301,12 @@ def monitor_job(
         return result
 
     if is_resume and _is_unknown_job(status):
-        return _unknown_job_result(status)
-
-    return _success_result(status)
+        result = _unknown_job_result(status)
+    else:
+        result = _success_result(status)
+    if is_resume and resumed_submission_spec is not None:
+        result[RESUMED_SUBMISSION_SPEC_KEY] = resumed_submission_spec
+    return result
 
 
 def monitor_submitted_job(
@@ -351,6 +362,34 @@ def monitor_submitted_job(
         return result, authoritative_record
 
     return _success_result(status), authoritative_record
+
+
+def _resumed_submission_spec(runner: RemoteRunner, job_id: str) -> dict | None:
+    """The submission record of a resumed job, or ``None`` if it cannot be trusted.
+
+    Read from the server-policy job-record path and validated against the run
+    record contracts, the job ID and the run directory, as authenticated
+    monitoring does (a resumed job has no attempt identity to check). It is
+    used only to show the submitted workflow; any failure leaves monitoring
+    unchanged and the workflow unshown.
+    """
+
+    try:
+        state_path = posixpath.join(DEFAULT_LOGS_DIR, f"job_{job_id}.json")
+        if not runner.is_file(state_path):
+            return None
+        payload = json.loads(runner.read_text(state_path, max_bytes=MONITOR_JOB_RECORD_MAX_BYTES))
+        validate_job_record_v1(payload)
+        if strip_job_id(payload["job_id"]) != job_id:
+            return None
+        submission_spec = payload.get("submission_spec")
+        validate_submission_record_v1(submission_spec)
+        if submission_spec["paths"]["run_dir"] != payload["run_dir"]:
+            return None
+        return submission_spec
+    except Exception:  # noqa: BLE001 - an unreadable record only hides the workflow
+        LOGGER.info("Resumed job record unavailable for job %s.", job_id)
+        return None
 
 
 def _authenticated_job_record(
@@ -643,6 +682,7 @@ def _looks_like_connection_failure(exc: Exception) -> bool:
 
 
 __all__ = [
+    "RESUMED_SUBMISSION_SPEC_KEY",
     "classify_slurm_state",
     "is_valid_slurm_job_id",
     "monitor_job",

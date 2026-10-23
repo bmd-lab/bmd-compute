@@ -1309,6 +1309,12 @@ button.hardware-custom-toggle[aria-expanded="true"] {
             {{ words|join(" ") }}
             {%- endif -%}
             {%- endmacro %}
+            {% if selected_workflow.unavailable %}
+            <div class="configuration-panel" data-workflow-unavailable>
+                <h3>Scientific Specification</h3>
+                <p class="summary-line">The submitted workflow could not be recovered from BMD Compute's job record, so its Desired Output and stages are not shown here.</p>
+            </div>
+            {% else %}
             <form
                 id="calculation-review-form"
                 action="/build-calculation"
@@ -1338,6 +1344,11 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                                             {{ option.label }}
                                         </option>
                                         {% endfor %}
+                                        {% if selected_workflow.hidden_desired_output_label %}
+                                        <option value="{{ selected_workflow.desired_output }}" selected{% if selected_workflow.hidden_desired_output_workflow_spec %} data-workflow-spec="{{ selected_workflow.hidden_desired_output_workflow_spec }}"{% endif %}>
+                                            {{ selected_workflow.hidden_desired_output_label }}
+                                        </option>
+                                        {% endif %}
                                     </select>
                                 </div>
 
@@ -1520,6 +1531,7 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                 </div>
 
             </form>
+            {% endif %}
 
             {# Everything resolved by a Build (Method Considerations, Calculation
                Summary, Generated Inputs, Execution Summary and the submission
@@ -1595,7 +1607,7 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                         <h2>Calculation Summary</h2>
                     </div>
                     <div class="summary-line">
-                        {{ calculation.flow_name }} · {{ calculation.number_of_jobs }} job{% if calculation.number_of_jobs != 1 %}s{% endif %}
+                        {{ calculation.flow_name }}{% if calculation.number_of_jobs is not none %} · {{ calculation.number_of_jobs }} job{% if calculation.number_of_jobs != 1 %}s{% endif %}{% endif %}
                     </div>
                 </div>
                 <div class="stage-status">
@@ -1615,7 +1627,9 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                 <div class="callout">
                     <div class="callout-title">Advanced Options</div>
                     <div class="callout-value">
-                        {% if selected_calculation.modifier_labels %}
+                        {% if selected_calculation.unavailable %}
+                        Unavailable
+                        {% elif selected_calculation.modifier_labels %}
                         {{ selected_calculation.modifier_labels | join(", ") }}
                         {% else %}
                         None
@@ -1828,7 +1842,9 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                 <div class="callout">
                     <div class="callout-title">Modifiers</div>
                     <div class="callout-value">
-                        {% if selected_calculation.modifier_labels %}
+                        {% if selected_calculation.unavailable %}
+                        Unavailable
+                        {% elif selected_calculation.modifier_labels %}
                         {{ selected_calculation.modifier_labels | join(", ") }}
                         {% else %}
                         None
@@ -2038,6 +2054,7 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                 </div>
             </div>
 
+            {% if not selected_workflow.unavailable %}
             <div class="button-row">
                 <form action="/prepare-remote" method="post">
                     <textarea class="hidden-field" name="structure">{{ structure_text }}</textarea>
@@ -2093,6 +2110,7 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                     </button>
                 </form>
             </div>
+            {% endif %}
 
             {% if remote_preparation %}
                 {% if remote_preparation.status == "success" %}
@@ -2269,6 +2287,28 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                     {% endif %}
                 </div>
             </div>
+
+            {% if show_submitted_workflow %}
+            <div class="prep-panel" data-submitted-workflow>
+                <div class="prep-title">Submitted Workflow</div>
+                {% if selected_workflow.unavailable %}
+                <p class="summary-line" data-submitted-workflow-unavailable>Not available: BMD Compute's job record for this job could not identify its workflow.</p>
+                {% else %}
+                <table class="compact-table">
+                    <tr>
+                        <th>Desired Output</th>
+                        <td data-submitted-desired-output="{{ selected_workflow.desired_output }}">{{ selected_workflow.hidden_desired_output_label or selected_workflow.desired_output_label }}</td>
+                    </tr>
+                    {% for stage in selected_workflow.stages %}
+                    <tr data-submitted-stage>
+                        <th>Stage {{ stage.index }}</th>
+                        <td>{{ stage.stage_type_label }} ({{ stage.theory_label }}){% if stage.modifier_labels %} &middot; {{ stage.modifier_labels | join(", ") }}{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+                {% endif %}
+            </div>
+            {% endif %}
 
             {% if monitor_state_json %}
             <form action="/monitor" method="post">
@@ -3196,6 +3236,13 @@ document.addEventListener("DOMContentLoaded", function () {
                     renderStages((desiredOutputs[index].workflow_spec || {}).stages || []);
                     return;
                 }
+            }
+            // A hidden legacy Desired Output (not in the menu) carries its own
+            // managed workflow on its option: restore those stages.
+            var selectedOption = desiredOutputSelect.options[desiredOutputSelect.selectedIndex];
+            if (selectedOption && selectedOption.getAttribute("data-workflow-spec")) {
+                renderStages((JSON.parse(selectedOption.getAttribute("data-workflow-spec")) || {}).stages || []);
+                return;
             }
             updateHiddenWorkflow();
         });

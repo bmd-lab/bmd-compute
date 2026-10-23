@@ -23,14 +23,40 @@ Related pages: `calculation_architecture.md` (objects and validation rules),
 
 | UI choice | Key | Stages |
 | --- | --- | --- |
-| Energy only (Static Energy) | `energy_only` | PBE Static Energy |
+| Relaxed Energy | `relaxed_energy` | PBE Geometry Optimisation -> PBE Geometry Optimisation -> PBE Static Energy |
 | Relaxed structure | `relaxed_structure` | PBE Geometry Optimisation -> PBE Geometry Optimisation |
 | Electronic density of states | `electronic_dos` | PBE Geometry Optimisation -> HSE06 Static Energy -> HSE06 Density of States |
 | Electronic band structure | `electronic_band_structure` | PBE Geometry Optimisation -> HSE06 Static Energy -> HSE06 Band Structure |
+| Phonons | `phonons` | PBE Geometry Optimisation (phonon-grade) -> PBE Phonon Force Calculations (`phonon_workflow.md`) |
+| Energy only (legacy; not in the browser menu) | `energy_only` | PBE Static Energy |
 
 Desired Outputs are resolved on the server from the structure: the automatic
 treatments in section 2 are added to the stages above and the result is frozen
 at preparation.
+
+The energy-producing choices differ as follows:
+
+- **Relaxed structure** relaxes the cell and atoms twice and reports the second
+  relaxation's structure and energy. It has no separate single-point stage.
+- **Relaxed Energy** runs the same two relaxations and then an accurate PBE
+  Static Energy (`NSW = 0`, tetrahedron `ISMEAR = -5`) on the structure the
+  second relaxation produced. Its stages are exactly the Relaxed structure
+  stages followed by the Energy only stage: no INCAR value is new. The
+  reported total energy is the static's; the reported structure is the
+  second relaxation's (the static does not move atoms). All three stages run
+  in one allocation (section 8). Automatic treatments follow section 2 per
+  stage: spin on every stage, D3 and DFT+U on all three stages, and SOC on the
+  final static only, so for heavy-element structures the geometry is relaxed
+  without SOC and the energy is evaluated with it.
+- **Energy only** (`energy_only`) is the original fixed-geometry single point
+  on the submitted structure. It keeps exactly this meaning for the machine
+  API, BMD Run and historical records, but is no longer offered in the
+  browser's Desired Output menu; a browser request that names it (a legacy
+  form post or a historical record) still builds it and shows it as
+  "Energy only (legacy)". A fixed-geometry static remains available to
+  students as a one-stage Custom workflow.
+- **Custom** runs exactly the stages and Advanced Options the user chooses
+  (below).
 
 ### Custom workflows
 
@@ -38,7 +64,26 @@ A Custom workflow is an ordered list of stages the user chooses. Each stage's
 type, theory and Advanced Options (Spin Polarised, DFT+U, SOC, van der Waals
 correction) must be a combination the stage registry supports, and chaining
 rules (section 7) apply. Custom workflows are never changed automatically; the
-automatic rules below are only offered as advice. Stage options may carry only
+automatic rules below are only offered as advice.
+
+A workflow is managed or Custom by its selection, never by its stages: the
+browser's Desired Output selector (carried unchanged by the Prepare, Submit
+and Monitor forms) and the machine API's `desired_output`/`custom` choice are
+authoritative. A Custom workflow whose stages match a Desired Output (a single
+static, relax -> relax, relax -> relax -> static, the DOS, band-structure or
+phonon sequences) stays Custom through Build, Update Calculation, Prepare,
+Submit and execution, and receives no automatic treatments. Its executable
+specification carries no client-supplied descriptive metadata: a posted
+workflow `recipe`, workflow `label` or stage `label` is dropped (set to null)
+before planning, so no managed Desired Output identifier can be recorded on a
+Custom workflow or in its provenance.
+
+Monitoring and Resume show the workflow recorded in BMD Compute's job record:
+a managed Desired Output is identified by its recorded automatic-treatment
+resolution (which must agree with the workflow's recipe), and a workflow with
+neither is Custom. Posted workflow fields are not used, identity is never
+inferred from the stage sequence, and a workflow the record cannot identify
+is not shown. Stage options may carry only
 supported treatment settings; free-form INCAR or KPOINTS values are rejected.
 
 ### Structure constraints
@@ -87,7 +132,8 @@ stages, records the omission in `automatic_treatments.omitted_treatments`, and
 shows a red warning before submission: SOC may significantly affect the
 predicted electronic structure of heavy-element materials, including band
 ordering and band gaps. No PBE + SOC DOS or Band Structure stage is
-substituted. Energy only keeps automatic PBE + SOC Static Energy. Explicit
+substituted. Energy only, and the final static of Relaxed Energy, keep
+automatic PBE + SOC Static Energy. Explicit
 HSE06 + SOC requests (Custom workflows, legacy form fields) are rejected.
 Records of earlier HSE06 + SOC runs remain readable and keep their own
 runtime behaviour.

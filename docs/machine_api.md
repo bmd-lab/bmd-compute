@@ -105,7 +105,13 @@ returned.
 - `structure.format`: `poscar` or `cif` (case-insensitive). `structure.text`:
   at most 2 MiB. The whole body: at most 3 MiB, `application/json`.
 - `workflow`: exactly one of `desired_output` (a BMD Compute Desired Output
-  identifier) or `custom` (`{"stages": [{"stage_type", "theory", "modifiers",
+  identifier: `relaxed_energy`, `relaxed_structure`, `electronic_dos`,
+  `electronic_band_structure`, `phonons`, or the legacy single-point
+  `energy_only`, which keeps its fixed-geometry meaning although the browser
+  no longer offers it; see `methodology.md` section 1) or `custom`
+  (bmd-run does not yet request `relaxed_energy`: milestone E1b must add it to
+  bmd-run's Desired Output vocabularies, output schemas and CLI; bmd-run keeps
+  its `energy_only` default pending a separate decision) (`{"stages": [{"stage_type", "theory", "modifiers",
   "options"}]}`, at most 16 stages). Custom workflows go through
   `validate_user_workflow_spec`, which rejects free-form INCAR/KPOINTS and
   BMD-generated options.

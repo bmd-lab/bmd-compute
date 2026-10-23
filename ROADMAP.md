@@ -38,7 +38,7 @@ This roadmap tracks complete scientific and operational capabilities. It should 
 - [x] HSE06 Geometry Optimisation -> Static Energy
 - [x] HSE06 Band Structure with HSE06 Static Energy precursor
 - [x] HSE06 Density of States with HSE06 Static Energy precursor
-- [x] Desired Outputs: Energy only, Relaxed structure, Electronic density of states, Electronic band structure
+- [x] Desired Outputs: Relaxed Energy, Relaxed structure, Electronic density of states, Electronic band structure, Phonons (legacy Energy only kept for the machine API and bmd-run, hidden from the browser menu)
 - [x] Spin Polarised modifier, applied automatically in Desired Outputs by composition screen
 - [x] DFT-D3 / DFT-D3(BJ) van der Waals correction, DFT-D3(BJ) applied automatically for two-dimensional bonded connectivity
 - [x] SOC for PBE Static, applied automatically for heavy elements (HSE06 + SOC closed to new calculations; historical records remain readable)
