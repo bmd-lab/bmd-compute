@@ -30,11 +30,14 @@ FastAPI should stay a thin controller. Scientific behavior belongs in `backend/`
 
 Students choose a Desired Output, or build a Custom workflow:
 
-- Energy only: PBE Static Energy
+- Relaxed Energy: PBE Geometry Optimisation -> PBE Geometry Optimisation -> PBE Static Energy (the static's energy on the second relaxation's structure)
 - Relaxed structure: PBE Geometry Optimisation -> PBE Geometry Optimisation
 - Electronic density of states: PBE Geometry Optimisation -> HSE06 Static Energy -> HSE06 Density of States
 - Electronic band structure: PBE Geometry Optimisation -> HSE06 Static Energy -> HSE06 Band Structure
+- Phonons: PBE Geometry Optimisation -> PBE Phonon Force Calculations (see [`docs/phonon_workflow.md`](docs/phonon_workflow.md))
 - Custom: an ordered list of supported PBE/HSE06 stages and Advanced Options, never changed automatically
+
+The legacy `energy_only` Desired Output (a fixed-geometry PBE Static Energy) remains valid for the machine API, bmd-run and historical records but is no longer offered in the browser menu; a one-stage Custom static covers it there.
 
 Desired Outputs add spin polarisation, DFT-D3(BJ), SOC and DFT+U automatically when their rules trigger. If structure dimensionality analysis fails, a Desired Output fails closed before preview or remote work because BMD cannot safely decide whether DFT-D3(BJ) is required. Custom workflows use Spin Polarised, van der Waals correction, SOC and DFT+U only when selected.
 

@@ -354,8 +354,29 @@ def _recommended_workflow_recipes() -> tuple[dict, ...]:
     )
 
 
+# Desired Outputs that remain valid identifiers (machine API, BMD Run, historical
+# records) but are no longer offered in the browser's Desired Output menu.
+# ``energy_only`` keeps its original single-point meaning; students choose
+# ``relaxed_energy`` instead, and fixed-geometry static energies remain
+# available through Custom workflow.
+BROWSER_HIDDEN_DESIRED_OUTPUTS = frozenset({"energy_only"})
+
+
 def _desired_output_workflows() -> tuple[tuple[str, str, str, WorkflowSpec | None], ...]:
     return (
+        (
+            "relaxed_energy",
+            "Relaxed Energy",
+            "Optimises the crystal structure and calculates its final total energy.",
+            WorkflowSpec(
+                [
+                    StageSpec(StageType.RELAX, Theory.PBE),
+                    StageSpec(StageType.RELAX, Theory.PBE),
+                    StageSpec(StageType.STATIC, Theory.PBE),
+                ],
+                recipe="relaxed_energy",
+            ),
+        ),
         (
             "energy_only",
             "Energy only",
@@ -429,8 +450,12 @@ def _desired_output_workflows() -> tuple[tuple[str, str, str, WorkflowSpec | Non
 
 
 def _desired_output_options() -> tuple[dict, ...]:
+    """The browser's Desired Output menu (hidden legacy identifiers excluded)."""
+
     options = []
     for value, label, description, workflow_spec in _desired_output_workflows():
+        if value in BROWSER_HIDDEN_DESIRED_OUTPUTS:
+            continue
         options.append(
             {
                 "value": value,
@@ -444,6 +469,16 @@ def _desired_output_options() -> tuple[dict, ...]:
             }
         )
     return tuple(options)
+
+
+def desired_output_label(value: str | None) -> str | None:
+    """The display label of a Desired Output identifier, hidden ones included."""
+
+    output = (value or "").strip()
+    for candidate, label, _, _ in _desired_output_workflows():
+        if candidate == output:
+            return label
+    return None
 
 
 def desired_output_workflow_spec(value: str | None) -> WorkflowSpec | None:
@@ -929,6 +964,39 @@ def validate_user_workflow_spec(workflow: WorkflowSpec) -> WorkflowSpec:
     return validate_workflow_spec(workflow)
 
 
+def canonical_custom_workflow_spec(workflow: WorkflowSpec) -> WorkflowSpec:
+    """A client-supplied (Custom) workflow in its canonical form.
+
+    Validates it as :func:`validate_user_workflow_spec` does, then drops the
+    descriptive metadata a client cannot own: the workflow ``recipe`` and
+    ``label`` and each stage's ``label``. Those name BMD Compute's managed
+    Desired Outputs and their display; a Custom workflow has none, exactly as
+    the browser (which posts ``null``) and the machine API (which has no such
+    fields) already send it. Stage types, theories, modifiers and the
+    user-selectable stage options are kept unchanged. Normalising instead of
+    rejecting keeps stale browser pages working while ensuring a client cannot
+    record a managed identity, or display name, on a Custom workflow.
+    """
+
+    validated = validate_user_workflow_spec(workflow)
+    return validate_workflow_spec(
+        WorkflowSpec(
+            stages=[
+                StageSpec(
+                    stage.stage_type,
+                    stage.theory,
+                    stage.modifiers,
+                    label=None,
+                    options=stage.options,
+                )
+                for stage in validated.stages
+            ],
+            label=None,
+            recipe=None,
+        )
+    )
+
+
 def _validate_stage_support(stage: StageSpec) -> None:
     # Representation-only stage types (for example the future phonon force
     # stage) fail closed here, before any other check: every Build, Prepare,
@@ -1386,6 +1454,9 @@ __all__ = [
     "USER_STAGE_OPTION_KEYS",
     "validate_user_workflow_spec",
     "calculation_display_name",
+    "BROWSER_HIDDEN_DESIRED_OUTPUTS",
+    "desired_output_label",
+    "canonical_custom_workflow_spec",
     "calculation_form_options",
     "calculation_result_stage_directory",
     "calculation_stage_directories",

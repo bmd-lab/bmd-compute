@@ -163,6 +163,9 @@ const snapshot = (label) => ({
   hardware: d.querySelector("[data-hardware-specification]") ? !d.querySelector("[data-hardware-specification]").hidden : null,
   submitDisabled: d.querySelector("[data-submit-calculation-button]") ? d.querySelector("[data-submit-calculation-button]").disabled : null,
   form: Array.from(new w.FormData(d.getElementById("calculation-review-form")).keys()),
+  values: Object.fromEntries(Array.from(new w.FormData(d.getElementById("calculation-review-form")).entries())),
+  options: Array.from(d.getElementById("desired-output-select").options).map((o) => o.value),
+  stageCards: d.querySelectorAll("#workflow-stage-list [data-workflow-stage]").length,
 });
 const out = [snapshot("initial")];
 for (const step of steps) {
@@ -219,7 +222,7 @@ def test_switching_desired_outputs_after_build_hides_all_outputs_until_restored(
     states = run_page(
         render(built_response()),
         [
-            {"op": "desired", "value": "energy_only"},
+            {"op": "desired", "value": "relaxed_energy"},
             {"op": "desired", "value": "electronic_band_structure"},
             {"op": "desired", "value": "electronic_dos", "label": "restored"},
         ],
@@ -239,7 +242,7 @@ def test_restoring_the_label_alone_is_not_enough_when_other_inputs_differ(tmp_pa
         render(built_response()),
         [
             {"op": "select", "name": "cpus", "value": "48", "label": "CPU override"},
-            {"op": "desired", "value": "energy_only"},
+            {"op": "desired", "value": "relaxed_energy"},
             {"op": "desired", "value": "electronic_dos", "label": "label restored, cpus still 48"},
             {"op": "restore", "label": "Restore Recommended"},
             {"op": "input", "name": "walltime", "value": "12:00:00"},
@@ -285,18 +288,222 @@ def test_editing_custom_stages_and_treatment_options_hides_all_outputs(tmp_path)
     assert all_shown(states[6])
 
 
+FORM_FIELDS = sorted(
+    {"structure", "fmt", "workflow_spec_json", "workflow", "cpus", "memory_gb", "walltime", "queue", "nodes"}
+)
+STANDARD_OUTPUTS = [
+    option["value"] for option in main.calculation_form_options()["desired_outputs"] if option["value"] != "custom"
+]
+
+
+def posted_workflow(state) -> dict:
+    """The workflow the browser would post: the selector and the hidden specification."""
+
+    spec = json.loads(state["values"]["workflow_spec_json"])
+    return {
+        "workflow": state["values"].get("workflow"),
+        "recipe": spec.get("recipe"),
+        "label": spec.get("label"),
+        "stage_types": [stage["stage_type"] for stage in spec.get("stages", [])],
+    }
+
+
+def managed_stage_types(desired_output: str) -> list[str]:
+    return [stage.stage_type.value for stage in main.desired_output_workflow_spec(desired_output).stages]
+
+
+def test_energy_only_is_not_a_standard_browser_output():
+    assert STANDARD_OUTPUTS[0] == "relaxed_energy"
+    assert "energy_only" not in STANDARD_OUTPUTS
+
+
 @requires_jsdom
 def test_form_submission_contract_is_unchanged(tmp_path):
-    states = run_page(render(built_response()), [{"op": "desired", "value": "energy_only"}], tmp_path)
+    steps = [{"op": "desired", "value": value} for value in STANDARD_OUTPUTS + ["custom"]]
+    states = run_page(render(built_response()), steps, tmp_path)
+
     for state in states:
-        assert sorted(set(state["form"])) == sorted(
-            {"structure", "fmt", "workflow_spec_json", "workflow", "cpus", "memory_gb", "walltime", "queue", "nodes"}
-        )
+        assert sorted(set(state["form"])) == FORM_FIELDS, state["label"]
+        # A selection always posts both the Desired Output and its specification.
+        assert state["values"]["workflow"]
+        assert state["values"]["workflow_spec_json"]
+    for step, state in zip(steps, states[1:]):
+        assert state["values"]["workflow"] == step["value"]
 
 
 @requires_jsdom
-def test_prepared_run_is_hidden_with_the_build_and_returns_unchanged(tmp_path):
+def test_legacy_energy_only_page_posts_the_same_form_contract(tmp_path):
+    html = render(built_response(soc_cases.SI_POSCAR, workflow="energy_only"))
+    states = run_page(
+        html,
+        [{"op": "desired", "value": "relaxed_energy"}, {"op": "desired", "value": "energy_only"}],
+        tmp_path,
+    )
+    for state in states:
+        assert sorted(set(state["form"])) == FORM_FIELDS, state["label"]
+
+
+@requires_jsdom
+def test_default_page_selects_relaxed_energy_and_offers_no_energy_only(tmp_path):
+    response = main.analyze(soc_cases.request("/analyze"), structure=soc_cases.SI_POSCAR, fmt="poscar")
+    (state,) = run_page(response.template.render(response.context), [], tmp_path)
+
+    assert posted_workflow(state) == {
+        "workflow": "relaxed_energy",
+        "recipe": "relaxed_energy",
+        "label": None,
+        "stage_types": managed_stage_types("relaxed_energy"),
+    }
+    assert state["options"] == STANDARD_OUTPUTS + ["custom"]
+    assert state["stageCards"] == 3
+
+
+@requires_jsdom
+def test_switching_among_standard_outputs_posts_each_managed_workflow(tmp_path):
+    steps = [{"op": "desired", "value": value} for value in STANDARD_OUTPUTS[1:]]
+    steps.append({"op": "desired", "value": "relaxed_energy", "label": "restored"})
+    states = run_page(render(built_response(soc_cases.SI_POSCAR, workflow="relaxed_energy")), steps, tmp_path)
+
+    assert all_shown(states[0])
+    assert states[0]["options"] == STANDARD_OUTPUTS + ["custom"]
+    for step, state in zip(steps, states[1:]):
+        assert posted_workflow(state) == {
+            "workflow": step["value"],
+            "recipe": step["value"],
+            "label": None,
+            "stage_types": managed_stage_types(step["value"]),
+        }, step
+        assert state["stageCards"] == len(managed_stage_types(step["value"]))
+    for state in states[1:-1]:
+        assert all_hidden(state)
+    assert all_shown(states[-1])
+    assert states[-1]["values"] == states[0]["values"]
+
+
+@requires_jsdom
+def test_selecting_custom_keeps_the_stages_as_an_explicit_custom_workflow(tmp_path):
+    states = run_page(
+        render(built_response(soc_cases.SI_POSCAR, workflow="relaxed_energy")),
+        [
+            {"op": "desired", "value": "custom"},
+            {"op": "desired", "value": "relaxed_energy", "label": "restored"},
+        ],
+        tmp_path,
+    )
+
+    # Custom starts from the current stages but is never a managed recipe.
+    assert posted_workflow(states[1]) == {
+        "workflow": "custom",
+        "recipe": None,
+        "label": None,
+        "stage_types": managed_stage_types("relaxed_energy"),
+    }
+    assert all_hidden(states[1])
+    assert all_shown(states[2]) and states[2]["values"] == states[0]["values"]
+
+
+@requires_jsdom
+def test_legacy_energy_only_page_keeps_its_identity_and_restores_its_build(tmp_path):
     response = built_response(soc_cases.SI_POSCAR, workflow="energy_only")
+    states = run_page(
+        render(response),
+        [
+            {"op": "desired", "value": "relaxed_energy"},
+            {"op": "desired", "value": "relaxed_structure"},
+            {"op": "desired", "value": "energy_only", "label": "restored from a standard output"},
+            {"op": "desired", "value": "custom"},
+            {"op": "desired", "value": "energy_only", "label": "restored from Custom"},
+        ],
+        tmp_path,
+    )
+    legacy = {"workflow": "energy_only", "recipe": "energy_only", "label": None, "stage_types": ["static"]}
+
+    # Loaded explicitly: the legacy single point, shown as its own (legacy)
+    # option after the standard menu, with the built form state.
+    assert posted_workflow(states[0]) == legacy
+    assert json.loads(states[0]["values"]["workflow_spec_json"]) == json.loads(
+        response.context["selected_workflow"]["json"]
+    )
+    assert states[0]["options"] == STANDARD_OUTPUTS + ["custom", "energy_only"]
+    assert all_shown(states[0])
+    assert posted_workflow(states[1])["workflow"] == "relaxed_energy" and all_hidden(states[1])
+    assert posted_workflow(states[2])["workflow"] == "relaxed_structure" and all_hidden(states[2])
+    # Choosing the legacy option again restores its own single static stage,
+    # not the stages of the previous selection, and the build becomes current.
+    assert posted_workflow(states[3]) == legacy and states[3]["stageCards"] == 1
+    assert all_shown(states[3]) and states[3]["values"] == states[0]["values"]
+    assert posted_workflow(states[4])["workflow"] == "custom"
+    assert posted_workflow(states[4])["recipe"] is None and all_hidden(states[4])
+    assert posted_workflow(states[5]) == legacy
+    assert all_shown(states[5]) and states[5]["values"] == states[0]["values"]
+
+
+@requires_jsdom
+def test_legacy_energy_only_hardware_override_requires_update_before_prepare(tmp_path):
+    states = run_page(
+        render(built_response(soc_cases.SI_POSCAR, workflow="energy_only")),
+        [
+            {"op": "custom", "label": "open Custom hardware"},
+            {"op": "select", "name": "cpus", "value": "48", "label": "CPU override"},
+            {"op": "restore", "label": "Restore Recommended"},
+        ],
+        tmp_path,
+    )
+
+    assert hardware_only_changed(states[2])
+    assert posted_workflow(states[2])["workflow"] == "energy_only"
+    assert states[2]["values"]["cpus"] == "48"
+    assert all_shown(states[3]) and states[3]["values"] == states[0]["values"]
+
+
+@requires_jsdom
+def test_browser_update_of_a_legacy_page_rebuilds_energy_only_with_the_override(tmp_path):
+    built = built_response(soc_cases.SI_POSCAR, workflow="energy_only")
+    states = run_page(
+        render(built),
+        [
+            {"op": "desired", "value": "relaxed_energy"},
+            {"op": "desired", "value": "energy_only"},
+            {"op": "custom"},
+            {"op": "select", "name": "cpus", "value": "48"},
+        ],
+        tmp_path,
+    )
+    posted = states[-1]["values"]
+    response = main.build_workflow(
+        soc_cases.request("/build-workflow"),
+        structure=posted["structure"],
+        fmt=posted["fmt"],
+        purpose=None,
+        theory=None,
+        modifiers=None,
+        cpus=posted["cpus"],
+        memory_gb=posted["memory_gb"],
+        walltime=posted["walltime"],
+        queue=posted["queue"],
+        workflow_spec_json=posted["workflow_spec_json"],
+        workflow=posted["workflow"],
+        method=None,
+    )
+
+    assert response.status_code == 200, response.context.get("calculation_error")
+    selected = response.context["selected_workflow"]
+    assert selected["desired_output"] == "energy_only"
+    assert selected["hidden_desired_output_label"] == "Energy only (legacy)"
+    workflow = response.context["submission_spec"]["flow_spec"]["workflow_spec"]
+    assert workflow == built.context["submission_spec"]["flow_spec"]["workflow_spec"]
+    assert workflow["recipe"] == "energy_only"
+    assert response.context["submission_spec"]["resources"]["ntasks"] == 48
+    assert response.context["selected_resources"]["planned_token"] != built.context["selected_resources"]["planned_token"]
+
+
+@requires_jsdom
+@pytest.mark.parametrize(
+    ("workflow", "away"),
+    [("energy_only", "relaxed_structure"), ("relaxed_energy", "relaxed_structure"), ("relaxed_energy", "custom")],
+)
+def test_prepared_run_is_hidden_with_the_build_and_returns_unchanged(tmp_path, workflow, away):
+    response = built_response(soc_cases.SI_POSCAR, workflow=workflow)
     html = render(
         response,
         remote_preparation=remembered_successful_preparation(response.context["submission_spec"]),
@@ -304,8 +511,8 @@ def test_prepared_run_is_hidden_with_the_build_and_returns_unchanged(tmp_path):
     states = run_page(
         html,
         [
-            {"op": "desired", "value": "relaxed_structure"},
-            {"op": "desired", "value": "energy_only", "label": "restored"},
+            {"op": "desired", "value": away},
+            {"op": "desired", "value": workflow, "label": "restored"},
         ],
         tmp_path,
     )
@@ -315,6 +522,7 @@ def test_prepared_run_is_hidden_with_the_build_and_returns_unchanged(tmp_path):
     assert states[0]["submitDisabled"] is False and all_shown(states[0])
     assert all_hidden(states[1])
     assert states[2]["submitDisabled"] is False and all_shown(states[2])
+    assert states[2]["values"] == states[0]["values"]
 
 
 @requires_jsdom

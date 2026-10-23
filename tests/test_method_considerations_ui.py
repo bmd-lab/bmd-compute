@@ -147,7 +147,7 @@ def analyze_poscar(poscar: str):
 
 
 def build_energy_only(poscar: str):
-    """Build the default Desired Output that /analyze resolves (Energy only).
+    """Build the legacy Energy only Desired Output (a single PBE static).
 
     Method Considerations describe a successfully built calculation, so they
     are rendered on the built page, not on the analysed page.
@@ -614,8 +614,13 @@ def test_existing_structure_summary_and_calculation_definition_remain_present():
 
     assert "Structure Summary" in html
     assert "Calculation Definition" in html
-    assert response.context["selected_calculation"]["purpose"] == "static"
-    assert response.context["selected_workflow"]["stages"][0]["stage_type"] == "static"
+    # The default Desired Output (Relaxed Energy) is a multi-stage workflow, so
+    # the legacy single-calculation purpose field reports "custom", as it does
+    # for every other multi-stage Desired Output.
+    assert response.context["selected_calculation"]["purpose"] == "custom"
+    assert [
+        stage["stage_type"] for stage in response.context["selected_workflow"]["stages"]
+    ] == ["relax", "relax", "static"]
 
 
 def test_template_has_no_duplicated_method_consideration_policy_tables():

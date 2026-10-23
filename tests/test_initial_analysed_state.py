@@ -1,7 +1,7 @@
 """Before Build, the page shows only the user's selection.
 
-Analysing a structure selects the default Desired Output (Energy only) as its
-unresolved base recipe. Automatic treatments, Method Considerations, the
+Analysing a structure selects the default Desired Output (Relaxed Energy) as
+its unresolved base recipe. Automatic treatments, Method Considerations, the
 Calculation Summary and Generated Inputs are shown only after a successful
 Build Calculation, and a failed request redisplays the selection as requested,
 never as a resolved calculation.
@@ -64,15 +64,16 @@ def assert_not_resolved(page: str) -> None:
 
 
 @pytest.mark.parametrize("poscar", [BI2SE3, soc_cases.BI_POSCAR, soc_cases.FEPT_POSCAR, soc_cases.SI_POSCAR])
-def test_analysed_structure_selects_energy_only_without_resolving_it(poscar):
+def test_analysed_structure_selects_relaxed_energy_without_resolving_it(poscar):
     response = analyze(poscar)
     page = markup(response)
 
-    assert response.context["selected_workflow"]["desired_output"] == "energy_only"
-    assert re.search(r'<option\s+value="energy_only"\s+selected>', page)
-    # The unresolved base recipe: a PBE Static Energy stage with no treatments.
-    assert selected_workflow_json(response) == desired_output_workflow_spec("energy_only").to_dict()
-    assert [stage["modifiers"] for stage in response.context["selected_workflow"]["stages"]] == [[]]
+    assert response.context["selected_workflow"]["desired_output"] == "relaxed_energy"
+    assert re.search(r'<option\s+value="relaxed_energy"\s+selected>', page)
+    # The unresolved base recipe: two PBE Geometry Optimisations and a PBE
+    # Static Energy, with no treatments.
+    assert selected_workflow_json(response) == desired_output_workflow_spec("relaxed_energy").to_dict()
+    assert [stage["modifiers"] for stage in response.context["selected_workflow"]["stages"]] == [[], [], []]
     assert response.context["method_considerations"] is None
     assert response.context["default_treatment_resolution"] is None
     assert response.context["generated_inputs"] is None
@@ -85,7 +86,9 @@ def test_analysed_structure_selects_energy_only_without_resolving_it(poscar):
 def test_analysed_page_offers_every_desired_output_and_custom_before_build():
     page = markup(analyze())
     values = re.findall(r'<option\s+value="(\w+)"', page[page.index('id="desired-output-select"'):])
-    assert {"energy_only", "relaxed_structure", "electronic_dos", "electronic_band_structure", "custom"} <= set(values)
+    assert {"relaxed_energy", "relaxed_structure", "electronic_dos", "electronic_band_structure", "phonons", "custom"} <= set(values)
+    # Energy only remains a valid machine/legacy identifier but is not offered.
+    assert "energy_only" not in values
     assert 'id="add-workflow-stage"' in page
     assert "data-build-calculation-button" in page
 
@@ -95,7 +98,7 @@ def test_switching_desired_outputs_before_build_shows_only_unresolved_recipes():
     # Desired Output changes, so none of them may carry automatic treatments.
     options = analyze().context["calculation_options"]["desired_outputs"]
     recipes = {option["value"]: option.get("workflow_spec") for option in options}
-    for name in ("energy_only", "relaxed_structure", "electronic_dos", "electronic_band_structure"):
+    for name in ("relaxed_energy", "relaxed_structure", "electronic_dos", "electronic_band_structure"):
         stages = recipes[name]["stages"]
         assert stages, name
         assert all(stage["modifiers"] == [] for stage in stages), name

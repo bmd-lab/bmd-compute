@@ -143,21 +143,23 @@ assert theory_display_name(Theory.HSE06) == "HSE06"
 form_options = calculation_form_options()
 desired_outputs = {option["value"]: option for option in form_options["desired_outputs"]}
 assert [option["label"] for option in form_options["desired_outputs"]] == [
-    "Energy only",
+    "Relaxed Energy",
     "Relaxed structure",
     "Electronic density of states",
     "Electronic band structure",
     "Phonons",
     "Custom workflow",
 ]
+# Energy only is hidden from the browser menu but keeps its single-point meaning.
+assert "energy_only" not in desired_outputs
+assert [
+    (stage.stage_type.value, stage.theory.value)
+    for stage in desired_output_workflow_spec("energy_only").stages
+] == [("static", "pbe")]
 assert [
     stage["stage_type"]
-    for stage in desired_outputs["energy_only"]["workflow_spec"]["stages"]
-] == ["static"]
-assert [
-    stage["theory"]
-    for stage in desired_outputs["energy_only"]["workflow_spec"]["stages"]
-] == ["pbe"]
+    for stage in desired_outputs["relaxed_energy"]["workflow_spec"]["stages"]
+] == ["relax", "relax", "static"]
 assert [
     stage["stage_type"]
     for stage in desired_outputs["relaxed_structure"]["workflow_spec"]["stages"]

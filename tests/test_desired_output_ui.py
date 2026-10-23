@@ -90,7 +90,7 @@ def test_desired_output_options_are_backend_owned_and_beginner_facing():
     desired_outputs = options["desired_outputs"]
 
     assert [option["label"] for option in desired_outputs] == [
-        "Energy only",
+        "Relaxed Energy",
         "Relaxed structure",
         "Electronic density of states",
         "Electronic band structure",
@@ -98,7 +98,7 @@ def test_desired_output_options_are_backend_owned_and_beginner_facing():
         "Custom workflow",
     ]
     assert [option["value"] for option in desired_outputs] == [
-        "energy_only",
+        "relaxed_energy",
         "relaxed_structure",
         "electronic_dos",
         "electronic_band_structure",
@@ -114,7 +114,17 @@ def test_desired_output_options_are_backend_owned_and_beginner_facing():
         )
         for option in desired_outputs
     }
-    assert _stage_pairs(workflows["energy_only"]) == [("static", "pbe")]
+    assert _stage_pairs(workflows["relaxed_energy"]) == [
+        ("relax", "pbe"),
+        ("relax", "pbe"),
+        ("static", "pbe"),
+    ]
+    # Energy only stays a valid identifier with its single-point meaning, but is
+    # not offered in the browser menu.
+    assert "energy_only" not in workflows
+    assert _stage_pairs(desired_output_workflow_spec("energy_only")) == [
+        ("static", "pbe")
+    ]
     assert _stage_pairs(workflows["relaxed_structure"]) == [
         ("relax", "pbe"),
         ("relax", "pbe"),
@@ -149,7 +159,9 @@ def test_rendered_normal_selector_uses_desired_output_not_workflow_recipes():
     assert "Recommended Workflow" not in html
     assert 'id="workflow-recipe-select"' not in html
     assert 'id="desired-output-select"' in html
-    assert "Energy only" in select_block
+    assert "Relaxed Energy" in select_block
+    assert "Energy only" not in select_block
+    assert 'value="energy_only"' not in select_block
     assert "Relaxed structure" in select_block
     assert "Electronic density of states" in select_block
     assert "Electronic band structure" in select_block

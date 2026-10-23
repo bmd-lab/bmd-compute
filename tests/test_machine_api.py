@@ -551,6 +551,9 @@ PARITY_CASES = {
     "custom_pbe_soc": (SI_POSCAR, None, {"stages": [custom_stage("static", "pbe", ["soc"])]}),
     "custom_hse06": (SI_POSCAR, None, {"stages": [custom_stage("relax", "pbe"), custom_stage("static", "hse06")]}),
     "pbe_phonons": (SI_POSCAR, "phonons", None),
+    "pbe_relaxed_energy": (SI_POSCAR, "relaxed_energy", None),
+    "pbe_relaxed_energy_d3_soc": (BI2SE3_POSCAR, "relaxed_energy", None),
+    "pbe_relaxed_energy_dft_u": (NIO_POSCAR, "relaxed_energy", None),
 }
 
 
@@ -1092,6 +1095,7 @@ def test_browser_and_api_phonon_digests_match(client, tokens):
     [
         ("energy_only", {"static": 4}),
         ("relaxed_structure", {"relax": 4}),
+        ("relaxed_energy", {"relax": 4, "static": 4}),
         ("electronic_dos", {"relax": 4, "static": 4, "dos": 4}),
         ("electronic_band_structure", {"relax": 4, "static": 4, "band_structure": None}),
         ("phonons", {"relax": 4, "phonon_forces": None}),
