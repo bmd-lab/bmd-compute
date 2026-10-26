@@ -160,7 +160,7 @@ Current allow-lists:
 
 Automatic resources are the default for new calculations
 (`backend/calculations/automatic_resources.py`; see
-`docs/automatic_resources.md`): 24 CPUs, 128 GB and a conservative walltime
+`docs/automatic_resources.md`): 24 CPUs, a 32, 64 or 128 GB memory bracket and a conservative walltime
 estimated per stage from computational descriptors, with identified fallbacks
 outside the calibrated domain. Explicit values are kept exactly.
 

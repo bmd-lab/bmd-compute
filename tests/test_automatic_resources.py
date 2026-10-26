@@ -156,10 +156,19 @@ def test_an_unsizable_stage_gets_the_unknown_fallback():
 # ------------------------------------------------------------ recommendations
 
 
-def test_cpus_and_memory_are_the_conservative_defaults(plans):
-    for plan in plans.values():
+def test_cpus_are_the_default_and_memory_is_the_stage_bracket(plans):
+    expected_memory = {
+        "si2_static": 32,
+        "si64_static": 64,
+        "si2_relax": 32,
+        "nio_static": 32,
+        "si2_hse_dos": 128,
+        "si8_hse_band": 128,
+        "si2_phonons": 64,
+    }
+    for name, plan in plans.items():
         assert plan.execution_resources.cpus == 24
-        assert plan.execution_resources.memory_gb == 128
+        assert plan.execution_resources.memory_gb == expected_memory[name], name
         assert _selection(plan)["fields"]["cpus"]["source"] == "automatic"
         assert _selection(plan)["fields"]["memory_gb"]["source"] == "automatic"
 
@@ -439,6 +448,166 @@ def test_prepare_uses_the_resources_approved_at_planning(monkeypatch):
     assert captured["spec"]["submission"]["attempt_fingerprint"] == built["submission_spec"]["submission"]["attempt_fingerprint"]
 
 
+# ------------------------------------------------------------ memory (policy 2)
+
+
+SI40_POSCAR = Poscar(_SI_CONVENTIONAL * (5, 1, 1)).get_str()
+SI216_POSCAR = Poscar(_SI_CONVENTIONAL * (3, 3, 3)).get_str()
+
+
+def _memory(plan):
+    return _selection(plan)["fields"]["memory_gb"]
+
+
+def _digest(plan):
+    return compute_plan_digest(
+        structure=plan.structure,
+        submission_spec=plan.submission_spec,
+        stage_previews=plan_stage_previews(plan),
+    )
+
+
+@pytest.mark.parametrize(
+    ("structure", "desired_output", "custom", "memory_gb", "deciding_stage", "reason"),
+    [
+        (SI_POSCAR, "energy_only", None, 32, 1, "PBE, at most 32 atoms"),
+        # Multistage workflows: one allocation sized by the largest stage bracket.
+        (SI_POSCAR, "relaxed_energy", None, 32, 1, "PBE, at most 32 atoms"),
+        (NIO_POSCAR, "relaxed_energy", None, 32, 1, "PBE, at most 32 atoms"),  # spin + DFT+U
+        (BI2SE3_POSCAR, "relaxed_structure", None, 32, 1, "PBE, at most 32 atoms"),  # D3
+        (BI2SE3_POSCAR, "relaxed_energy", None, 128, 3, "outside the calibrated range"),  # final SOC static
+        (SI_POSCAR, "phonons", None, 64, 2, "phonon displacement supercells"),
+        (SI_POSCAR, None, [_stage("static", "pbe", ["soc"])], 64, 1, "spin-orbit coupling"),
+        (SI40_POSCAR, "energy_only", None, 64, 1, "more than 32 atoms"),
+        (SI64_POSCAR, "relaxed_energy", None, 64, 1, "more than 32 atoms"),
+        (SI216_POSCAR, "energy_only", None, 128, 1, "outside the calibrated range"),
+        (SI_POSCAR, None, [_stage("static", "hse06")], 128, 1, "hybrid functional"),
+        (SI_POSCAR, "electronic_dos", None, 128, 2, "hybrid functional"),
+    ],
+    ids=[
+        "si-static", "si-relaxed-energy", "nio-relaxed-energy", "bi2se3-relaxed-structure",
+        "bi2se3-relaxed-energy", "si-phonons", "si-pbe-soc", "si40", "si64-relaxed-energy",
+        "si216", "si-hse06", "si-hse-dos",
+    ],
+)
+def test_automatic_memory_is_the_largest_stage_bracket(structure, desired_output, custom, memory_gb, deciding_stage, reason):
+    plan = _plan(structure, desired_output, custom={"stages": custom} if custom else None)
+    field = _memory(plan)
+
+    assert plan.execution_resources.memory_gb == memory_gb
+    assert plan.submission_spec["resources"]["mem_gb"] == memory_gb
+    assert field["source"] == "automatic"
+    assert field["value"] == field["recommended"] == memory_gb
+    assert field["deciding_stage"] == deciding_stage
+    assert field["basis"] == f"{memory_gb} GB bracket: {reason}"
+    # CPUs and walltime are decided exactly as before.
+    assert plan.execution_resources.cpus == auto.AUTOMATIC_CPUS
+    assert plan.execution_resources.walltime == _estimate(plan)["walltime"]
+
+
+@pytest.mark.parametrize(
+    ("desired_output", "cpus", "memory_gb"),
+    [
+        ("relaxed_energy", 24, 32),
+        ("relaxed_energy", 48, 64),
+        ("relaxed_energy", 72, 128),
+        ("relaxed_energy", 96, 128),
+        ("relaxed_energy", 192, 128),
+        ("phonons", 48, 128),
+        ("electronic_dos", 48, 128),
+    ],
+)
+def test_more_cpus_raise_the_bracket_but_never_above_128_gb(desired_output, cpus, memory_gb):
+    plan = _plan(desired_output=desired_output, resources={"cpus": cpus})
+    assert plan.execution_resources.cpus == cpus
+    assert plan.execution_resources.memory_gb == memory_gb <= auto.AUTOMATIC_MEMORY_GB
+    assert _memory(plan)["source"] == "automatic"
+
+
+def test_memory_brackets_combine_stages_and_fall_back_to_128_gb():
+    base = _estimate(_plan())["stages"][0]
+    soc = {**base, "index": 2, "descriptors": {**base["descriptors"], "soc": True}}
+    assert auto.stage_memory_bracket(base) == (32, "PBE, at most 32 atoms")
+    combined = auto.estimate_memory([base, soc])
+    assert (combined["memory_gb"], combined["deciding_stage"], combined["stage_brackets"]) == (64, 2, [32, 64])
+    assert auto.estimate_memory([base, soc], cpus=48)["memory_gb"] == 128
+    # Anything that cannot be sized, or is not PBE, keeps the largest bracket.
+    meta_gga = {**base, "descriptors": {**base["descriptors"], "meta_gga": True}}
+    for stage in ({"index": 1, "stage_type": "static", "theory": "pbe"}, meta_gga, {**base, "theory": "r2scan"}):
+        assert auto.stage_memory_bracket(stage)[0] == 128
+    assert auto.estimate_memory([])["memory_gb"] == 128
+
+
+@pytest.mark.parametrize(
+    "resources",
+    [{"memory_gb": 96}, {"memory_gb": "128"}, {"memory_gb": 32, "cpus": 192}, {"memory_gb": 512, "cpus": 48}],
+)
+def test_manual_memory_is_kept_exactly(resources):
+    plan = _plan(desired_output="phonons", resources=resources)
+    automatic = _plan(desired_output="phonons", resources={"cpus": resources.get("cpus", 24)})
+
+    assert plan.execution_resources.memory_gb == int(resources["memory_gb"])
+    assert _memory(plan)["source"] == "manual"
+    assert _memory(plan)["basis"] == "set manually"
+    # The automatic recommendation is recorded beside the manual value.
+    assert _memory(plan)["recommended"] == automatic.execution_resources.memory_gb
+
+
+def test_browser_and_machine_api_resolve_the_same_escalated_memory():
+    ui = _build(cpus="48")
+    api = _plan(resources={"cpus": 48})
+    assert ui["submission_spec"]["resources"] == api.submission_spec["resources"]
+    assert ui["submission_spec"]["resources"]["mem_gb"] == 64
+    assert ui["submission_spec"]["flow_spec"]["resource_selection"] == _selection(api)
+    assert ui["selected_resources"]["automatic_memory_gb"] == 64
+
+
+def test_memory_policy_change_is_a_new_plan_identity():
+    automatic = _plan()
+    policy_1_request = _plan(resources={"memory_gb": 128})  # what policy 1 requested automatically
+    manual_same_value = _plan(resources={"memory_gb": 32})
+
+    assert auto.POLICY_VERSION == 2
+    assert policy_versions()["automatic_resources"]["version"] == 2
+    assert _digest(automatic) == _digest(_plan())
+    assert len({_digest(automatic), _digest(policy_1_request), _digest(manual_same_value)}) == 3
+    assert auto.selection_digest_material(_selection(automatic))["recommended_memory_gb"] == 32
+    assert automatic.execution_resources.memory_gb == manual_same_value.execution_resources.memory_gb
+
+
+def test_a_page_planned_under_policy_1_cannot_prepare_with_new_memory(monkeypatch):
+    built = _build()
+    token = built["selected_resources"]["planned_token"]
+    assert "memory_gb=32:automatic" in token and token.endswith("/2")
+    # The token a policy-1 page carries: 128 GB under policy version 1.
+    stale = token.replace("memory_gb=32:", "memory_gb=128:").replace(f"{auto.POLICY_ID}/2", f"{auto.POLICY_ID}/1")
+    identity = built["submission_spec"]["submission"]
+    monkeypatch.setattr(main, "prepare_remote_submission", lambda *a, **k: pytest.fail("prepared"))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        response = main.prepare_remote(
+            _request("/prepare-remote"),
+            structure=SI_POSCAR,
+            fmt="poscar",
+            purpose=None,
+            theory=None,
+            modifiers=None,
+            cpus="",
+            memory_gb="",
+            walltime="",
+            queue=None,
+            created_at=None,
+            submission_attempt_id=identity["attempt_id"],
+            submission_identity_token=identity["identity_token"],
+            workflow_spec_json=None,
+            workflow="energy_only",
+            method=None,
+            planned_resources=stale,
+        )
+    assert response.status_code == 400
+    assert response.context["calculation_error"]["diagnostic"]["code"] == "planned_resources_changed"
+
+
 # ------------------------------------------------------------ SLURM
 
 
@@ -451,7 +620,8 @@ def test_generated_slurm_submission_includes_the_qos(plans):
     assert "#SBATCH --qos=owner100d\n" in script
     assert f"#SBATCH --time={spec['resources']['walltime']}\n" in script
     command = build_submission_command(spec)
-    assert f"sbatch -p {DEFAULT_PARTITION} -A {DEFAULT_ACCOUNT} --qos=owner100d -N 1 -n 24 --mem=128G -t {spec['resources']['walltime']} --parsable" in command
+    assert f"sbatch -p {DEFAULT_PARTITION} -A {DEFAULT_ACCOUNT} --qos=owner100d -N 1 -n 24 --mem=64G -t {spec['resources']['walltime']} --parsable" in command
+    assert "#SBATCH --mem=64G\n" in script
     assert "#SBATCH --qos=owner100d" in build_standalone_slurm_example(spec)["text"]
 
 

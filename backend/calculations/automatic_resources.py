@@ -7,11 +7,25 @@ gives explicitly are kept exactly, subject to the existing validation in
 automatic resources are decided; the browser and the machine API both reach it
 through ``main.build_submission_state_from_structure``.
 
-Policy ``bmd_compute.automatic_resources`` version 1
+Policy ``bmd_compute.automatic_resources`` version 2
 ---------------------------------------------------
 
-CPUs and memory: the existing defaults (24 MPI ranks, 128 GB). These are
-conservative initial selections, not performance optima.
+CPUs: the existing default of 24 MPI ranks, a conservative initial selection.
+
+Memory: a conservative bracket per stage from the same descriptors as the
+walltime (no separate model); the workflow takes the largest stage bracket:
+
+* 128 GB: HSE06, meta-GGA or any non-PBE theory, descriptors unavailable, or
+  outside the calibrated descriptor range (atoms, bands, k-points, D);
+* 64 GB: within that range, with SOC, a phonon displacement stage, or 33-64
+  atoms;
+* 32 GB: other PBE stages (including spin, DFT+U and D3) up to 32 atoms.
+
+The brackets assume 24 ranks; each doubling of the CPUs above 24 raises the
+bracket one step, never above 128 GB. 128 GB (version 1's fixed request) is
+therefore the largest automatic memory. On the 16 October 2026 telemetry every
+measured PBE stage stayed below 5 GB of SLURM step MaxRSS, the 64-atom Si
+phonon displacements below 7 GB, and only hybrid stages exceeded 8 GB.
 
 Walltime: a conservative, chemistry-independent empirical estimate built from
 plan-time computational descriptors of every stage. The descriptors are read
@@ -83,7 +97,7 @@ from backend.config import DEFAULT_ACCOUNT, DEFAULT_PARTITION, DEFAULT_RESOURCES
 
 
 POLICY_ID = "bmd_compute.automatic_resources"
-POLICY_VERSION = 1
+POLICY_VERSION = 2
 
 SOURCE_AUTOMATIC = "automatic"
 SOURCE_MANUAL = "manual"
@@ -91,7 +105,11 @@ SOURCE_MANUAL = "manual"
 AUTOMATIC_VALUES = frozenset({"", "auto", "automatic"})
 
 AUTOMATIC_CPUS = DEFAULT_RESOURCES["ntasks"]
+# The largest automatic memory bracket (version 1's fixed request).
 AUTOMATIC_MEMORY_GB = DEFAULT_RESOURCES["mem_gb"]
+MEMORY_BRACKETS_GB = (32, 64, AUTOMATIC_MEMORY_GB)
+MEMORY_SMALL_MAX_ATOMS = 32
+MEMORY_REFERENCE_CPUS = 24
 
 CALIBRATION = {
     "dataset": "BMD Compute telemetry snapshot 2026-10-16",
@@ -255,14 +273,15 @@ def resolve_execution_resources(
         potcar_functional=potcar_functional,
     )
     walltime = request.walltime if request.walltime is not None else estimate["walltime"]
+    memory = estimate_memory(estimate["stages"], cpus=partial.cpus)
     resources = ExecutionResources(
         cpus=partial.cpus,
-        memory_gb=partial.memory_gb,
+        memory_gb=request.memory_gb if request.memory_gb is not None else memory["memory_gb"],
         walltime=walltime,
         queue=partial.queue,
         account=DEFAULT_ACCOUNT,
     )
-    record = selection_record(request, resources, estimate)
+    record = selection_record(request, resources, estimate, memory)
     return ResourceSelection(
         resources=resources,
         request=request,
@@ -271,7 +290,13 @@ def resolve_execution_resources(
     )
 
 
-def selection_record(request: ResourceRequest, resources: ExecutionResources, estimate: Mapping[str, Any]) -> dict[str, Any]:
+def selection_record(
+    request: ResourceRequest,
+    resources: ExecutionResources,
+    estimate: Mapping[str, Any],
+    memory: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    memory = memory or estimate_memory(estimate.get("stages") or [], cpus=resources.cpus)
     cpus_source = request.source("cpus")
     memory_source = request.source("memory_gb")
     walltime_source = request.source("walltime")
@@ -290,11 +315,9 @@ def selection_record(request: ResourceRequest, resources: ExecutionResources, es
             "memory_gb": {
                 "source": memory_source,
                 "value": resources.memory_gb,
-                "basis": (
-                    "BMD Compute default of 128 GB (conservative initial selection)"
-                    if memory_source == SOURCE_AUTOMATIC
-                    else "set manually"
-                ),
+                "recommended": memory["memory_gb"],
+                "basis": memory["basis"] if memory_source == SOURCE_AUTOMATIC else "set manually",
+                "deciding_stage": memory["deciding_stage"],
             },
             "walltime": {
                 "source": walltime_source,
@@ -319,6 +342,7 @@ def selection_digest_material(record: Mapping[str, Any] | None) -> dict[str, Any
         "policy": dict(record.get("policy") or {}),
         "sources": {name: (fields.get(name) or {}).get("source") for name in sorted(fields)},
         "recommended_walltime": (fields.get("walltime") or {}).get("recommended"),
+        "recommended_memory_gb": (fields.get("memory_gb") or {}).get("recommended"),
         "walltime_basis": estimate.get("basis"),
         "stage_classes": [stage.get("class") for stage in estimate.get("stages") or []],
     }
@@ -395,6 +419,59 @@ def estimate_walltime(
     }
     estimate["explanation"] = walltime_explanation(estimate)
     return estimate
+
+
+def stage_memory_bracket(stage: Mapping[str, Any]) -> tuple[int, str]:
+    """The memory bracket (GB at 24 ranks) of one estimated stage and why."""
+
+    descriptors = stage.get("descriptors")
+    if not descriptors:
+        return AUTOMATIC_MEMORY_GB, "descriptors unavailable"
+    if descriptors.get("hybrid"):
+        return AUTOMATIC_MEMORY_GB, "hybrid functional"
+    if descriptors.get("meta_gga") or stage.get("theory") != Theory.PBE.value:
+        return AUTOMATIC_MEMORY_GB, f"{stage.get('theory')} is not PBE"
+    if (
+        descriptors["atoms"] > CALIBRATED_MAX_ATOMS
+        or descriptors["bands"] > CALIBRATED_MAX_BANDS
+        or descriptors["kpoints"] > CALIBRATED_MAX_KPOINTS
+        or descriptors["descriptor"] > CALIBRATED_MAX_DESCRIPTOR
+    ):
+        return AUTOMATIC_MEMORY_GB, "outside the calibrated range"
+    if descriptors.get("soc"):
+        return MEMORY_BRACKETS_GB[1], "spin-orbit coupling"
+    if stage.get("stage_type") == StageType.PHONON_FORCES.value:
+        return MEMORY_BRACKETS_GB[1], "phonon displacement supercells"
+    if descriptors["atoms"] > MEMORY_SMALL_MAX_ATOMS:
+        return MEMORY_BRACKETS_GB[1], f"more than {MEMORY_SMALL_MAX_ATOMS} atoms"
+    return MEMORY_BRACKETS_GB[0], f"PBE, at most {MEMORY_SMALL_MAX_ATOMS} atoms"
+
+
+def estimate_memory(stages: Sequence[Mapping[str, Any]], *, cpus: int = AUTOMATIC_CPUS) -> dict[str, Any]:
+    """Automatic memory: the largest stage bracket, escalated for CPUs above 24."""
+
+    brackets = [stage_memory_bracket(stage) for stage in stages] or [
+        (AUTOMATIC_MEMORY_GB, "descriptors unavailable")
+    ]
+    bracket, reason = max(brackets, key=lambda item: item[0])
+    deciding = next(
+        (stage.get("index") for stage, item in zip(stages, brackets) if item[0] == bracket),
+        None,
+    )
+    steps = math.ceil(math.log2(cpus / MEMORY_REFERENCE_CPUS)) if cpus > MEMORY_REFERENCE_CPUS else 0
+    memory_gb = bracket
+    for _ in range(steps):
+        memory_gb = min(AUTOMATIC_MEMORY_GB, memory_gb * 2)
+    basis = f"{bracket} GB bracket: {reason}"
+    if memory_gb != bracket:
+        basis += f"; raised to {memory_gb} GB for {cpus} CPUs"
+    return {
+        "memory_gb": memory_gb,
+        "bracket_gb": bracket,
+        "basis": basis,
+        "deciding_stage": deciding,
+        "stage_brackets": [item[0] for item in brackets],
+    }
 
 
 def round_walltime_seconds(seconds: float) -> tuple[int, bool]:
@@ -769,6 +846,7 @@ def _duration_text(seconds: int) -> str:
 __all__ = [
     "AUTOMATIC_CPUS",
     "AUTOMATIC_MEMORY_GB",
+    "estimate_memory",
     "BASIS_EMPIRICAL",
     "BASIS_FALLBACK",
     "POLICY_ID",

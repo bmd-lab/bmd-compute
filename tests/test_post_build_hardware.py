@@ -130,7 +130,8 @@ def test_successful_build_shows_three_recommended_values_and_nothing_else():
     assert form.index("<h3>Hardware Specification</h3>") < form.index("data-build-calculation-button")
     assert "data-hardware-specification" in panel and "data-built-output" in panel
     assert "Recommended resources for this calculation" in panel
-    assert _summary_values(panel) == {"cpus": "24", "memory_gb": "128 GB", "walltime": "1 hour"}
+    # Si single point: the 32 GB bracket (automatic-resource policy 2).
+    assert _summary_values(panel) == {"cpus": "24", "memory_gb": "32 GB", "walltime": "1 hour"}
     # One Custom button in the header; the controls are collapsed.
     assert panel.count("data-hardware-custom-toggle") == 1
     assert 'aria-expanded="false"' in panel
@@ -164,7 +165,7 @@ def test_custom_controls_start_from_the_approved_values_and_submit_automatic():
         '<select id="hardware-memory"', ""
     )
     assert _selected(panel, "cpus") == ["24"]
-    assert _selected(panel, "memory_gb") == ["128"]
+    assert _selected(panel, "memory_gb") == ["32"]
     assert re.search(r'id="hardware-walltime"\s+value="01:00:00"', panel)
     # No Automatic option: the controls show values, and what is submitted stays Automatic
     # until the user changes a control.
@@ -261,7 +262,8 @@ def test_prepare_and_submit_forms_carry_the_approved_plan_only():
         form = html[start:html.index("</form>", start)]
         assert '<input type="hidden" name="cpus" value="48">' in form
         assert '<input type="hidden" name="walltime" value="">' in form
-        assert 'name="planned_resources" value="cpus=48:manual;memory_gb=128:automatic;walltime=01:00:00:automatic;' in form
+        # 48 CPUs raise the automatic 32 GB bracket one step.
+        assert 'name="planned_resources" value="cpus=48:manual;memory_gb=64:automatic;walltime=01:00:00:automatic;' in form
 
 
 def test_reopening_custom_shows_the_manual_values_after_update_calculation():
@@ -277,7 +279,8 @@ def test_reopening_custom_shows_the_manual_values_after_update_calculation():
     assert _submitted(panel)["memory_gb"] == "256"
     assert _submitted(panel)["walltime"] == "10:00:00"
     # Restore Recommended returns the controls to the estimator's values.
-    assert 'data-recommended="24"' in panel and 'data-recommended="128"' in panel
+    # (the memory recommendation for 48 CPUs: the 32 GB bracket raised one step)
+    assert 'data-recommended="24"' in panel and 'data-recommended="64"' in panel
     assert 'data-recommended="01:00:00"' in panel
 
 
