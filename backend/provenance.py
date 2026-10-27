@@ -36,6 +36,7 @@ SCIENTIFIC_PACKAGE_NAMES = (
     "ruamel.yaml",
     "phonopy",
     "seekpath",
+    "bmd-agent",
 )
 
 

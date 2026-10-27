@@ -12,6 +12,7 @@ import backend.runtime_environment as runtime_environment
 import backend.workflows as workflows
 from backend.execution import run_submission
 from backend.runtime_environment import (
+    ELECTRONIC_CHARACTER_PARITY_CRITICAL_PACKAGES,
     PARITY_CRITICAL_PACKAGES,
     PHONON_PARITY_CRITICAL_PACKAGES,
     RECORDED_SUPPORTING_PACKAGES,
@@ -40,6 +41,7 @@ PRODUCTION = {
     "spglib": "2.7.0",
     "phonopy": "4.8.1",
     "seekpath": "2.1.0",
+    "bmd-agent": "0.2.0",
     "monty": "2026.7.16",
     "numpy": "2.5.1",
     "scipy": "1.18.0",
@@ -134,7 +136,10 @@ def test_identical_stack_is_allowed_and_recorded(tmp_path):
     assert written["prepared_packages"] == {name: PRODUCTION[name] for name in PARITY_CRITICAL_PACKAGES}
     assert written["runtime_packages"] == {name: PRODUCTION[name] for name in PARITY_CRITICAL_PACKAGES}
     assert written["supporting_packages"] == {
-        name: PRODUCTION[name] for name in RECORDED_SUPPORTING_PACKAGES + PHONON_PARITY_CRITICAL_PACKAGES
+        name: PRODUCTION[name]
+        for name in RECORDED_SUPPORTING_PACKAGES
+        + PHONON_PARITY_CRITICAL_PACKAGES
+        + ELECTRONIC_CHARACTER_PARITY_CRITICAL_PACKAGES
     }
     assert written["slurm_job_id"] == "22400000"
     assert written["attempt_id"] == "3c8f2d8e-2f7a-4c1b-9a51-2d0d1b6b0e11"

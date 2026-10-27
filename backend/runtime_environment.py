@@ -18,6 +18,11 @@ Package tiers (the versions themselves live in
   required set is derived from the submission's own ``workflow_spec`` at
   preparation and again on POWER. For every other submission they are recorded
   as supporting packages.
+* ``ELECTRONIC_CHARACTER_PARITY_CRITICAL_PACKAGES`` (bmd-agent, BMD Check) are
+  parity-critical, at exactly ``REQUIRED_PACKAGE_VERSIONS``, *only* for
+  submissions with a self-consistent HSE06 band-structure stage, whose
+  initial SIGMA follows BMD Check's C2 assessment of the preceding HSE06
+  static (``backend.calculations.hse_band_sigma``). Otherwise recorded only.
 * ``RECORDED_SUPPORTING_PACKAGES`` are pinned in the constraints for
   reproducible installs and recorded at run time, but a difference does not
   stop a run: they are numerical, serialization, configuration or job-store
@@ -63,6 +68,11 @@ PHONON_PARITY_CRITICAL_PACKAGES = (
     "seekpath",
 )
 PHONON_STAGE_TYPE = "phonon_forces"
+# Parity-critical only for workflows with a self-consistent HSE06 band-structure
+# stage: BMD Check's C2 assessment chooses that stage's initial SIGMA.
+ELECTRONIC_CHARACTER_PARITY_CRITICAL_PACKAGES = ("bmd-agent",)
+# Exact versions an affected workflow requires (the interface it calls).
+REQUIRED_PACKAGE_VERSIONS = {"bmd-agent": "0.2.0"}
 RECORDED_SUPPORTING_PACKAGES = (
     "monty",
     "numpy",
@@ -128,12 +138,25 @@ def workflow_requires_phonon_runtime(workflow_spec: Any) -> bool:
     )
 
 
+def workflow_requires_electronic_character_runtime(workflow_spec: Any) -> bool:
+    stages = workflow_spec.get("stages") if isinstance(workflow_spec, Mapping) else None
+    return any(
+        isinstance(stage, Mapping)
+        and stage.get("stage_type") == "band_structure"
+        and stage.get("theory") == "hse06"
+        for stage in stages or ()
+    )
+
+
 def parity_critical_packages_for_workflow(workflow_spec: Any) -> tuple[str, ...]:
     """Parity-critical package names for a submission with ``workflow_spec``."""
 
+    packages = PARITY_CRITICAL_PACKAGES
     if workflow_requires_phonon_runtime(workflow_spec):
-        return PARITY_CRITICAL_PACKAGES + PHONON_PARITY_CRITICAL_PACKAGES
-    return PARITY_CRITICAL_PACKAGES
+        packages += PHONON_PARITY_CRITICAL_PACKAGES
+    if workflow_requires_electronic_character_runtime(workflow_spec):
+        packages += ELECTRONIC_CHARACTER_PARITY_CRITICAL_PACKAGES
+    return packages
 
 
 def parity_critical_packages_for_spec(spec: Any) -> tuple[str, ...]:
@@ -144,7 +167,9 @@ def parity_critical_packages_for_spec(spec: Any) -> tuple[str, ...]:
 
 def recorded_supporting_packages_for(critical: tuple[str, ...]) -> tuple[str, ...]:
     return RECORDED_SUPPORTING_PACKAGES + tuple(
-        name for name in PHONON_PARITY_CRITICAL_PACKAGES if name not in critical
+        name
+        for name in PHONON_PARITY_CRITICAL_PACKAGES + ELECTRONIC_CHARACTER_PARITY_CRITICAL_PACKAGES
+        if name not in critical
     )
 
 
@@ -164,6 +189,9 @@ def prepared_runtime_parity(
                 + ", ".join(missing)
             ]
         )
+    incompatible = _required_version_problems(versions)
+    if incompatible:
+        raise RuntimeParityError(incompatible)
     return {
         "policy_id": RUNTIME_PARITY_POLICY_ID,
         "policy_version": RUNTIME_PARITY_POLICY_VERSION,
@@ -204,7 +232,21 @@ def prepared_parity_problems(
         value = packages.get(name)
         if name in packages and (not isinstance(value, str) or not value.strip()):
             problems.append(f"runtime_parity.packages[{name!r}] is not a version string: {value!r}.")
+    problems.extend(
+        _required_version_problems({name: packages.get(name) for name in required if name in packages})
+    )
     return problems
+
+
+def _required_version_problems(versions: Mapping[str, Any]) -> list[str]:
+    return [
+        f"{name} {versions[name]} is installed; this BMD Compute requires {REQUIRED_PACKAGE_VERSIONS[name]}."
+        for name in versions
+        if name in REQUIRED_PACKAGE_VERSIONS
+        and isinstance(versions[name], str)
+        and versions[name].strip()
+        and versions[name] != REQUIRED_PACKAGE_VERSIONS[name]
+    ]
 
 
 def runtime_parity_problems(

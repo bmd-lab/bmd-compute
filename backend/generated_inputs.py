@@ -437,17 +437,25 @@ def _combined_stage_input_text(
     for stage in stage_previews:
         label = stage["label"]
         stage_theory_label = stage.get("theory_label") or theory_label
-        sections.append(
-            "\n".join(
-                [
-                    f"# Stage {stage['index']} - {label} ({stage_theory_label})",
-                    f"# VASP executable - {stage['vasp_executable']}",
-                    _input_text(getattr(stage["input_set"], key)),
-                ]
-            )
-        )
+        header = [
+            f"# Stage {stage['index']} - {label} ({stage_theory_label})",
+            f"# VASP executable - {stage['vasp_executable']}",
+        ]
+        if key == "incar" and _is_hse_band_structure_preview(stage):
+            from backend.calculations.hse_band_sigma import preview_note
+
+            header.append(preview_note(stage["index"] - 1))
+        sections.append("\n".join([*header, _input_text(getattr(stage["input_set"], key))]))
 
     return "\n\n".join(sections)
+
+
+def _is_hse_band_structure_preview(stage: dict) -> bool:
+    spec = stage.get("stage_spec")
+    return (
+        getattr(getattr(spec, "stage_type", None), "value", None) == "band_structure"
+        and getattr(getattr(spec, "theory", None), "value", None) == "hse06"
+    )
 
 
 def _input_text(input_object) -> str:

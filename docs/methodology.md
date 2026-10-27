@@ -193,7 +193,12 @@ All HSE06 stages use `LHFCALC = True`, `AEXX = 0.25`, `HFSCREEN = 0.2` and
 | Band Structure | self-consistent on a uniform mesh plus a zero-weight path, `ENCUT = 620` eV, `ALGO = Normal`, `PRECFOCK = Fast`, `ISMEAR = 0`, `SIGMA = 0.01`, `NELMIN = 5` (adopted) |
 
 HSE06 DOS may follow PBE or HSE06 Static Energy; HSE06 Band Structure requires
-HSE06 Static Energy. Both are self-consistent. Atomate2 0.1.5's `HSEBSMaker`
+HSE06 Static Energy. The Band Structure's `SIGMA = 0.01` is its default initial
+value: when BMD Check's C2 assessment classifies the completed HSE06 static as
+metallic, the stage starts from `SIGMA = 0.20` eV instead (`ISMEAR = 0` in every
+case; uncertain or unusable evidence keeps 0.01, with the reason recorded in
+`bmd_hse_band_sigma.json`; policy `bmd_compute.hse_band_structure_sigma` v1).
+Custodian's LargeSigmaHandler may lower SIGMA during the run. Both are self-consistent. Atomate2 0.1.5's `HSEBSMaker`
 may physically copy `CHGCAR` when given a previous-stage directory, but BMD's
 generated HSE06 INCAR requests neither a fixed-charge-density nor a WAVECAR
 restart (`ICHARG` and `ISTART` are absent). The preceding run still supplies the
@@ -272,6 +277,8 @@ these fields can legitimately differ from the reference:
 - `NBANDS`, derived from the previous stage;
 - `SIGMA` on HSE06 DOS, which follows the previous stage's band gap and has no
   effect with `ISMEAR = -5`;
+- the initial `SIGMA` on HSE06 Band Structure (0.20 eV when BMD Check C2
+  classifies the preceding HSE06 static as metallic, section 3);
 - PBE DOS/Band Structure starting from the previous charge density.
 
 Such differences are expected consequences of this methodology, not

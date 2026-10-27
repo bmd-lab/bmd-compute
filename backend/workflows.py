@@ -1482,6 +1482,7 @@ def build_band_structure_input_set_generator(
     kpoints=None,
     potcar_functional="PBE_64",
     magmom_structure=None,
+    evidence_stage_index=None,
 ):
     calculation_modifiers = calculation_modifiers_from_options(
         modifiers=modifiers,
@@ -1522,12 +1523,17 @@ def build_band_structure_input_set_generator(
             # zone rather than pymatgen's symmetry-reduced set. Non-SOC HSE06
             # band structures keep the unmodified atomate2 generator.
             generator_class = full_zone_hse_band_structure_generator_class()
-        return generator_class(
+        from backend.calculations.hse_band_sigma import hse_band_sigma_generator_class
+
+        # The initial SIGMA follows BMD Check C2's assessment of the preceding
+        # HSE06 static at run time (backend.calculations.hse_band_sigma).
+        return hse_band_sigma_generator_class(generator_class)(
             mode="line",
             line_density=line_mode_density(kpoints),
             reciprocal_density=HSE_BAND_STRUCTURE_RECIPROCAL_DENSITY_DEFAULT,
             user_potcar_functional=potcar_functional,
             user_incar_settings=band_incar,
+            bmd_sigma_evidence_stage_index=evidence_stage_index,
         )
 
     from atomate2.vasp.sets.core import NonSCFSetGenerator
@@ -1886,9 +1892,12 @@ def build_atomate2_flow_for_workflow_spec(
                 kpoints=stage_kpoints,
                 potcar_functional=potcar_functional,
                 magmom_structure=structure,
+                # Validation places the Static Energy stage immediately before.
+                evidence_stage_index=index,
             )
             if theory_uses_hybrid_functional(stage.theory):
                 from atomate2.vasp.jobs.core import HSEBSMaker
+                from backend.calculations.hse_band_sigma import COPIED_PREVIOUS_STAGE_FILES
 
                 hse_run_vasp_kwargs = dict(run_vasp_kwargs)
                 hse_run_vasp_kwargs.update(hse_band_structure_run_vasp_kwargs())
@@ -1897,6 +1906,7 @@ def build_atomate2_flow_for_workflow_spec(
                     input_set_generator=generator,
                     name=stage_name,
                     run_vasp_kwargs=hse_run_vasp_kwargs,
+                    copy_vasp_kwargs={"additional_vasp_files": COPIED_PREVIOUS_STAGE_FILES},
                 ).make(
                     stage_structure,
                     prev_dir=previous_job.output.dir_name,

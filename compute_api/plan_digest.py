@@ -137,8 +137,24 @@ def stage_input_material(stage_previews: Sequence[Mapping[str, Any]]) -> list[di
             from backend.phonons.workflow import phonon_force_settings_payload
 
             stage_material["phonon_settings"] = json_safe(phonon_force_settings_payload())
+        if is_hse_band_structure_stage(preview):
+            # The previewed SIGMA is the default; the run chooses the initial
+            # SIGMA by this versioned rule. Added only for these stages.
+            from backend.calculations.hse_band_sigma import conditional_settings_payload
+
+            stage_material["conditional_settings"] = json_safe(conditional_settings_payload())
         material.append(stage_material)
     return material
+
+
+def is_hse_band_structure_stage(preview: Mapping[str, Any]) -> bool:
+    stage = preview.get("stage_spec")
+    stage_type = getattr(stage, "stage_type", None)
+    theory = getattr(stage, "theory", None)
+    return (
+        getattr(stage_type, "value", stage_type) == "band_structure"
+        and getattr(theory, "value", theory) == "hse06"
+    )
 
 
 def _is_phonon_force_stage(preview: Mapping[str, Any]) -> bool:
