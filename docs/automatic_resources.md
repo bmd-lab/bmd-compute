@@ -6,7 +6,7 @@ browser, and an omitted resource in a machine-API request means Automatic.
 Explicit values are kept exactly, subject to the existing validation.
 
 The estimator lives in `backend/calculations/automatic_resources.py`. Policy
-`bmd_compute.automatic_resources`, version 1. The browser and the machine API
+`bmd_compute.automatic_resources`, version 2. The browser and the machine API
 both reach it through `main.resolve_resources_for_workflow`, which is called
 from `build_submission_state_from_structure`, so there is one authority. BMD Run
 does not estimate resources.
@@ -17,9 +17,32 @@ carries no statistical guarantee.
 
 ## CPUs and memory
 
-Automatic CPUs are 24 and automatic memory is 128 GB, the previous defaults.
-These are conservative initial selections, not performance or memory
-predictions. Automatic NCORE is unchanged (`NCORE = 4` on eligible stages).
+Automatic CPUs are 24, a conservative initial selection rather than a
+performance prediction. Automatic NCORE is unchanged (`NCORE = 4` on eligible
+stages).
+
+Automatic memory (version 2) is a conservative bracket, not a memory model. Each
+stage is assigned one from the walltime descriptors below, and the workflow
+requests the largest:
+
+| Bracket | Stage |
+|---|---|
+| 128 GB | HSE06, meta-GGA or other non-PBE theory; descriptors unavailable; outside the calibrated range (more than 64 atoms, 315 bands or 343 k-points, or D above 5.5e10) |
+| 64 GB | inside that range with SOC, a phonon displacement stage, or 33-64 atoms |
+| 32 GB | other PBE stages, including spin, DFT+U and D3, up to 32 atoms |
+
+The brackets assume 24 CPUs. Each doubling of the CPUs above 24 raises the
+bracket one step, never above 128 GB, so no automatic request exceeds version
+1's fixed 128 GB. The record holds the bracket's basis and the deciding stage.
+
+The margins are wide. The 2026-10-16 telemetry recorded SLURM step MaxRSS,
+sampled every 30 s, which is a lower bound on the job's peak:
+
+- every measured PBE stage stayed below 5 GB;
+- the 64-atom Si phonon displacements stayed below 7 GB;
+- only hybrid stages went above 8 GB, reaching 29 GB for HSE06+SOC Bi2Se3 on 24 CPUs.
+
+A calculation that exceeds its bracket ends as OUT_OF_MEMORY. Rebuild it with a manual memory value.
 
 ## Walltime
 
@@ -122,6 +145,7 @@ The plan digest (version 2) covers:
 - the QOS;
 - the source of each field;
 - the recommended walltime and its basis;
+- the recommended memory;
 - the per-stage classes;
 - the automatic-resource policy version.
 
@@ -138,6 +162,8 @@ submitted (registered or prepared only, or reserved without reaching `sbatch`)
 cannot be prepared or submitted under the new policy and fails closed with 409
 `plan_changed`; plan it again and use a new attempt ID. A changed request can
 never reuse an existing attempt ID.
+
+Policy 2, which adds the memory brackets, works the same way. Every automatic plan gets a new digest, even where memory stays at 128 GB. Policy-1 attempts that have not yet been submitted are refused: the browser asks for a rebuild, and the machine API returns 409 `plan_changed`. They are never resubmitted with different memory.
 
 ## Deferred
 

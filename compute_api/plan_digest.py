@@ -32,8 +32,8 @@ Covered (any change alters the digest):
 * execution resources: nodes, MPI tasks, memory, walltime, partition, account
   and QOS;
 * the resource selection: which resources were Automatic and which explicit,
-  the automatic walltime recommendation and its basis (empirical estimate or
-  conservative fallback) and per-stage classes, under the automatic-resource
+  the automatic walltime and memory recommendations, the walltime basis
+  (empirical estimate or conservative fallback) and per-stage classes, under the automatic-resource
   policy version;
 * the loaded software modules and the VASP command template;
 * the parity-critical scientific package versions (``runtime_parity``);

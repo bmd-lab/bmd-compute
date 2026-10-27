@@ -87,7 +87,7 @@ This is designed to prevent duplicate SLURM jobs from repeated submit requests w
 ## Resource Policy
 
 Resources left on Automatic (the default) are chosen by the backend: 24 CPUs,
-128 GB and a walltime estimated from the structure and workflow; see
+a 32, 64 or 128 GB memory bracket and a walltime estimated from the structure and workflow; see
 `docs/automatic_resources.md`.
 
 ```text

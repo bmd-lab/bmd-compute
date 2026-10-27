@@ -425,7 +425,9 @@ def selected_resources_context(selection) -> dict:
         "queue": resources.queue if resources is not None else (request.queue or DEFAULT_PARTITION),
         "allowed_queues": list(ALLOWED_QUEUES),
         "automatic_cpus": AUTOMATIC_CPUS,
-        "automatic_memory_gb": AUTOMATIC_MEMORY_GB,
+        # The resolved automatic memory bracket (the recommendation the
+        # Custom hardware controls restore), not a fixed default.
+        "automatic_memory_gb": (fields.get("memory_gb") or {}).get("recommended") or AUTOMATIC_MEMORY_GB,
         "requested": {
             "cpus": "" if request.cpus is None else request.cpus,
             "memory_gb": "" if request.memory_gb is None else request.memory_gb,
