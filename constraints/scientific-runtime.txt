@@ -41,6 +41,18 @@ phonopy==4.8.1
 # phonon band-structure path (atomate2 kpath_scheme="seekpath")
 seekpath==2.1.0
 #
+# Tier 1C - parity-critical for workflows with a self-consistent HSE06 band
+# structure stage only. Required at exactly this version for those submissions
+# (backend/runtime_environment.py ELECTRONIC_CHARACTER_PARITY_CRITICAL_PACKAGES
+# and REQUIRED_PACKAGE_VERSIONS); recorded but not required for every other
+# submission. bmd-agent (BMD Check) is not on PyPI: install it in both
+# environments from https://github.com/bmd-lab/bmd-check at commit 5e3a202
+# (version 0.2.0) before applying this file.
+#
+# C2 electronic-character assessment of the preceding HSE06 static chooses the
+# band-structure stage's initial SIGMA (backend/calculations/hse_band_sigma.py)
+bmd-agent==0.2.0
+#
 # Tier 2 - supporting. Pinned for reproducible installs and recorded in each
 # run's runtime_environment.json; a difference does not stop a run.
 #

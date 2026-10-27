@@ -11,8 +11,10 @@ from packaging.requirements import Requirement
 
 from backend.provenance import SCIENTIFIC_PACKAGE_NAMES
 from backend.runtime_environment import (
+    ELECTRONIC_CHARACTER_PARITY_CRITICAL_PACKAGES,
     PARITY_CRITICAL_PACKAGES,
     PHONON_PARITY_CRITICAL_PACKAGES,
+    REQUIRED_PACKAGE_VERSIONS,
     RECORDED_SUPPORTING_PACKAGES,
 )
 
@@ -29,6 +31,8 @@ def _tiers() -> dict[str, dict[str, str]]:
         line = raw.strip()
         if line.startswith("# Tier 1P"):
             current = "phonon_critical"
+        elif line.startswith("# Tier 1C"):
+            current = "electronic_character_critical"
         elif line.startswith("# Tier 1"):
             current = "critical"
         elif line.startswith("# Tier 2"):
@@ -46,7 +50,7 @@ def _tiers() -> dict[str, dict[str, str]]:
 
 def test_every_entry_is_an_exact_pin_in_a_declared_tier():
     tiers = _tiers()
-    assert set(tiers) == {"critical", "phonon_critical", "supporting"}
+    assert set(tiers) == {"critical", "phonon_critical", "electronic_character_critical", "supporting"}
 
 
 def test_tier_one_is_exactly_the_runtime_parity_set():
@@ -56,6 +60,12 @@ def test_tier_one_is_exactly_the_runtime_parity_set():
 def test_phonon_tier_is_exactly_the_phonon_parity_set():
     assert list(_tiers()["phonon_critical"]) == list(PHONON_PARITY_CRITICAL_PACKAGES)
     assert _tiers()["phonon_critical"] == {"phonopy": "4.8.1", "seekpath": "2.1.0"}
+
+
+def test_electronic_character_tier_is_exactly_the_required_bmd_check():
+    tier = _tiers()["electronic_character_critical"]
+    assert list(tier) == list(ELECTRONIC_CHARACTER_PARITY_CRITICAL_PACKAGES)
+    assert tier == REQUIRED_PACKAGE_VERSIONS == {"bmd-agent": "0.2.0"}
 
 
 def test_tier_two_is_exactly_the_recorded_supporting_set():
@@ -98,5 +108,6 @@ def test_provenance_records_every_constrained_package():
 
 
 def test_running_stack_matches_the_parity_critical_pins():
-    for name, version in {**_tiers()["critical"], **_tiers()["phonon_critical"]}.items():
+    tiers = _tiers()
+    for name, version in {**tiers["critical"], **tiers["phonon_critical"], **tiers["electronic_character_critical"]}.items():
         assert metadata.version(name) == version, name

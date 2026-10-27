@@ -61,6 +61,8 @@ later stage can legitimately differ from its reference in:
 - `NBANDS`, derived from the previous stage;
 - `SIGMA` on HSE06 DOS, which follows the previous stage's band gap (no effect
   with `ISMEAR = -5`);
+- the initial `SIGMA` on HSE06 Band Structure, 0.20 eV instead of 0.01 when
+  BMD Check C2 classifies the preceding HSE06 static as metallic;
 - PBE DOS/Band Structure starting from the previous stage's charge density
   (`ICHARG = 11`).
 
