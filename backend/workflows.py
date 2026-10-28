@@ -1548,6 +1548,9 @@ def build_band_structure_input_set_generator(
         structure=structure,
         magmom_structure=magmom_structure,
     )
+    # A k-point path has no tetrahedra: Gaussian smearing, set explicitly
+    # rather than left to pymatgen's too-few-k-points fallback (SIGMA = 0.05).
+    band_incar["ISMEAR"] = 0
 
     return NonSCFSetGenerator(
         mode="line",
@@ -1981,6 +1984,7 @@ def build_phonon_forces_flow(
     potcar_functional="PBE_64",
     run_vasp_kwargs=None,
 ):
+    from backend.calculations.custodian_policy import phonon_force_run_vasp_kwargs
     from backend.phonons.workflow import build_phonon_flow, build_phonon_maker
 
     maker = build_phonon_maker(
@@ -1989,7 +1993,8 @@ def build_phonon_forces_flow(
             potcar_functional=potcar_functional,
         ),
         name=name,
-        run_vasp_kwargs=run_vasp_kwargs,
+        # One SIGMA across every displacement: no LargeSigmaHandler.
+        run_vasp_kwargs=phonon_force_run_vasp_kwargs(run_vasp_kwargs),
         stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
     )
     return build_phonon_flow(structure, maker)

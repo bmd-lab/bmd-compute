@@ -151,6 +151,10 @@ _RELAX_EXECUTABLE_DEFAULTS = {
     "ENCUT": ENCUT_RELAX_DEFAULT,
     "EDIFF": 1e-6,
     **_RELAX_COMPATIBILITY_DEFAULTS,
+    # Gaussian smearing for every relaxation, set explicitly so atomate2's
+    # band-gap-based auto_ismear can never choose it from a previous stage.
+    "ISMEAR": 0,
+    "SIGMA": 0.2,
 }
 
 _RELAX_EXPLICIT_USER_PRESERVED_DEFAULTS = {
@@ -300,6 +304,7 @@ _STAGE_DEFINITIONS: dict[StageType, VaspStageDefinition] = {
                 "kpath_scheme": PHONON_KPATH_SCHEME,
                 "born_maker": None,
                 "auto_ispin": False,
+                "custodian_policy": "backend.calculations.custodian_policy.phonon_force_run_vasp_kwargs",
             },
         ),
         incar_policy=StageIncarPolicy(
