@@ -105,6 +105,12 @@ PHONON_JOB_NAMES = (
 )
 
 
+def _phonon_force_handler_exclusions() -> tuple[str, ...]:
+    from backend.calculations.custodian_policy import PHONON_FORCE_HANDLER_EXCLUSIONS
+
+    return PHONON_FORCE_HANDLER_EXCLUSIONS
+
+
 def phonon_force_settings_payload() -> dict[str, Any]:
     """Settings of the phonon stage, independent of any structure."""
 
@@ -129,6 +135,8 @@ def phonon_force_settings_payload() -> dict[str, Any]:
         "precursor_relax_incar": dict(PHONON_PRECURSOR_RELAX_INCAR),
         "force_bmd_incar_amendments": dict(PHONON_FORCE_BMD_INCAR_AMENDMENTS),
         "force_auto_ispin": PHONON_FORCE_AUTO_ISPIN,
+        # One SIGMA for every displacement (see backend.calculations.custodian_policy).
+        "force_custodian_handler_exclusions": list(_phonon_force_handler_exclusions()),
         "automatic_ncore": False,
         "store_force_constants": PHONON_STORE_FORCE_CONSTANTS,
         "analysis_kwargs": dict(PHONON_ANALYSIS_KWARGS),

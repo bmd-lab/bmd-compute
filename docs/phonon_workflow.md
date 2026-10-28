@@ -38,6 +38,10 @@ atomate2's base set is PBEsol), `ISPIN = 1` with `auto_ispin` off, single-point
 Gaussian-smeared forces (`ISMEAR = 0`, `SIGMA = 0.2`, `IBRION = -1`, `NSW = 0`,
 `ISIF` unset — overriding atomate2 0.1.5's `IBRION = 2`/`ISIF = 3` and the
 static set's `ISMEAR = -5`), and NCORE never set. No WAVECAR/CHGCAR is carried from the relax.
+Displacement calculations run every BMD Custodian handler except
+`LargeSigmaHandler`, so `SIGMA = 0.2` is the same in every displacement of the
+force set (that handler would lower it separately in each displacement of a
+metal).
 
 Phonopy, called by atomate2, is the authority for the supercell, displacements
 and force constants. `backend/phonons/plan.py` remains an independent

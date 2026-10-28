@@ -163,7 +163,8 @@ polarisation or SOC set `ISPIN = 1` explicitly.
 | Smearing | Gaussian, `ISMEAR = 0`, `SIGMA = 0.2` eV (adopted) |
 
 The smearing is the pymatgen choice for a system whose band gap is not yet
-known; BMD adopts it for all relaxations.
+known; BMD adopts it for all relaxations and sets it explicitly, so it never
+follows previous-stage band-gap evidence.
 
 ### PBE Static Energy
 

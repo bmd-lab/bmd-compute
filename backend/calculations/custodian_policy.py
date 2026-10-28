@@ -12,6 +12,11 @@ BMD_CUSTODIAN_POLICY_RATIONALE = (
     "terminate a VASP calculation."
 )
 FROZEN_JOB_HANDLER = "custodian.vasp.handlers.FrozenJobErrorHandler"
+LARGE_SIGMA_HANDLER = "custodian.vasp.handlers.LargeSigmaHandler"
+# Phonon displacement calculations keep one SIGMA for the whole force set:
+# LargeSigmaHandler would lower SIGMA separately in each displacement of a
+# metal, so force constants would mix forces from different smearing widths.
+PHONON_FORCE_HANDLER_EXCLUSIONS = (LARGE_SIGMA_HANDLER,)
 HSE_BAND_STRUCTURE_CUSTODIAN_ERROR_EXCLUSIONS = ("auto_nbands",)
 
 # BMD Compute v1 unsuccessful-stage policy. atomate2 decides, from its task
@@ -34,16 +39,17 @@ def unsuccessful_stage_stop_children_kwargs() -> dict:
     return {"handle_unsuccessful": UNSUCCESSFUL_STAGE_HANDLING}
 
 
-def bmd_custodian_handlers(*, excluded_vasp_errors=()) -> tuple:
+def bmd_custodian_handlers(*, excluded_vasp_errors=(), excluded_handlers=()) -> tuple:
     """Return independent atomate2 default handlers with BMD exclusions applied."""
 
     from atomate2.vasp.run import DEFAULT_HANDLERS
     from custodian.vasp.handlers import VaspErrorHandler
 
     excluded = set(excluded_vasp_errors or ())
+    skipped = {FROZEN_JOB_HANDLER, *(excluded_handlers or ())}
     handlers = []
     for handler in DEFAULT_HANDLERS:
-        if _qualified_name(handler) == FROZEN_JOB_HANDLER:
+        if _qualified_name(handler) in skipped:
             continue
         if isinstance(handler, VaspErrorHandler) and excluded:
             handlers.append(
@@ -76,6 +82,22 @@ def hse_band_structure_run_vasp_kwargs() -> dict:
     }
 
 
+def handler_exclusions_for_stage(stage_type) -> tuple[str, ...]:
+    """Whole Custodian handlers a stage does not run (beyond FrozenJobErrorHandler)."""
+
+    if _enum_value(stage_type) == "phonon_forces":
+        return PHONON_FORCE_HANDLER_EXCLUSIONS
+    return ()
+
+
+def phonon_force_run_vasp_kwargs(run_vasp_kwargs=None) -> dict:
+    """``run_vasp_kwargs`` for phonon displacement calculations."""
+
+    kwargs = dict(run_vasp_kwargs or {})
+    kwargs["handlers"] = bmd_custodian_handlers(excluded_handlers=PHONON_FORCE_HANDLER_EXCLUSIONS)
+    return kwargs
+
+
 def vasp_error_exclusions_for_stage(stage_type, theory) -> tuple[str, ...]:
     """Return reviewed stage-local exclusions from VaspErrorHandler."""
 
@@ -91,7 +113,8 @@ def resolved_custodian_policy(stage_type, theory) -> dict:
     """Describe the JSON-safe policy used for one executable VASP stage."""
 
     exclusions = vasp_error_exclusions_for_stage(stage_type, theory)
-    handlers = bmd_custodian_handlers(excluded_vasp_errors=exclusions)
+    handler_exclusions = handler_exclusions_for_stage(stage_type)
+    handlers = bmd_custodian_handlers(excluded_vasp_errors=exclusions, excluded_handlers=handler_exclusions)
 
     return {
         "policy_id": BMD_CUSTODIAN_POLICY_ID,
@@ -101,7 +124,7 @@ def resolved_custodian_policy(stage_type, theory) -> dict:
             "theory": _enum_value(theory),
         },
         "handlers": [_policy_object_description(handler) for handler in handlers],
-        "explicit_handler_exclusions": [FROZEN_JOB_HANDLER],
+        "explicit_handler_exclusions": [FROZEN_JOB_HANDLER, *handler_exclusions],
         "vasp_error_exclusions": list(exclusions),
         "validators": {
             "source": "atomate2.vasp.run._DEFAULT_VALIDATORS",
@@ -193,9 +216,13 @@ __all__ = [
     "BMD_CUSTODIAN_POLICY_RATIONALE",
     "BMD_CUSTODIAN_POLICY_VERSION",
     "FROZEN_JOB_HANDLER",
+    "LARGE_SIGMA_HANDLER",
+    "PHONON_FORCE_HANDLER_EXCLUSIONS",
     "HSE_BAND_STRUCTURE_CUSTODIAN_ERROR_EXCLUSIONS",
     "bmd_custodian_handlers",
     "custodian_handlers_excluding_errors",
+    "handler_exclusions_for_stage",
+    "phonon_force_run_vasp_kwargs",
     "hse_band_structure_run_vasp_kwargs",
     "resolved_custodian_policy",
     "vasp_error_exclusions_for_stage",
