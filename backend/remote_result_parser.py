@@ -326,7 +326,7 @@ def _band_structure_result_payload(
     files: dict,
     local_paths: dict,
 ) -> tuple[dict, dict | None]:
-    band_structure = _band_structure_from_vasprun(vasprun, local_paths)
+    band_structure, fermi_reference = band_structure_with_fermi_reference(vasprun, local_paths)
     bands = getattr(band_structure, "bands", None) or {}
     kpoint_count = _band_kpoint_count(band_structure, bands)
     band_count = _band_count(bands)
@@ -344,6 +344,8 @@ def _band_structure_result_payload(
         "band_gap_ev": gap["band_gap_ev"],
         "is_metal": gap["is_metal"],
         "direct_gap": gap["direct_gap"],
+        # Path-only runs: the reference record withholds the Fermi-dependent properties.
+        **(fermi_reference or {}),
     }
     if band_structure is None or not bands or not kpoint_count:
         return summary, None
@@ -796,7 +798,7 @@ def _total_dos_from_vasprun(vasprun):
     return getattr(vasprun, "tdos", None) or getattr(complete_dos, "tdos", None)
 
 
-def _band_structure_from_vasprun(vasprun, local_paths: dict):
+def _band_structure_from_vasprun(vasprun, local_paths: dict, efermi: float | None = None):
     existing = getattr(vasprun, "band_structure", None)
     if existing is not None:
         return existing
@@ -805,14 +807,87 @@ def _band_structure_from_vasprun(vasprun, local_paths: dict):
     if not callable(get_band_structure):
         return None
 
+    reference = {} if efermi is None else {"efermi": efermi}
     kpoints_path = local_paths.get("kpoints")
     if kpoints_path is not None:
         return get_band_structure(
             kpoints_filename=str(kpoints_path),
             line_mode=True,
+            **reference,
         )
 
-    return get_band_structure(line_mode=True)
+    return get_band_structure(line_mode=True, **reference)
+
+
+# A non-self-consistent (ICHARG = 11) band structure along a k-point path cannot
+# determine the Fermi energy (VASP Wiki: band-structure calculation using DFT),
+# so its results use the preceding self-consistent static's Fermi energy as the
+# reference. VASP's own value is kept separately; raw files are not changed.
+PRECEDING_STATIC_OUTCAR_KEY = "preceding_static_outcar"
+PATH_ONLY_BAND_GAP_REASON = (
+    "Not reported for a non-self-consistent band path: band filling is not "
+    "established along the path, so the gap and metallicity would depend on the "
+    "Fermi reference."
+)
+
+
+def band_structure_with_fermi_reference(vasprun, local_paths: dict):
+    """The band structure and, for a non-self-consistent run, its Fermi reference.
+
+    The preceding self-consistent static's Fermi energy is authoritative
+    whenever it is a finite number; the path run's own (unreliable) value is
+    used only when the static value is missing, unreadable or invalid, and the
+    reason is recorded. Self-consistent runs (HSE06) are returned exactly as
+    before, with no record.
+
+    A path-only run does not establish band filling, so pymatgen's band gap and
+    metallicity (which depend on the chosen Fermi energy) are withheld as
+    unavailable, with the reason, rather than reported. Eigenvalues and the
+    aligned plot are unaffected.
+    """
+
+    run_band_structure = _band_structure_from_vasprun(vasprun, local_paths)
+    incar = getattr(vasprun, "incar", None) or {}
+    try:
+        non_self_consistent = int(incar.get("ICHARG") or 0) == 11
+    except (TypeError, ValueError):
+        non_self_consistent = False
+    if run_band_structure is None or not non_self_consistent:
+        return run_band_structure, None
+
+    record = {
+        "fermi_level_source": "band_structure_run",
+        "band_structure_run_fermi_level_ev": _round_float(_float_or_none(getattr(vasprun, "efermi", None))),
+        "preceding_static_fermi_level_ev": None,
+        "fermi_level_fallback_reason": None,
+        "band_gap_ev": None,
+        "is_metal": None,
+        "direct_gap": None,
+        "band_gap_unavailable_reason": PATH_ONLY_BAND_GAP_REASON,
+    }
+    static_outcar = local_paths.get(PRECEDING_STATIC_OUTCAR_KEY)
+    static_efermi = None
+    if not static_outcar:
+        record["fermi_level_fallback_reason"] = "preceding static OUTCAR not available"
+    else:
+        try:
+            from pymatgen.io.vasp.outputs import Outcar
+
+            static_efermi = _float_or_none(Outcar(str(static_outcar)).efermi)
+        except Exception as exc:  # noqa: BLE001 - unreadable evidence keeps the run's value
+            record["fermi_level_fallback_reason"] = f"preceding static OUTCAR could not be read ({type(exc).__name__})"
+        else:
+            if static_efermi is None:
+                record["fermi_level_fallback_reason"] = "preceding static OUTCAR records no Fermi energy"
+            elif not math.isfinite(static_efermi):
+                record["fermi_level_fallback_reason"] = "preceding static Fermi energy is not a finite number"
+                static_efermi = None
+    if static_efermi is None:
+        return run_band_structure, record
+
+    record["preceding_static_fermi_level_ev"] = _round_float(static_efermi)
+    record["fermi_level_source"] = "preceding_static"
+    return _band_structure_from_vasprun(vasprun, local_paths, efermi=static_efermi), record
 
 
 def _result_has_final_relaxation_stage(result_spec: dict | None) -> bool:
