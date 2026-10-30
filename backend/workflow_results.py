@@ -280,7 +280,9 @@ def _band_structure_result_payload(
     files: dict,
     local_paths: dict,
 ) -> tuple[dict, dict | None]:
-    band_structure = _band_structure_from_vasprun(vasprun, local_paths)
+    from backend.remote_result_parser import band_structure_with_fermi_reference
+
+    band_structure, fermi_reference = band_structure_with_fermi_reference(vasprun, local_paths)
     bands = getattr(band_structure, "bands", None) or {}
     kpoint_count = _band_kpoint_count(band_structure, bands)
     band_count = _band_count(bands)
@@ -298,6 +300,8 @@ def _band_structure_result_payload(
         "band_gap_ev": gap["band_gap_ev"],
         "is_metal": gap["is_metal"],
         "direct_gap": gap["direct_gap"],
+        # Path-only runs: the reference record withholds the Fermi-dependent properties.
+        **(fermi_reference or {}),
     }
     if band_structure is None or not bands or not kpoint_count:
         return summary, None

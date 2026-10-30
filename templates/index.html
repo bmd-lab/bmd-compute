@@ -2587,6 +2587,8 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                         <div class="callout-value">
                             {% if results_summary.band_structure.band_gap_ev is not none %}
                             {{ results_summary.band_structure.band_gap_ev }} eV
+                            {% elif results_summary.band_structure.band_gap_unavailable_reason %}
+                            <span data-band-gap-unavailable title="{{ results_summary.band_structure.band_gap_unavailable_reason }}">Not reported</span>
                             {% else %}
                             Unknown
                             {% endif %}

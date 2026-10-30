@@ -232,7 +232,7 @@ def fake_dos_parser(files, monitoring_result):
 
 def fake_band_parser(files, monitoring_result):
     assert monitoring_result["job_id"] == "123456"
-    assert set(files) == {"contcar", "outcar", "vasprun", "kpoints"}
+    assert set(files) == {"contcar", "outcar", "vasprun", "kpoints", "preceding_static_outcar"}
     result = fake_parser(
         {
             "contcar": files["contcar"],
@@ -417,6 +417,8 @@ def test_results_for_band_structure_use_final_stage_directory_and_kpoints():
         f"{final_stage_dir}/OUTCAR",
         f"{final_stage_dir}/vasprun.xml",
         f"{final_stage_dir}/KPOINTS",
+        # The preceding PBE static's OUTCAR: the band structure's Fermi reference.
+        f"{RUN_DIR}/stage_02/OUTCAR",
     ]
     assert result["run_dir"] == RUN_DIR
     assert result["workdir"] == final_stage_dir
@@ -551,6 +553,8 @@ def test_resumed_band_structure_uses_final_stage_directory_from_job_state():
         f"{final_stage_dir}/OUTCAR",
         f"{final_stage_dir}/vasprun.xml",
         f"{final_stage_dir}/KPOINTS",
+        # The preceding PBE static's OUTCAR: the band structure's Fermi reference.
+        f"{RUN_DIR}/stage_02/OUTCAR",
     ]
     assert result["run_dir"] == RUN_DIR
     assert result["workdir"] == final_stage_dir
