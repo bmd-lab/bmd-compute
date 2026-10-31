@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 
 import pytest
+
+from conftest import planned
 from pymatgen.core import Composition, Lattice, Structure
 from pymatgen.io.vasp import sets as pymatgen_sets
 from pymatgen.io.vasp.sets import MPRelaxSet
@@ -72,7 +74,7 @@ def generator_symbols(structure: Structure, desired_output: str = "energy_only")
 
 def submission_potcar(structure: Structure, desired_output: str = "energy_only") -> dict:
     flow_spec = {
-        "workflow_spec": desired_output_workflow_spec(desired_output).to_dict(),
+        "workflow_spec": planned(structure, desired_output_workflow_spec(desired_output)).to_dict(),
         "potcar_functional": "PBE_64",
         "kpoints": None,
         "incar": {},
@@ -197,10 +199,18 @@ def test_multi_stage_record_lists_every_stage():
 
     assert [(stage["stage_index"], stage["stage_type"], stage["theory"]) for stage in potcar["stages"]] == [
         (1, "relax", "pbe"),
-        (2, "static", "hse06"),
-        (3, "band_structure", "hse06"),
+        (2, "relax", "pbe"),
+        (3, "static", "hse06"),
+        (4, "band_structure", "hse06"),
     ]
     assert all(stage["symbols"] == ["Ni", "O"] for stage in potcar["stages"])
+    # The relaxation stages record the ENMAX values their cutoff was resolved
+    # from (SYNTHETIC test metadata: 400 eV, so ENCUT = 550 eV).
+    for stage in potcar["stages"][:2]:
+        assert stage["plane_wave_cutoff"]["enmax_ev"] == {"Ni": 400.0, "O": 400.0}
+        assert stage["plane_wave_cutoff"]["ENCUT"] == 550
+        assert stage["plane_wave_cutoff"]["rule"] == {"id": "bmd_compute.plane_wave_cutoff", "version": 1}
+    assert all("plane_wave_cutoff" not in stage for stage in potcar["stages"][2:])
     assert potcar["consistent_across_stages"] is True
     assert potcar["symbols"] == ["Ni", "O"]
 

@@ -8,6 +8,14 @@ from typing import Any
 
 
 BAND_STRUCTURE_INITIAL_YAXIS_RANGE = [-10, 10]
+# vasprun.xml of the final Geometry Optimisation stage when the reported stage
+# is a later one (for example the static of Relaxed Energy).
+GEOMETRY_RELAXATION_VASPRUN_KEY = "geometry_relaxation_vasprun"
+# Indicative reference levels of the residual-stress diagnostic (kbar). With
+# dV/V ~ P/B, 1 kbar is ~0.1 % in volume for B = 100 GPa. They classify the
+# diagnostic only; they never fail a calculation.
+RESIDUAL_STRESS_REFERENCE_KBAR = {"pressure": 1.0, "max_component": 2.0, "review_above": 5.0}
+FINAL_PASS_VOLUME_CHANGE_REVIEW_PERCENT = 0.5
 
 
 def parse_result_paths(
@@ -137,6 +145,14 @@ def parse_result_paths(
         },
     }
     result.update(workflow_payload["summaries"])
+    relaxation = _geometry_relaxation_payload(
+        result_spec,
+        vasprun=vasprun,
+        local_paths=paths,
+        vasprun_class=Vasprun,
+    )
+    if relaxation is not None:
+        result["geometry_relaxation"] = relaxation
     return result
 
 
@@ -888,6 +904,137 @@ def band_structure_with_fermi_reference(vasprun, local_paths: dict):
     record["preceding_static_fermi_level_ev"] = _round_float(static_efermi)
     record["fermi_level_source"] = "preceding_static"
     return _band_structure_from_vasprun(vasprun, local_paths, efermi=static_efermi), record
+
+
+def _geometry_relaxation_payload(result_spec, *, vasprun, local_paths: dict, vasprun_class) -> dict | None:
+    """Cell-convergence diagnostic of the final Geometry Optimisation stage.
+
+    VASP's own ionic convergence (the EDIFFG force criterion) is reported as
+    VASP and pymatgen record it. The residual stress, volume and lattice
+    changes of that stage are an independent diagnostic: they are recorded and
+    classified against indicative reference levels, but never fail a run.
+    """
+
+    stage_types = _workflow_stage_types(result_spec)
+    if "relax" not in stage_types or not _final_relaxation_has_cutoff_record(result_spec):
+        return None
+    source = None
+    if local_paths.get(GEOMETRY_RELAXATION_VASPRUN_KEY):
+        try:
+            source = vasprun_class(
+                str(local_paths[GEOMETRY_RELAXATION_VASPRUN_KEY]),
+                parse_dos=False,
+                parse_eigen=False,
+                parse_projected_eigen=False,
+                parse_potcar_file=False,
+                exception_on_bad_xml=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - the diagnostic is optional
+            return {"status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"}
+    elif _result_has_final_relaxation_stage(result_spec):
+        source = vasprun
+    if source is None:
+        return {"status": "unavailable", "reason": "final Geometry Optimisation output not available"}
+    try:
+        return geometry_relaxation_diagnostic(source, stage_index=_last_relax_stage_number(result_spec))
+    except Exception as exc:  # noqa: BLE001 - a diagnostic never fails the result
+        return {"status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"}
+
+
+def _final_relaxation_has_cutoff_record(result_spec) -> bool:
+    # Only calculations planned with the BMD Standard Geometry Relaxation
+    # (plane-wave cutoff record) carry the diagnostic; older runs are unchanged.
+    stages = (result_spec or {}).get("stages") if isinstance(result_spec, dict) else None
+    relax = [
+        stage
+        for stage in stages or ()
+        if isinstance(stage, dict) and str(stage.get("stage_type") or "").lower() == "relax"
+    ]
+    return bool(relax) and isinstance((relax[-1].get("options") or {}).get("plane_wave_cutoff"), dict)
+
+
+def _last_relax_stage_number(result_spec) -> int | None:
+    stage_types = _workflow_stage_types(result_spec)
+    numbers = [index + 1 for index, stage_type in enumerate(stage_types) if stage_type == "relax"]
+    return numbers[-1] if numbers else None
+
+
+def _lattice_parameters(structure) -> dict:
+    lattice = structure.lattice
+    return {
+        "a": _round_float(lattice.a),
+        "b": _round_float(lattice.b),
+        "c": _round_float(lattice.c),
+        "alpha": _round_float(lattice.alpha),
+        "beta": _round_float(lattice.beta),
+        "gamma": _round_float(lattice.gamma),
+        "volume": _round_float(lattice.volume),
+    }
+
+
+def _percent_change(initial, final) -> float | None:
+    if initial in (None, 0) or final is None:
+        return None
+    return _round_float(100.0 * (final - initial) / initial, 4)
+
+
+def geometry_relaxation_diagnostic(vasprun, *, stage_index: int | None = None) -> dict:
+    """Residual stress and final-stage cell changes of one relaxation vasprun.xml."""
+
+    ionic_steps = list(getattr(vasprun, "ionic_steps", None) or [])
+    stress = ionic_steps[-1].get("stress") if ionic_steps else None
+    rows = _matrix_rows(stress) if stress is not None else []
+    payload: dict = {
+        "status": "available",
+        "stage_index": stage_index,
+        "vasp_reported": {
+            "converged_ionic": _bool_or_none(getattr(vasprun, "converged_ionic", None)),
+            "converged_electronic": _bool_or_none(getattr(vasprun, "converged_electronic", None)),
+            "criterion": "VASP ionic convergence (EDIFFG force criterion), as reported in vasprun.xml",
+        },
+        "ionic_steps": len(ionic_steps),
+    }
+    if len(rows) == 3 and all(len(row) == 3 for row in rows):
+        pressure = (rows[0][0] + rows[1][1] + rows[2][2]) / 3.0
+        largest = max(abs(value) for row in rows for value in row)
+        reference = RESIDUAL_STRESS_REFERENCE_KBAR
+        if abs(pressure) <= reference["pressure"] and largest <= reference["max_component"]:
+            level = "within_reference"
+        elif largest <= reference["review_above"]:
+            level = "review"
+        else:
+            level = "large"
+        payload["residual_stress"] = {
+            "stress_tensor_kbar": [[_round_float(value, 4) for value in row] for row in rows],
+            "hydrostatic_pressure_kbar": _round_float(pressure, 4),
+            "max_abs_component_kbar": _round_float(largest, 4),
+            "sign_convention": "vasprun.xml stress (VASP convention; positive pressure means the cell would expand)",
+            "reference_kbar": dict(reference),
+            "assessment": level,
+            "assessment_basis": "independent diagnostic; not a VASP convergence criterion and never a failure",
+        }
+    else:
+        payload["residual_stress"] = None
+    initial = getattr(vasprun, "initial_structure", None)
+    final = getattr(vasprun, "final_structure", None)
+    if initial is not None and final is not None:
+        start = _lattice_parameters(initial)
+        end = _lattice_parameters(final)
+        changes = {key: _percent_change(start[key], end[key]) for key in ("a", "b", "c", "volume")}
+        payload["cell_change"] = {
+            "initial": start,
+            "final": end,
+            "change_percent": changes,
+            "angle_change_degrees": {
+                key: _round_float(end[key] - start[key], 4) for key in ("alpha", "beta", "gamma")
+            },
+            "volume_change_review": (
+                changes["volume"] is not None
+                and abs(changes["volume"]) > FINAL_PASS_VOLUME_CHANGE_REVIEW_PERCENT
+            ),
+            "volume_change_review_percent": FINAL_PASS_VOLUME_CHANGE_REVIEW_PERCENT,
+        }
+    return payload
 
 
 def _result_has_final_relaxation_stage(result_spec: dict | None) -> bool:

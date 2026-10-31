@@ -179,7 +179,9 @@ def _external_default(monkeypatch, value):
 
 
 def _two_stage_flows():
-    relax_relax = build_atomate2_flow_for_workflow_spec(SI, desired_output_workflow_spec("relaxed_structure"))
+    from conftest import planned
+
+    relax_relax = build_atomate2_flow_for_workflow_spec(SI, planned(SI, desired_output_workflow_spec("relaxed_structure")))
     static_dos = build_atomate2_flow_for_workflow_spec(
         SI,
         WorkflowSpec([StageSpec(StageType.STATIC, Theory.PBE), StageSpec(StageType.DOS, Theory.PBE)], recipe="custom"),

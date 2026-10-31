@@ -797,7 +797,10 @@ relax_response = build_workflow(
 )
 assert relax_response.status_code == 200
 assert relax_response.context["calculation"]["calculation_type"] == "Geometry Optimisation"
-assert "ENCUT = 580.0" in relax_response.context["generated_inputs"]["incar"]
+# Planned relaxations use the species-dependent cutoff (550 eV with the
+# SYNTHETIC test metadata); the legacy single-calculation preview above keeps 580.
+assert "ENCUT = 550.0" in relax_response.context["generated_inputs"]["incar"]
+assert "ADDGRID" not in relax_response.context["generated_inputs"]["incar"]
 assert "ISIF = 3" in relax_response.context["generated_inputs"]["incar"]
 assert relax_response.context["submission_spec"]["flow_spec"]["calculation_spec"] == {
     "purpose": "relax",

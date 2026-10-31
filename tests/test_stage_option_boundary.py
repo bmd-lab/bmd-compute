@@ -45,9 +45,11 @@ def _custom(options, modifiers=frozenset()):
     return WorkflowSpec([StageSpec(StageType.STATIC, Theory.PBE, set(modifiers), options=options)], recipe="custom")
 
 
-def test_accepted_option_keys_are_exactly_dispersion_and_frozen_dft_u():
-    assert SUPPORTED_STAGE_OPTION_KEYS == {"dispersion", "dft_u"}
-    assert USER_STAGE_OPTION_KEYS == {"dispersion"}
+def test_accepted_option_keys_are_exactly_the_supported_treatments():
+    # BMD-generated: frozen +U and the plane-wave cutoff record. A client may
+    # choose dispersion and the BMD Standard Geometry Relaxation passes.
+    assert SUPPORTED_STAGE_OPTION_KEYS == {"dispersion", "dft_u", "geometry_relaxation", "plane_wave_cutoff"}
+    assert USER_STAGE_OPTION_KEYS == {"dispersion", "geometry_relaxation"}
 
 
 # --- Registry boundary ----------------------------------------------------------------
@@ -276,4 +278,12 @@ def test_supported_custom_choices_still_build(workflow):
     assert response.status_code == 200
     assert response.context["generated_inputs"]["incar"]
     submitted = response.context["submission_spec"]["flow_spec"]["workflow_spec"]["stages"]
-    assert [stage["options"] for stage in submitted] == [dict(stage.options) for stage in workflow.stages]
+    # The client's options are kept exactly; BMD adds only the resolved
+    # plane-wave cutoff record to Geometry Optimisation stages.
+    assert [
+        {key: value for key, value in stage["options"].items() if key != "plane_wave_cutoff"}
+        for stage in submitted
+    ] == [dict(stage.options) for stage in workflow.stages]
+    assert [("plane_wave_cutoff" in stage["options"]) for stage in submitted] == [
+        stage.stage_type is StageType.RELAX for stage in workflow.stages
+    ]

@@ -15,6 +15,8 @@ import dataclasses
 import warnings
 
 import pytest
+
+from conftest import planned
 from atomate2.vasp.run import DEFAULT_HANDLERS
 
 import test_input_reference_contract as reference_cases
@@ -77,7 +79,9 @@ def test_relaxation_smearing_ignores_previous_stage_evidence(structure, kwargs):
 
 def test_every_relaxation_in_the_managed_workflows_is_fixed():
     for output in ("relaxed_energy", "relaxed_structure", "electronic_dos", "electronic_band_structure", "phonons"):
-        flow = build_atomate2_flow_for_workflow_spec(SI, desired_output_workflow_spec(output), resources={"ntasks": 24})
+        flow = build_atomate2_flow_for_workflow_spec(
+            SI, planned(SI, desired_output_workflow_spec(output)), resources={"ntasks": 24}
+        )
         relaxes = [job for job in flow.jobs if type(getattr(job, "maker", None)).__name__ == "RelaxMaker"]
         assert relaxes, output
         for job in relaxes:
@@ -118,7 +122,9 @@ def _displacement_maker(flow):
 def test_phonon_displacements_share_one_sigma_without_large_sigma_handler(entry):
     stage = StageSpec.from_dict({"stage_type": "phonon_forces", "theory": "pbe", "modifiers": []})
     if entry == "workflow":
-        flow = build_atomate2_flow_for_workflow_spec(SI, desired_output_workflow_spec("phonons"), resources={"ntasks": 24})
+        flow = build_atomate2_flow_for_workflow_spec(
+            SI, planned(SI, desired_output_workflow_spec("phonons")), resources={"ntasks": 24}
+        )
         maker = _displacement_maker(flow)
     else:
         maker = _displacement_maker(type("F", (), {"jobs": [build_phonon_forces_flow(SI, stage=stage, name="stage_02")]}))
@@ -138,12 +144,17 @@ def test_phonon_displacements_share_one_sigma_without_large_sigma_handler(entry)
     ]
 
 
-def test_only_phonon_stages_drop_large_sigma_handler():
+def test_only_phonon_and_relaxation_stages_drop_large_sigma_handler():
+    # Phonon displacements, and (BMD Standard Geometry Relaxation v1) every
+    # Geometry Optimisation, keep the planned SIGMA; other stages are unchanged.
     default_names = [_qualified(handler) for handler in bmd_custodian_handlers()]
     assert LARGE_SIGMA_HANDLER in default_names
+    for theory in ("pbe", "hse06"):
+        relax = resolved_custodian_policy("relax", theory)
+        assert handler_exclusions_for_stage("relax") == (LARGE_SIGMA_HANDLER,)
+        assert LARGE_SIGMA_HANDLER not in [item["class"] for item in relax["handlers"]]
+        assert relax["explicit_handler_exclusions"] == [FROZEN_JOB_HANDLER, LARGE_SIGMA_HANDLER]
     for stage_type, theory in [
-        ("relax", "pbe"),
-        ("relax", "hse06"),
         ("static", "pbe"),
         ("static", "hse06"),
         ("dos", "pbe"),

@@ -329,6 +329,11 @@ h2 {
     width: 24px;
 }
 
+.workflow-stage-protocol {
+    color: var(--bmd-accent);
+    font-weight: 600;
+}
+
 .workflow-stage-grid {
     display: grid;
     gap: 14px;
@@ -1355,18 +1360,20 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                                 <div class="workflow-stage-list" id="workflow-stage-list">
                                     {% set is_custom_workflow = selected_workflow.desired_output == "custom" %}
                                     {% for stage in selected_workflow.stages %}
-                                    <div class="workflow-stage-card" data-workflow-stage>
+                                    {% set protocol_pass = (stage.options.geometry_relaxation or {}).pass if stage.options and stage.options.geometry_relaxation is mapping else none %}
+                                    <div class="workflow-stage-card" data-workflow-stage{% if protocol_pass %} data-protocol-pass="{{ protocol_pass }}"{% endif %}>
                                         <div class="workflow-stage-card-header">
                                             <div class="workflow-stage-heading">
                                                 <span class="workflow-stage-number" data-stage-number>{{ stage.index }}</span>
                                                 <span>{% if is_custom_workflow %}Custom Workflow{% else %}BMD Compute workflow{% endif %}</span>
+                                                {% if protocol_pass %}<span class="workflow-stage-protocol">BMD Geometry Relaxation &middot; pass {{ protocol_pass }} of 2</span>{% endif %}
                                             </div>
                                             <button type="button" class="secondary-button" data-remove-stage {% if not is_custom_workflow %}hidden{% endif %}>Remove</button>
                                         </div>
                                         <div class="workflow-stage-grid">
                                             <div>
                                                 <label>Calculation Type</label>
-                                                <select data-stage-type {% if not is_custom_workflow %}disabled{% endif %}>
+                                                <select data-stage-type {% if not is_custom_workflow or protocol_pass %}disabled{% endif %}>
                                                     {% for option in calculation_options.stage_types %}
                                                     <option
                                                         value="{{ option.value }}"
@@ -1428,6 +1435,7 @@ button.hardware-custom-toggle[aria-expanded="true"] {
 
                                 <div class="workflow-controls">
                                     <button type="button" class="secondary-button" id="add-workflow-stage" {% if not is_custom_workflow %}hidden{% endif %}>Add Stage</button>
+                                    <button type="button" class="secondary-button" id="add-geometry-relaxation" title="Two Geometry Optimisation passes with BMD's standard convergence (bmd_compute.geometry_relaxation/1)" {% if not is_custom_workflow %}hidden{% endif %}>Add BMD Geometry Relaxation (two passes)</button>
                                 </div>
                             </div>
                         </div>
@@ -2541,6 +2549,26 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                         </div>
                     </div>
                     {% endif %}
+                    {% set relaxation = results_summary.geometry_relaxation %}
+                    {% if relaxation and relaxation.status == "available" %}
+                    {% if relaxation.residual_stress %}
+                    <div class="callout" title="Independent diagnostic of the final Geometry Optimisation stage (stage {{ relaxation.stage_index }}); VASP's ionic convergence uses the force criterion only. Reference: |P| &le; {{ relaxation.residual_stress.reference_kbar.pressure }} kbar and every component &le; {{ relaxation.residual_stress.reference_kbar.max_component }} kbar. Never a failure criterion.">
+                        <div class="callout-title">Residual Stress (diagnostic)</div>
+                        <div class="callout-value">
+                            P = {{ relaxation.residual_stress.hydrostatic_pressure_kbar }} kbar; max |&sigma;| = {{ relaxation.residual_stress.max_abs_component_kbar }} kbar
+                            ({% if relaxation.residual_stress.assessment == "within_reference" %}within reference{% elif relaxation.residual_stress.assessment == "review" %}review{% else %}large{% endif %})
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% if relaxation.cell_change %}
+                    <div class="callout" title="Volume change during the final Geometry Optimisation stage (stage {{ relaxation.stage_index }}), {{ relaxation.ionic_steps }} ionic step(s).">
+                        <div class="callout-title">Final-Pass Volume Change</div>
+                        <div class="callout-value">
+                            {{ relaxation.cell_change.change_percent.volume }} % in {{ relaxation.ionic_steps }} ionic step(s){% if relaxation.cell_change.volume_change_review %} (review){% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% endif %}
                     {% if results_summary.dos %}
                     <div class="callout">
                         <div class="callout-title">DOS</div>
@@ -2928,6 +2956,7 @@ document.addEventListener("DOMContentLoaded", function () {
     var stageList = document.getElementById("workflow-stage-list");
     var desiredOutputSelect = document.getElementById("desired-output-select");
     var addStageButton = document.getElementById("add-workflow-stage");
+    var addRelaxationButton = document.getElementById("add-geometry-relaxation");
     if (!form || !hiddenWorkflow || !optionsElement || !stageList) {
         return;
     }
@@ -2943,6 +2972,37 @@ document.addEventListener("DOMContentLoaded", function () {
     var theories = options.theories || [];
     var modifiers = options.modifiers || [];
     var desiredOutputs = options.desired_outputs || [];
+    // The BMD Standard Geometry Relaxation: its two stages come from the
+    // server's own "geometry_relaxation" recipe (the option the machine API
+    // accepts), so the browser never defines the protocol itself.
+    var protocolStages = [];
+    (options.recipes || []).forEach(function (recipe) {
+        if (recipe.value === "geometry_relaxation") {
+            protocolStages = (recipe.workflow_spec || {}).stages || [];
+        }
+    });
+
+    function stageProtocolPass(stage) {
+        var option = (stage.options || {}).geometry_relaxation;
+        return option && option.pass ? option.pass : null;
+    }
+
+    function protocolOption(pass) {
+        for (var index = 0; index < protocolStages.length; index += 1) {
+            var option = (protocolStages[index].options || {}).geometry_relaxation;
+            if (option && option.pass === pass) {
+                return JSON.parse(JSON.stringify(option));
+            }
+        }
+        return null;
+    }
+
+    function protocolPartner(card) {
+        var pass = card.getAttribute("data-protocol-pass");
+        var partner = pass === "1" ? card.nextElementSibling : pass === "2" ? card.previousElementSibling : null;
+        var wanted = pass === "1" ? "2" : "1";
+        return partner && partner.getAttribute("data-protocol-pass") === wanted ? partner : null;
+    }
     // Theory/modifier pairs closed to new calculations (HSE06 + SOC). The
     // backend admission check is authoritative; this only prevents selecting
     // them in a Custom workflow stage.
@@ -3061,6 +3121,11 @@ document.addEventListener("DOMContentLoaded", function () {
         var selectedModifiers = stage.modifiers || [];
         var editableWorkflow = isCustomWorkflow();
         var stageControlDisabled = editableWorkflow ? "" : " disabled";
+        var protocolPass = stageProtocolPass(stage);
+        var protocolAttribute = protocolPass ? ' data-protocol-pass="' + escapeHtml(protocolPass) + '"' : "";
+        var protocolLabel = protocolPass
+            ? '<span class="workflow-stage-protocol">BMD Geometry Relaxation &middot; pass ' + escapeHtml(protocolPass) + ' of 2</span>'
+            : "";
         var workflowLabel = editableWorkflow ? "Custom Workflow" : "BMD Compute workflow";
         var removeButton = editableWorkflow
             ? '<button type="button" class="secondary-button" data-remove-stage>Remove</button>'
@@ -3074,18 +3139,19 @@ document.addEventListener("DOMContentLoaded", function () {
                 '</details>' +
             '</div>'
             : appliedTreatmentMarkup(selectedModifiers);
-        return '<div class="workflow-stage-card" data-workflow-stage>' +
+        return '<div class="workflow-stage-card" data-workflow-stage' + protocolAttribute + '>' +
             '<div class="workflow-stage-card-header">' +
                 '<div class="workflow-stage-heading">' +
                     '<span class="workflow-stage-number" data-stage-number>' + String(index + 1) + '</span>' +
                     '<span>' + workflowLabel + '</span>' +
+                    protocolLabel +
                 '</div>' +
                 removeButton +
             '</div>' +
             '<div class="workflow-stage-grid">' +
                 '<div>' +
                     '<label>Calculation Type</label>' +
-                    '<select data-stage-type' + stageControlDisabled + '>' + optionMarkup(stageTypes, stageType) + '</select>' +
+                    '<select data-stage-type' + (protocolPass ? " disabled" : stageControlDisabled) + '>' + optionMarkup(stageTypes, stageType) + '</select>' +
                 '</div>' +
                 '<div>' +
                     '<label>Level of Theory</label>' +
@@ -3110,12 +3176,14 @@ document.addEventListener("DOMContentLoaded", function () {
                 ).map(function (input) {
                     return input.value;
                 });
+                var protocolPass = Number(card.getAttribute("data-protocol-pass")) || null;
+                var protocol = protocolPass ? protocolOption(protocolPass) : null;
                 return {
-                    stage_type: stageType ? stageType.value : "static",
+                    stage_type: protocol ? "relax" : (stageType ? stageType.value : "static"),
                     theory: theory ? theory.value : "pbe",
                     modifiers: selectedModifiers,
                     label: null,
-                    options: {}
+                    options: protocol ? { geometry_relaxation: protocol } : {}
                 };
             }
         );
@@ -3197,6 +3265,9 @@ document.addEventListener("DOMContentLoaded", function () {
         if (addStageButton) {
             addStageButton.hidden = !isCustomWorkflow();
         }
+        if (addRelaxationButton) {
+            addRelaxationButton.hidden = !isCustomWorkflow() || protocolStages.length !== 2;
+        }
         hiddenWorkflow.value = JSON.stringify({
             stages: readStages(),
             label: null,
@@ -3210,7 +3281,26 @@ document.addEventListener("DOMContentLoaded", function () {
         updateHiddenWorkflow();
     }
 
-    stageList.addEventListener("change", updateHiddenWorkflow);
+    stageList.addEventListener("change", function (event) {
+        // The two passes of the BMD Geometry Relaxation keep identical theory
+        // and Advanced Options: a change to one is applied to its partner.
+        var card = event.target.closest("[data-protocol-pass]");
+        var partner = card ? protocolPartner(card) : null;
+        if (partner) {
+            var theory = card.querySelector("[data-stage-theory]");
+            var partnerTheory = partner.querySelector("[data-stage-theory]");
+            if (theory && partnerTheory) {
+                partnerTheory.value = theory.value;
+            }
+            Array.prototype.forEach.call(card.querySelectorAll("[data-stage-modifier]"), function (input) {
+                var twin = partner.querySelector('[data-stage-modifier][value="' + input.value + '"]');
+                if (twin) {
+                    twin.checked = input.checked;
+                }
+            });
+        }
+        updateHiddenWorkflow();
+    });
     stageList.addEventListener("click", function (event) {
         var button = event.target.closest("[data-remove-stage]");
         if (!button) {
@@ -3218,6 +3308,11 @@ document.addEventListener("DOMContentLoaded", function () {
         }
         var card = button.closest("[data-workflow-stage]");
         if (card) {
+            // Removing either pass removes the whole BMD Geometry Relaxation.
+            var partner = protocolPartner(card);
+            if (partner) {
+                partner.remove();
+            }
             card.remove();
             if (!stageList.querySelector("[data-workflow-stage]")) {
                 renderStages([{ stage_type: "static", theory: "pbe", modifiers: [], label: null, options: {} }]);
@@ -3254,6 +3349,22 @@ document.addEventListener("DOMContentLoaded", function () {
         addStageButton.addEventListener("click", function () {
             var stages = readStages();
             stages.push({ stage_type: "static", theory: "pbe", modifiers: [], label: null, options: {} });
+            renderStages(stages);
+        });
+    }
+
+    if (addRelaxationButton) {
+        addRelaxationButton.addEventListener("click", function () {
+            var stages = readStages();
+            protocolStages.forEach(function (stage) {
+                stages.push(JSON.parse(JSON.stringify({
+                    stage_type: stage.stage_type,
+                    theory: stage.theory,
+                    modifiers: stage.modifiers || [],
+                    label: null,
+                    options: stage.options || {}
+                })));
+            });
             renderStages(stages);
         });
     }

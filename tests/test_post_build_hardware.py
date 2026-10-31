@@ -146,7 +146,9 @@ def test_successful_build_shows_three_recommended_values_and_nothing_else():
 
 @pytest.mark.parametrize(
     ("workflow", "walltime"),
-    [("relaxed_structure", "1 hour 45 min"), ("phonons", "4 hours 30 min"), ("electronic_band_structure", "3 days 1 hour")],
+    # Recalculated from the BMD Standard Geometry Relaxation stage descriptors
+    # (ENCUT 550 eV with the SYNTHETIC test metadata; two relaxation passes).
+    [("relaxed_structure", "1 hour 30 min"), ("phonons", "4 hours"), ("electronic_band_structure", "3 days 2 hours")],
 )
 def test_summary_shows_the_resolved_values_for_each_workflow(workflow, walltime):
     context = _build(workflow=workflow).context

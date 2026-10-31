@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import time
 from copy import deepcopy
@@ -16,6 +17,8 @@ from backend.calculations.models import (
     WorkflowSpec,
 )
 from backend.calculations.admission import require_admissible_new_calculation
+from backend.calculations.geometry_relaxation import freeze_plane_wave_cutoffs
+from backend.config import DEFAULT_POTCAR_FUNCTIONAL
 from backend.calculations.default_treatments import (
     AUTOMATIC_APPLICATION_ADVISORY,
     AUTOMATIC_APPLICATION_APPLIED,
@@ -787,14 +790,34 @@ def resolve_workflow_for_structure(
 ) -> tuple[WorkflowSpec, ResolvedDefaultWorkflow | None]:
     workflow = optional_form_value(workflow)
     if desired_output_workflow_spec(workflow) is None:
-        return validate_workflow_spec(workflow_spec), None
+        return with_plane_wave_cutoffs(structure_obj, validate_workflow_spec(workflow_spec)), None
 
     resolution = resolve_default_treatments(
         structure_obj,
         desired_output_workflow_spec(workflow),
         desired_output=workflow,
     )
-    return resolution.resolved_workflow, resolution
+    resolved = with_plane_wave_cutoffs(structure_obj, resolution.resolved_workflow)
+    return resolved, dataclasses.replace(resolution, resolved_workflow=resolved)
+
+
+def with_plane_wave_cutoffs(structure_obj, workflow_spec: WorkflowSpec) -> WorkflowSpec:
+    """Freeze the species-dependent plane-wave cutoff of every relax/phonon stage.
+
+    Every route that builds, prepares or submits a calculation (browser and
+    machine API) resolves its workflow here, so the cutoff is decided once,
+    from the POTCARs Compute's executable generators select, and carried by
+    the workflow itself into previews, the plan digest and the POWER run
+    (``backend.calculations.geometry_relaxation``).
+    """
+
+    return validate_workflow_spec(
+        freeze_plane_wave_cutoffs(
+            structure_obj,
+            workflow_spec,
+            potcar_functional=DEFAULT_POTCAR_FUNCTIONAL,
+        )
+    )
 
 
 def resource_request_from_form(
@@ -1133,7 +1156,10 @@ def _automatic_application_stage_phrase(consideration: dict) -> tuple[str, int]:
     if not labels:
         return "", 0
     noun = "stage" if len(labels) == 1 else "stages"
-    return f"{_human_join(labels)} {noun}", len(labels)
+    # Repeated stages of one kind (the two passes of the BMD Standard
+    # Geometry Relaxation) are named once: "PBE Geometry Optimisation stages".
+    distinct = list(dict.fromkeys(labels))
+    return f"{_human_join(distinct)} {noun}", len(labels)
 
 
 def _method_consideration_support_phrase(consideration: dict) -> str:
@@ -1260,6 +1286,9 @@ def build_submission_state_from_structure(
     # workflow JSON, legacy purpose/theory/modifiers). Structural validators,
     # which also read historical records, are deliberately left unchanged.
     workflow_spec = require_admissible_new_calculation(workflow_spec)
+    # Every prepared plan carries the species-dependent plane-wave cutoff,
+    # whichever route built it (deterministic; a resolved workflow is unchanged).
+    workflow_spec = with_plane_wave_cutoffs(structure_obj, workflow_spec)
     calculation_spec = calculation_spec_from_workflow_spec(workflow_spec)
     summary = summarize_structure(structure_obj)
     potcar_functional = (

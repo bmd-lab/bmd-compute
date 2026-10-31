@@ -144,12 +144,15 @@ def with_dispersion(stage: StageSpec) -> StageSpec:
 
 def test_phonons_desired_output_is_a_pbe_relax_followed_by_phonon_forces():
     workflow = desired_output_workflow_spec("phonons")
+    # The BMD Standard Geometry Relaxation (two passes), then the forces.
     assert [(stage.stage_type, stage.theory, stage.modifiers) for stage in workflow.stages] == [
+        (StageType.RELAX, Theory.PBE, frozenset()),
         (StageType.RELAX, Theory.PBE, frozenset()),
         (StageType.PHONON_FORCES, Theory.PBE, frozenset()),
     ]
+    assert [stage.options.get("geometry_relaxation", {}).get("pass") for stage in workflow.stages] == [1, 2, None]
     assert desired_output_from_workflow_spec(workflow) == "phonons"
-    assert workflow_stage_directories(workflow) == ("stage_01", "stage_02")
+    assert workflow_stage_directories(workflow) == ("stage_01", "stage_02", "stage_03")
     options = calculation_form_options()
     assert "phonons" in [item["value"] for item in options["desired_outputs"]]
     assert "phonon_forces" in [item["value"] for item in options["stage_types"]]
@@ -232,14 +235,18 @@ def test_relaxed_structure_feeds_every_phonon_job():
     assert run["supercell_matrix"].uuid == jobs["get_supercell_size"].uuid
 
 
-def test_precursor_relax_settings_apply_only_to_the_relax_before_phonons():
-    relaxed = desired_output_workflow_spec("relaxed_structure")
-    flow = quiet(build_atomate2_flow_for_workflow_spec, si(), relaxed, label="si")
+def test_historical_precursor_relax_settings_apply_only_to_the_relax_before_phonons():
+    # Workflows recorded before the BMD Standard Geometry Relaxation carry no
+    # plane-wave cutoff record and are rebuilt exactly as before.
+    historical = WorkflowSpec([StageSpec(StageType.RELAX, Theory.PBE), StageSpec(StageType.RELAX, Theory.PBE)])
+    flow = quiet(build_atomate2_flow_for_workflow_spec, si(), historical, label="si")
     for job in flow.jobs:
         settings = job.maker.input_set_generator.user_incar_settings
         assert settings["ENCUT"] == 580
         assert settings["EDIFF"] == 1e-6
         assert settings["EDIFFG"] == -0.01
+    flow = quiet(build_atomate2_flow_for_workflow_spec, si(), PBE_PHONONS, label="si")
+    assert flow.jobs[0].maker.input_set_generator.user_incar_settings["ENCUT"] == 700
 
 
 # --- 3. deterministic displacements ------------------------------------------------------
@@ -274,9 +281,14 @@ def test_si_displacements_are_deterministic_and_match_the_bmd_plan():
 
 def test_non_magnetic_pbe_phonons_are_admitted_with_a_planning_preview():
     resolved = plan(desired_output="phonons")
-    assert resolved.workflow_spec == PBE_PHONONS.__class__(PBE_PHONONS.stages, recipe="phonons")
+    assert resolved.workflow_spec.recipe == "phonons"
+    assert [(stage.stage_type, stage.theory, stage.modifiers) for stage in resolved.workflow_spec.stages] == [
+        (StageType.RELAX, Theory.PBE, frozenset()),
+        (StageType.RELAX, Theory.PBE, frozenset()),
+        (StageType.PHONON_FORCES, Theory.PBE, frozenset()),
+    ]
     (phonon_plan,) = resolved.generated_inputs["phonon_plans"]
-    assert phonon_plan["stage"] == 2
+    assert phonon_plan["stage"] == 3
     # 10 A minimum image length: the 2x2x2 conventional cell (10.86 A cube).
     assert phonon_plan["supercell_matrix"] == [[-2, 2, 2], [2, -2, 2], [2, 2, -2]]
     assert phonon_plan["supercell_atom_count"] == 64
@@ -286,11 +298,15 @@ def test_non_magnetic_pbe_phonons_are_admitted_with_a_planning_preview():
     assert phonon_plan["settings"]["born_maker"] is None
     assert [item["name"] for item in phonon_plan["stages"]][1:] == list(PHONON_JOB_NAMES)
     incar = resolved.generated_inputs["incar"]
-    assert "# Stage 2 - Phonon Force Calculations (PBE)" in incar
-    assert "ENCUT = 700.0" in incar.split("# Stage 2")[1]
-    assert "NCORE" not in incar.split("# Stage 2")[1]
-    assert "EDIFFG = -0.001" in incar.split("# Stage 2")[0]
-    assert "ENCUT = 700" in incar.split("# Stage 2")[0]
+    # The forces use the final relaxation's species-dependent cutoff
+    # (550 eV with the SYNTHETIC test metadata).
+    assert "# Stage 3 - Phonon Force Calculations (PBE)" in incar
+    forces = incar.split("# Stage 3")[1]
+    final_pass = incar.split("# Stage 3")[0].split("# Stage 2")[1]
+    assert "ENCUT = 550.0" in forces
+    assert "NCORE" not in forces
+    assert "EDIFFG = -0.001" in final_pass
+    assert "ENCUT = 550" in final_pass
 
 
 def test_planned_force_incar_is_single_point_gaussian_for_the_64_atom_si_cell():
@@ -301,19 +317,19 @@ def test_planned_force_incar_is_single_point_gaussian_for_the_64_atom_si_cell():
 
     resolved = plan(desired_output="phonons")
     sections = resolved.generated_inputs["incar"].split("# Stage ")[1:]
-    force = Incar.from_str("\n".join(line for line in sections[1].splitlines()[1:] if not line.startswith("#")))
+    force = Incar.from_str("\n".join(line for line in sections[2].splitlines()[1:] if not line.startswith("#")))
     assert force["ISMEAR"] == 0
     assert force["SIGMA"] == 0.2
     assert force["IBRION"] == -1
     assert force["NSW"] == 0
     assert "ISIF" not in force
-    assert force["ENCUT"] == 700
+    assert force["ENCUT"] == 550
     assert force["EDIFF"] == 1e-7
     assert force["LREAL"] is False
     assert force["ISPIN"] == 1
     for absent in ("GGA", "NCORE", "IVDW"):
         assert absent not in force
-    assert "Gamma\n2 2 2" in resolved.generated_inputs["kpoints"].split("# Stage 2")[1]
+    assert "Gamma\n2 2 2" in resolved.generated_inputs["kpoints"].split("# Stage 3")[1]
 
 
 def test_d3_is_applied_consistently_to_relax_and_forces():
@@ -411,7 +427,7 @@ def test_browser_and_planner_build_the_same_phonon_submission():
     assert ui_flow.get("automatic_treatments") == api_flow.get("automatic_treatments")
     assert ui["generated_inputs"]["incar"] == api.generated_inputs["incar"]
     assert ui["generated_inputs"]["phonon_plans"] == api.generated_inputs["phonon_plans"]
-    assert "Phonon Plan (stage 2)" in browser.body.decode()
+    assert "Phonon Plan (stage 3)" in browser.body.decode()
 
 
 # --- 8. no regression ---------------------------------------------------------------------
@@ -422,8 +438,11 @@ def test_browser_and_planner_build_the_same_phonon_submission():
     [
         ("energy_only", [("static", "pbe")]),
         ("relaxed_structure", [("relax", "pbe"), ("relax", "pbe")]),
-        ("electronic_dos", [("relax", "pbe"), ("static", "hse06"), ("dos", "hse06")]),
-        ("electronic_band_structure", [("relax", "pbe"), ("static", "hse06"), ("band_structure", "hse06")]),
+        ("electronic_dos", [("relax", "pbe"), ("relax", "pbe"), ("static", "hse06"), ("dos", "hse06")]),
+        (
+            "electronic_band_structure",
+            [("relax", "pbe"), ("relax", "pbe"), ("static", "hse06"), ("band_structure", "hse06")],
+        ),
     ],
 )
 def test_existing_desired_outputs_are_unchanged(desired_output, shape):

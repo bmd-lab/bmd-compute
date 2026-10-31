@@ -41,16 +41,21 @@ TIO2 = Structure.from_spacegroup(
 )
 
 COMMON = {"EDIFF": 1e-6, "PREC": "Accurate", "LREAL": False, "LASPH": True, "ADDGRID": True, "NELM": 200}
+# BMD Standard Geometry Relaxation v1 (bmd_compute.geometry_relaxation/1).
+# ENCUT is species-dependent (1.3 x max ENMAX, rounded up to 50 eV); the tests
+# plan against SYNTHETIC metadata with ENMAX = 400 eV, so ENCUT = 550 eV.
+RELAX_COMMON = {**COMMON, "ADDGRID": None}
 PBE_RELAX = {
-    "ENCUT": 580,
+    "ENCUT": 550,
     "IBRION": 2,
     "ISIF": 3,
-    "EDIFFG": -0.01,
     "NSW": 99,
     "ALGO": "Fast",
     "ISMEAR": 0,
     "SIGMA": 0.2,
 }
+RELAX_PASS_1 = {"EDIFF": 1e-6, "EDIFFG": -0.01}
+RELAX_PASS_2 = {"EDIFF": 1e-7, "EDIFFG": -0.001}
 PBE_STATIC = {"ENCUT": 620, "ALGO": "Normal", "ISMEAR": -5, "SIGMA": 0.05, "NEDOS": 4001, "LORBIT": 11}
 HSE06 = {"LHFCALC": True, "AEXX": 0.25, "HFSCREEN": 0.2}
 HSE06_STATIC = {**HSE06, "ENCUT": 620, "ALGO": "Damped", "TIME": 0.4, "PRECFOCK": "Accurate", "ISMEAR": 0, "SIGMA": 0.05}
@@ -72,6 +77,10 @@ DECLARED_SOC_SCREEN = (
 
 
 def stages(structure, workflow):
+    # As planning does: the species-dependent cutoff is resolved first.
+    from backend.calculations.geometry_relaxation import freeze_plane_wave_cutoffs
+
+    workflow = freeze_plane_wave_cutoffs(structure, workflow, potcar_functional="PBE_64")
     return generated_input_stage_previews(structure, workflow, resources={"ntasks": 24})
 
 
@@ -92,8 +101,13 @@ def custom(*stage_specs):
     [
         ("energy_only", [("static", "pbe")]),
         ("relaxed_structure", [("relax", "pbe"), ("relax", "pbe")]),
-        ("electronic_dos", [("relax", "pbe"), ("static", "hse06"), ("dos", "hse06")]),
-        ("electronic_band_structure", [("relax", "pbe"), ("static", "hse06"), ("band_structure", "hse06")]),
+        ("relaxed_energy", [("relax", "pbe"), ("relax", "pbe"), ("static", "pbe")]),
+        ("electronic_dos", [("relax", "pbe"), ("relax", "pbe"), ("static", "hse06"), ("dos", "hse06")]),
+        (
+            "electronic_band_structure",
+            [("relax", "pbe"), ("relax", "pbe"), ("static", "hse06"), ("band_structure", "hse06")],
+        ),
+        ("phonons", [("relax", "pbe"), ("relax", "pbe"), ("phonon_forces", "pbe")]),
     ],
 )
 def test_desired_output_stage_sequences(desired_output, sequence):
@@ -115,6 +129,7 @@ def test_automatic_treatment_screens_and_placement():
     ).resolved_workflow
     assert [sorted(m.value for m in stage.modifiers) for stage in resolved.stages] == [
         ["dft_u", "spin_polarized"],
+        ["dft_u", "spin_polarized"],
         ["spin_polarized"],
         ["spin_polarized"],
     ]
@@ -133,7 +148,8 @@ def test_two_dimensional_structure_gets_automatic_d3_bj_on_pbe_relax_and_static_
     (static,) = _resolved_previews(structure, "energy_only")
     assert static["input_set"].incar["IVDW"] == 12
 
-    relax, hse_static, dos = _resolved_previews(structure, "electronic_dos")
+    first_pass, relax, hse_static, dos = _resolved_previews(structure, "electronic_dos")
+    assert first_pass["input_set"].incar["IVDW"] == 12
     assert relax["input_set"].incar["IVDW"] == 12
     assert "IVDW" not in hse_static["input_set"].incar
     assert "IVDW" not in dos["input_set"].incar
@@ -144,7 +160,8 @@ def test_heavy_element_gets_automatic_soc_on_pbe_non_relaxation_stages_only():
 
     # HSE06 + SOC is closed to new calculations: the HSE06 stages keep HSE06
     # and omit SOC (recorded and shown as a red warning).
-    relax, hse_static, band = _resolved_previews(structure, "electronic_band_structure")
+    first_pass, relax, hse_static, band = _resolved_previews(structure, "electronic_band_structure")
+    assert "LSORBIT" not in first_pass["input_set"].incar
     assert "LSORBIT" not in relax["input_set"].incar
     for preview in (hse_static, band):
         assert "LSORBIT" not in preview["input_set"].incar
@@ -171,8 +188,9 @@ def test_d3_bj_is_ivdw_12_and_d3_zero_damping_is_ivdw_11():
 
 
 def test_pbe_relaxation_and_static():
-    for preview in stages(SI, desired_output_workflow_spec("relaxed_structure")):
-        assert_incar(preview["input_set"].incar, {**COMMON, **PBE_RELAX, "ISPIN": 1})
+    first_pass, final_pass = stages(SI, desired_output_workflow_spec("relaxed_structure"))
+    assert_incar(first_pass["input_set"].incar, {**RELAX_COMMON, **PBE_RELAX, **RELAX_PASS_1, "ISPIN": 1})
+    assert_incar(final_pass["input_set"].incar, {**RELAX_COMMON, **PBE_RELAX, **RELAX_PASS_2, "ISPIN": 1})
     (static,) = stages(SI, desired_output_workflow_spec("energy_only"))
     assert_incar(static["input_set"].incar, {**COMMON, **PBE_STATIC, "NSW": 0, "ISPIN": 1})
 
@@ -192,19 +210,19 @@ def test_pbe_dos_and_band_structure_are_non_self_consistent():
 
 
 def test_hse06_stages():
-    relax, static, dos = stages(SI, desired_output_workflow_spec("electronic_dos"))
+    _, relax, static, dos = stages(SI, desired_output_workflow_spec("electronic_dos"))
     assert "LHFCALC" not in relax["input_set"].incar
     assert_incar(static["input_set"].incar, {**COMMON, **HSE06_STATIC})
     assert_incar(dos["input_set"].incar, {**COMMON, **HSE06_DOS})
     assert "ICHARG" not in dos["input_set"].incar
-    _, _, band = stages(SI, desired_output_workflow_spec("electronic_band_structure"))
+    _, _, _, band = stages(SI, desired_output_workflow_spec("electronic_band_structure"))
     assert_incar(band["input_set"].incar, {**COMMON, **HSE06_BAND})
     assert "ICHARG" not in band["input_set"].incar
 
     (hse_relax,) = stages(SI, custom(StageSpec(StageType.RELAX, Theory.HSE06)))
     assert_incar(
         hse_relax["input_set"].incar,
-        {**COMMON, **PBE_RELAX, **HSE06, "ALGO": "Damped", "TIME": 0.4, "PRECFOCK": "Fast"},
+        {**RELAX_COMMON, **PBE_RELAX, **RELAX_PASS_1, **HSE06, "ALGO": "Damped", "TIME": 0.4, "PRECFOCK": "Fast"},
     )
 
 
@@ -217,8 +235,8 @@ def _gamma_mesh(structure, density):
 
 @pytest.mark.parametrize("structure", [SI, NIO], ids=["Si", "NiO"])
 def test_uniform_kpoint_densities(structure):
-    relax, static, dos = stages(structure, desired_output_workflow_spec("electronic_dos"))
-    for preview in (relax, static):
+    first_pass, relax, static, dos = stages(structure, desired_output_workflow_spec("electronic_dos"))
+    for preview in (first_pass, relax, static):
         kpoints = preview["input_set"].kpoints
         assert kpoints.style == Kpoints.supported_modes.Gamma
         assert kpoints.kpts == _gamma_mesh(structure, 64).kpts
@@ -236,7 +254,7 @@ def test_band_structure_paths():
     )
     assert pbe_band["input_set"].kpoints.num_kpts == len(path_40)
 
-    _, _, hse_band = stages(SI, desired_output_workflow_spec("electronic_band_structure"))
+    _, _, _, hse_band = stages(SI, desired_output_workflow_spec("electronic_band_structure"))
     kpoints = hse_band["input_set"].kpoints
     zero_weight = [w for w in kpoints.kpts_weights if w == 0]
     assert len(zero_weight) == len(path_40)

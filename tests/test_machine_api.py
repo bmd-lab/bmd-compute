@@ -807,12 +807,12 @@ def _with_stage_poscar(previews, index, poscar):
     return changed
 
 
-@pytest.mark.parametrize("stage_index", [0, 1, 2])
+@pytest.mark.parametrize("stage_index", [0, 1, 2, 3])
 def test_changing_only_one_stage_generated_poscar_changes_the_plan_digest(stage_index):
     from pymatgen.io.vasp.inputs import Poscar
 
     plan, previews = _multistage_plan()
-    assert len(previews) == 3
+    assert len(previews) == 4
     baseline = compute_plan_digest(structure=plan.structure, submission_spec=plan.submission_spec, stage_previews=previews)
 
     original = previews[stage_index]["input_set"].poscar
@@ -961,14 +961,16 @@ def test_phonons_desired_output_plan_includes_the_phonopy_plan(client, tokens):
     response = post_plan(client, tokens["plan"], plan_body(desired_output="phonons"))
     assert response.status_code == 200, response.text
     stages = response.json()["scientific_inputs"]["stages"]
-    assert [stage["stage_type"] for stage in stages] == ["relax", "phonon_forces"]
-    assert "phonon_plan" not in stages[0]
-    phonon_plan = stages[1]["phonon_plan"]
-    assert phonon_plan["supercell_atom_count"] == stages[1]["poscar"]["num_sites"] == 64
+    assert [stage["stage_type"] for stage in stages] == ["relax", "relax", "phonon_forces"]
+    assert "phonon_plan" not in stages[0] and "phonon_plan" not in stages[1]
+    phonon_plan = stages[2]["phonon_plan"]
+    assert phonon_plan["supercell_atom_count"] == stages[2]["poscar"]["num_sites"] == 64
     assert phonon_plan["displacement_count"] == 1
-    assert stages[1]["incar"]["settings"]["ENCUT"] == 700
-    assert "NCORE" not in stages[1]["incar"]["settings"]
-    force = stages[1]["incar"]["settings"]
+    # The forces use the final relaxation's species-dependent cutoff
+    # (550 eV with the SYNTHETIC test metadata).
+    assert stages[2]["incar"]["settings"]["ENCUT"] == stages[1]["incar"]["settings"]["ENCUT"] == 550
+    assert "NCORE" not in stages[2]["incar"]["settings"]
+    force = stages[2]["incar"]["settings"]
     assert (force["ISMEAR"], force["SIGMA"], force["IBRION"], force["NSW"]) == (0, 0.2, -1, 0)
     assert "ISIF" not in force
     # Phonon plans show, and prepare with, phonopy and seekpath as parity-critical.
@@ -1006,7 +1008,7 @@ _PHONON_SETTING_MUTATIONS = {
     "PHONON_SUPERCELL_PREFER_90_DEGREES": False,
     "PHONON_KPATH_SCHEME": "setyawan_curtarolo",
     "PHONON_USE_SYMMETRIZED_STRUCTURE": "primitive",
-    "PHONON_WORKFLOW_VERSION": 2,
+    "PHONON_WORKFLOW_VERSION": 3,
     "PHONON_PRECURSOR_RELAX_INCAR": {"ENCUT": 700, "EDIFF": 1e-6, "EDIFFG": -1e-3},
     "PHONON_FORCE_BMD_INCAR_AMENDMENTS": {"GGA": None, "ENAUG": None, "LMIXTAU": None, "ISPIN": 2},
     "PHONON_FORCE_AUTO_ISPIN": True,
@@ -1037,10 +1039,10 @@ def test_phonon_digest_material_uses_the_authoritative_settings(phonon_plan_and_
 
     plan, previews = phonon_plan_and_previews
     material = plan_digest_module.stage_input_material(previews)
-    assert "phonon_settings" not in material[0]
-    assert material[1]["phonon_settings"] == json_safe(phonon_force_settings_payload())
+    assert "phonon_settings" not in material[0] and "phonon_settings" not in material[1]
+    assert material[2]["phonon_settings"] == json_safe(phonon_force_settings_payload())
     # The preview shows the same payload the digest covers.
-    assert json_safe(previews[1]["phonon_plan"]["settings"]) == material[1]["phonon_settings"]
+    assert json_safe(previews[2]["phonon_plan"]["settings"]) == material[2]["phonon_settings"]
     assert _digest(plan, previews) == _digest(plan, previews)
 
 
@@ -1061,8 +1063,14 @@ def test_non_phonon_digest_material_is_unchanged(desired_output):
         warnings.simplefilter("ignore")
         plan = main.plan_calculation_request(structure_text=SI_POSCAR, fmt="poscar", desired_output=desired_output)
         previews = plan_stage_previews(plan)
-    for stage in plan_digest_module.stage_input_material(previews):
-        assert set(stage) == {"index", "vasp_executable", "incar", "kpoints_text", "poscar_sha256", "potcar_symbols"}
+    base = {"index", "vasp_executable", "incar", "kpoints_text", "poscar_sha256", "potcar_symbols"}
+    for stage, preview in zip(plan_digest_module.stage_input_material(previews), previews):
+        # Geometry Optimisation stages also carry the relaxation methodology
+        # (BMD Standard Geometry Relaxation); no other stage gains material.
+        if preview["stage_spec"].stage_type.value == "relax":
+            assert set(stage) == base | {"geometry_relaxation"}
+        else:
+            assert set(stage) == base
 
 
 def test_browser_and_api_phonon_digests_match(client, tokens):

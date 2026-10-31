@@ -396,6 +396,7 @@ def test_bi2se3_dos_and_band_keep_hse06_and_omit_soc_with_red_warning(desired_ou
 
     assert signature(resolution.resolved_workflow) == [
         ("relax", "pbe", ("dispersion",)),
+        ("relax", "pbe", ("dispersion",)),
         ("static", "hse06", ()),
         (terminal, "hse06", ()),
     ]
@@ -410,7 +411,7 @@ def test_bi2se3_dos_and_band_keep_hse06_and_omit_soc_with_red_warning(desired_ou
     assert omission["consideration_id"] == SOC_CONSIDERATION_ID
     assert omission["application_state"] == AUTOMATIC_APPLICATION_OMITTED_UNSUPPORTED
     assert omission["code"] == SOC_OMITTED_UNSUPPORTED_CODE
-    assert omission["stage_indices"] == [2, 3]
+    assert omission["stage_indices"] == [3, 4]
     assert [stage["theory"] for stage in omission["omitted_stages"]] == ["hse06", "hse06"]
     assert omission["title"] == HSE06_SOC_OMITTED_TITLE
     assert omission["message"] == HSE06_SOC_OMITTED_MESSAGE
@@ -419,6 +420,7 @@ def test_bi2se3_dos_and_band_keep_hse06_and_omit_soc_with_red_warning(desired_ou
     context = response.context
     assert response.status_code == 200
     assert [stage["modifiers"] for stage in context["selected_workflow"]["stages"]] == [
+        ["dispersion"],
         ["dispersion"],
         [],
         [],
@@ -429,10 +431,12 @@ def test_bi2se3_dos_and_band_keep_hse06_and_omit_soc_with_red_warning(desired_ou
         "vasp_std",
         "vasp_std",
         "vasp_std",
+        "vasp_std",
     ]
-    relax, static, analysis = stage_sections(generated["incar"])
+    first_pass, relax, static, analysis = stage_sections(generated["incar"])
+    assert "IVDW = 12" in first_pass
     assert "IVDW = 12" in relax
-    for section in (relax, static, analysis):
+    for section in (first_pass, relax, static, analysis):
         assert "LSORBIT" not in section
         assert "vasp_ncl" not in section
     for section in (static, analysis):
@@ -461,7 +465,7 @@ def test_bi2se3_dos_and_band_keep_hse06_and_omit_soc_with_red_warning(desired_ou
     assert "Spin-Orbit Coupling (SOC) has been included automatically" not in rendered
     assert (
         "The van der Waals correction has been included automatically in the "
-        "PBE Geometry Optimisation stage."
+        "PBE Geometry Optimisation stages."
     ) in rendered
 
     submission_spec = context["submission_spec"]
@@ -470,8 +474,8 @@ def test_bi2se3_dos_and_band_keep_hse06_and_omit_soc_with_red_warning(desired_ou
     assert flow_spec["automatic_treatments"]["omitted_treatments"] == [omission]
     assert submission_spec["provenance"]["execution"]["automatic_treatments"] == flow_spec["automatic_treatments"]
     vasp_stages = submission_spec["provenance"]["vasp"]["stages"]
-    assert [stage["executable"] for stage in vasp_stages] == ["vasp_std", "vasp_std", "vasp_std"]
-    assert [stage["custodian_vasp_job_kwargs"] for stage in vasp_stages] == [{}, {}, {}]
+    assert [stage["executable"] for stage in vasp_stages] == ["vasp_std"] * 4
+    assert [stage["custodian_vasp_job_kwargs"] for stage in vasp_stages] == [{}, {}, {}, {}]
 
     _, jobs = runtime_jobs(submission_spec)
     for job in jobs:
@@ -495,17 +499,22 @@ def test_bi2se3_soc_omission_leaves_hse06_inputs_identical_to_plain_hse06(desire
     base = desired_output_workflow_spec(desired_output)
     assert [(stage.stage_type.value, stage.theory.value) for stage in base.stages] == [
         ("relax", "pbe"),
+        ("relax", "pbe"),
         ("static", "hse06"),
         (terminal, "hse06"),
     ]
-    assert all(not stage.modifiers for stage in base.stages[1:])
+    assert all(not stage.modifiers for stage in base.stages[2:])
     plain = WorkflowSpec(
-        [resolved.stages[0], *base.stages[1:]],
+        [resolved.stages[0], resolved.stages[1], *base.stages[2:]],
         recipe=base.recipe,
         label=base.label,
     )
     assert resolved.to_dict() == validate_workflow_spec(plain).to_dict()
-    assert preview_generated_inputs(structure, resolved) == preview_generated_inputs(structure, plain)
+    from conftest import planned
+
+    assert preview_generated_inputs(structure, planned(structure, resolved)) == preview_generated_inputs(
+        structure, planned(structure, validate_workflow_spec(plain))
+    )
 
 
 @pytest.mark.parametrize("terminal", [StageType.DOS, StageType.BAND_STRUCTURE])
@@ -583,15 +592,16 @@ def test_spin_applies_and_soc_is_omitted_on_hse_stages_for_magnetic_heavy_elemen
     stage_modifiers = [set(item[2]) for item in signature(resolution.resolved_workflow)]
     assert "soc" not in stage_modifiers[0]
     assert "spin_polarized" in stage_modifiers[0]
-    assert stage_modifiers[1] == {"spin_polarized"}
+    assert stage_modifiers[1] == stage_modifiers[0]
     assert stage_modifiers[2] == {"spin_polarized"}
+    assert stage_modifiers[3] == {"spin_polarized"}
     applied = {treatment.consideration_id for treatment in resolution.applied_treatments}
     assert SPIN_CONSIDERATION_ID in applied
     assert SOC_CONSIDERATION_ID not in applied
     assert [item["consideration_id"] for item in resolution.omitted_treatments] == [
         SOC_CONSIDERATION_ID,
     ]
-    assert resolution.omitted_treatments[0]["stage_indices"] == [2, 3]
+    assert resolution.omitted_treatments[0]["stage_indices"] == [3, 4]
 
 
 # --- Custodian auto_gamma --------------------------------------------------------
@@ -891,7 +901,8 @@ def test_hse_analysis_stage_does_not_consume_the_static_charge_density(desired_o
     # carried forward, so VASP starts with ISTART=0 / ICHARG=2 and ignores it.
     response = build_route(BI2SE3_POSCAR, workflow=desired_output)
     submission_spec = response.context["submission_spec"]
-    runtime_incar = runtime_input_set(submission_spec, 2).incar
+    # Jobs: two relaxation passes, the HSE06 static, then the analysis stage.
+    runtime_incar = runtime_input_set(submission_spec, 3).incar
 
     assert "ICHARG" not in runtime_incar
     assert "ISTART" not in runtime_incar

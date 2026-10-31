@@ -13,6 +13,8 @@ import json
 import warnings
 
 import pytest
+
+from conftest import planned
 from monty.json import MontyDecoder
 
 import main
@@ -223,17 +225,18 @@ def test_generators_round_trip_through_serialization():
 @pytest.mark.parametrize("workflow", ["managed", "custom"])
 def test_band_structure_assesses_the_completed_static_it_follows(workflow):
     spec = (
-        desired_output_workflow_spec("electronic_band_structure")
+        planned(SI, desired_output_workflow_spec("electronic_band_structure"))
         if workflow == "managed"
         else WorkflowSpec([StageSpec.from_dict(stage) for stage in CUSTOM_HSE_BAND["stages"]], recipe=None)
     )
     flow = build_atomate2_flow_for_workflow_spec(SI, spec, resources={"ntasks": 24})
-    relax, static, band = flow.jobs
+    *_, static, band = flow.jobs
     maker = band.function.__self__
     generator = maker.input_set_generator
 
     assert type(generator).__name__ == "HseBandSigmaHSEBSSetGenerator"
-    assert generator.bmd_sigma_evidence_stage_index == 2
+    # The static is stage 3 after the two-pass relaxation; stage 2 in Custom.
+    assert generator.bmd_sigma_evidence_stage_index == (3 if workflow == "managed" else 2)
     # The band structure runs after, and copies, the completed static stage.
     prev_dir = band.function_kwargs["prev_dir"]
     assert prev_dir.uuid == static.uuid and prev_dir.attributes == (("a", "dir_name"),)
@@ -243,7 +246,7 @@ def test_band_structure_assesses_the_completed_static_it_follows(workflow):
 
 def test_hse06_dos_and_other_stages_are_unchanged():
     flow = build_atomate2_flow_for_workflow_spec(
-        SI, desired_output_workflow_spec("electronic_dos"), resources={"ntasks": 24}
+        SI, planned(SI, desired_output_workflow_spec("electronic_dos")), resources={"ntasks": 24}
     )
     for job in flow.jobs:
         maker = job.function.__self__
@@ -322,16 +325,16 @@ def test_plan_describes_the_rule_and_is_stable():
     plan = _plan("electronic_band_structure")
     material = stage_input_material(plan_stage_previews(plan))
 
-    assert "conditional_settings" not in material[0] and "conditional_settings" not in material[1]
-    assert material[2]["conditional_settings"] == hse_band_sigma.conditional_settings_payload()
-    assert material[2]["incar"]["SIGMA"] == 0.01
+    assert all("conditional_settings" not in item for item in material[:3])
+    assert material[3]["conditional_settings"] == hse_band_sigma.conditional_settings_payload()
+    assert material[3]["incar"]["SIGMA"] == 0.01
     assert _digest(plan) == _digest(_plan("electronic_band_structure"))
     assert plan.submission_spec["runtime_parity"]["packages"]["bmd-agent"] == "0.2.0"
     # The preview states the runtime-dependent setting beside the default.
     incar_text = plan.generated_inputs["incar"]
     notes = [line for line in incar_text.splitlines() if "BMD Check C2" in line]
-    assert notes == [hse_band_sigma.preview_note(2)]
-    assert "0.2 eV" in notes[0] and "Stage 2 HSE06 static" in notes[0]
+    assert notes == [hse_band_sigma.preview_note(3)]
+    assert "0.2 eV" in notes[0] and "Stage 3 HSE06 static" in notes[0]
 
 
 def test_the_rule_version_is_part_of_plan_identity(monkeypatch):
@@ -361,10 +364,10 @@ def test_real_atomate2_maker_path_copies_oszicar_and_writes_consistent_inputs(c2
     # Stand-in files are not a parseable VASP run (see ``runtime_inputs``).
     monkeypatch.setattr(VaspInputSet, "_set_previous", lambda self, prev_dir=None: None)
     flow = build_atomate2_flow_for_workflow_spec(
-        SI, desired_output_workflow_spec("electronic_band_structure"), resources={"ntasks": 24}
+        SI, planned(SI, desired_output_workflow_spec("electronic_band_structure")), resources={"ntasks": 24}
     )
-    maker = flow.jobs[2].function.__self__
-    static_dir = tmp_path / "stage_02"
+    maker = flow.jobs[3].function.__self__
+    static_dir = tmp_path / "stage_03"
     static_dir.mkdir()
     for name, text in {
         "INCAR": "ISMEAR = 0\n",
@@ -376,7 +379,7 @@ def test_real_atomate2_maker_path_copies_oszicar_and_writes_consistent_inputs(c2
         "POTCAR.spec": "Si\n",
     }.items():
         (static_dir / f"{name}.gz").write_bytes(gzip.compress(text.encode()))
-    band_dir = tmp_path / "stage_03"
+    band_dir = tmp_path / "stage_04"
     band_dir.mkdir()
     monkeypatch.chdir(band_dir)
 
@@ -388,7 +391,7 @@ def test_real_atomate2_maker_path_copies_oszicar_and_writes_consistent_inputs(c2
     # OSZICAR (for C1 convergence) arrives with CHGCAR, decompressed.
     assert (band_dir / "OSZICAR").read_text() == "stand-in\n"
     assert (band_dir / "CHGCAR").is_file()
-    assert calls["directory"] == "." and calls["stage_index"] == 2
+    assert calls["directory"] == "." and calls["stage_index"] == 3
     written = Incar.from_file(band_dir / "INCAR")
     record = json.loads((band_dir / hse_band_sigma.PROVENANCE_FILENAME).read_text())
     assert (written["ISMEAR"], written["SIGMA"]) == (0, 0.2)

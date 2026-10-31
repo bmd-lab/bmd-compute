@@ -38,6 +38,7 @@ from backend.calculations.registry import (
 from backend.calculations.resources import walltime_seconds
 from backend.generated_inputs import preview_generated_inputs
 from backend.parser import parse_structure
+from conftest import planned
 from backend.results import parse_vasp_result_files, result_stage_directory_from_submission_spec
 from backend.workflow_summary import calculation_plan_from_workflow_spec
 from backend.workflows import build_atomate2_flow_for_workflow_spec
@@ -157,9 +158,10 @@ def test_relaxed_energy_is_the_first_browser_option_with_its_label_and_descripti
 
 
 def test_each_stage_starts_from_the_previous_stage_final_structure():
+    structure = parse_structure(SI_POSCAR, "poscar")
     flow = build_atomate2_flow_for_workflow_spec(
-        "initial-structure",
-        desired_output_workflow_spec("relaxed_energy"),
+        structure,
+        planned(structure, desired_output_workflow_spec("relaxed_energy")),
         label="Si",
         resources={"ntasks": 24},
     )
@@ -167,7 +169,7 @@ def test_each_stage_starts_from_the_previous_stage_final_structure():
 
     assert [job.name for job in flow.jobs] == ["stage_01", "stage_02", "stage_03"]
     assert flow.metadata["bmd_stage_directories"] == ("stage_01", "stage_02", "stage_03")
-    assert first_relax.function_args == ("initial-structure",)
+    assert first_relax.function_args == (structure,)
 
     second_input = second_relax.function_args[0]
     assert second_input.uuid == first_relax.uuid
@@ -242,9 +244,10 @@ def test_stages_reuse_existing_definitions_with_no_new_incar_defaults(structure)
 
 
 def test_generated_inputs_preview_all_three_stages():
+    structure = parse_structure(SI_POSCAR, "poscar")
     preview = preview_generated_inputs(
-        parse_structure(SI_POSCAR, "poscar"),
-        desired_output_workflow_spec("relaxed_energy"),
+        structure,
+        planned(structure, desired_output_workflow_spec("relaxed_energy")),
         resources={"ntasks": 24},
     )
     headers = [line for line in preview["incar"].splitlines() if line.startswith("# Stage")]
@@ -476,18 +479,25 @@ def test_relaxed_energy_is_the_only_new_identifier():
 
 
 def test_existing_desired_outputs_keep_their_stages():
+    # Every managed relaxation is the two-pass BMD Standard Geometry Relaxation.
     assert _pairs(desired_output_workflow_spec("relaxed_structure")) == [("relax", "pbe"), ("relax", "pbe")]
     assert _pairs(desired_output_workflow_spec("electronic_dos")) == [
+        ("relax", "pbe"),
         ("relax", "pbe"),
         ("static", "hse06"),
         ("dos", "hse06"),
     ]
     assert _pairs(desired_output_workflow_spec("electronic_band_structure")) == [
         ("relax", "pbe"),
+        ("relax", "pbe"),
         ("static", "hse06"),
         ("band_structure", "hse06"),
     ]
-    assert _pairs(desired_output_workflow_spec("phonons")) == [("relax", "pbe"), ("phonon_forces", "pbe")]
+    assert _pairs(desired_output_workflow_spec("phonons")) == [
+        ("relax", "pbe"),
+        ("relax", "pbe"),
+        ("phonon_forces", "pbe"),
+    ]
     for name in PRE_EXISTING_DESIRED_OUTPUTS:
         assert desired_output_from_workflow_spec(desired_output_workflow_spec(name)) == name
 

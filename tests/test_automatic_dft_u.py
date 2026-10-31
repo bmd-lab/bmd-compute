@@ -391,21 +391,23 @@ def test_dos_and_band_place_u_on_the_pbe_relaxation_only(desired_output, termina
     resolution = resolve(desired_output, NIO)
     assert signature(resolution.resolved_workflow) == [
         ("relax", "pbe", ("dft_u", "spin_polarized")),
+        ("relax", "pbe", ("dft_u", "spin_polarized")),
         ("static", "hse06", ("spin_polarized",)),
         (terminal, "hse06", ("spin_polarized",)),
     ]
-    relax, static, analysis = resolution.resolved_workflow.stages
-    assert "dft_u" in relax.options
+    first_pass, final_pass, static, analysis = resolution.resolved_workflow.stages
+    assert "dft_u" in first_pass.options and "dft_u" in final_pass.options
     assert "dft_u" not in (static.options or {})
     assert "dft_u" not in (analysis.options or {})
     treatment = next(t for t in resolution.applied_treatments if t.consideration_id == DFT_U_CONSIDERATION_ID)
-    assert treatment.stage_indices == (1,)
+    assert treatment.stage_indices == (1, 2)
 
     response = build_route(NIO, workflow=desired_output)
     assert response.status_code == 200
     sections = stage_sections(response.context["generated_inputs"]["incar"])
     assert incar_value(sections[0], "LDAU") == "True"
-    for section in sections[1:]:
+    assert incar_value(sections[1], "LDAU") == "True"
+    for section in sections[2:]:
         assert "LHFCALC = True" in section
         assert "LDAU" not in section
 
@@ -484,13 +486,14 @@ def test_hse_stages_never_receive_u_when_the_soc_policy_also_triggers():
     resolution = resolve("electronic_band_structure", WO2)
     assert signature(resolution.resolved_workflow) == [
         ("relax", "pbe", ("dft_u",)),
+        ("relax", "pbe", ("dft_u",)),
         ("static", "hse06", ()),
         ("band_structure", "hse06", ()),
     ]
     assert [item["consideration_id"] for item in resolution.omitted_treatments] == [
         "soc.heavy_elements",
     ]
-    assert resolution.omitted_treatments[0]["stage_indices"] == [2, 3]
+    assert resolution.omitted_treatments[0]["stage_indices"] == [3, 4]
 
 
 # --- Custom workflows -------------------------------------------------------------
@@ -654,7 +657,7 @@ def test_prepared_record_carries_full_provenance():
     assert set(source["packages"]) == {"atomate2", "pymatgen", "pymatgen-core"}
     assert all(source["packages"].values())
 
-    assert [stage["stage_index"] for stage in record["generated_stages"]] == [1]
+    assert [stage["stage_index"] for stage in record["generated_stages"]] == [1, 2]
     stage = record["generated_stages"][0]
     assert stage["stage_type"] == "relax" and stage["theory"] == "pbe"
     assert stage["LDAU"] is True

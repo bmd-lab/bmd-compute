@@ -24,7 +24,10 @@ Covered (any change alters the digest):
   settings (``backend.phonons.workflow.phonon_force_settings_payload``:
   displacement amplitude, symprec, symmetry reduction, supercell policy,
   band-path scheme, workflow version, precursor-relax and force-calculation
-  amendments, analysis and output settings). These are the inputs Compute's stage input-set generators
+  amendments, analysis and output settings), and for Geometry Optimisation
+  stages with a plane-wave cutoff record the relaxation methodology
+  (``backend.calculations.geometry_relaxation.relaxation_stage_payload``:
+  protocol pass, convergence, cutoff rule and Custodian exclusions). These are the inputs Compute's stage input-set generators
   produce for each stage from the submitted structure (the same generator path
   as the browser preview); at run time stage 2 onwards is regenerated from the
   previous stage's output, as described in ``docs/methodology.md``;
@@ -117,8 +120,12 @@ def potcar_symbols(input_set) -> list[str]:
 
 
 def stage_input_material(stage_previews: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    from backend.calculations.geometry_relaxation import relaxation_stage_payload
+    from backend.calculations.models import WorkflowSpec
+
+    workflow = WorkflowSpec(stages=[preview["stage_spec"] for preview in stage_previews])
     material = []
-    for preview in stage_previews:
+    for position, preview in enumerate(stage_previews):
         input_set = preview["input_set"]
         kpoints = input_set.kpoints
         stage_material = {
@@ -137,6 +144,13 @@ def stage_input_material(stage_previews: Sequence[Mapping[str, Any]]) -> list[di
             from backend.phonons.workflow import phonon_force_settings_payload
 
             stage_material["phonon_settings"] = json_safe(phonon_force_settings_payload())
+        relaxation = relaxation_stage_payload(workflow, position)
+        if relaxation is not None:
+            # Geometry Optimisation methodology the INCAR does not show (the
+            # Custodian treatment and the cutoff rule). Only stages that carry a
+            # plane-wave cutoff record (BMD Standard Geometry Relaxation and
+            # later Custom relaxations) have it.
+            stage_material["geometry_relaxation"] = json_safe(relaxation)
         if is_hse_band_structure_stage(preview):
             # The previewed SIGMA is the default; the run chooses the initial
             # SIGMA by this versioned rule. Added only for these stages.

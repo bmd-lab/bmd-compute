@@ -35,7 +35,11 @@ from typing import Any
 from backend.phonons.policy import PROVISIONAL_PHONON_POLICY
 
 PHONON_WORKFLOW_ID = "bmd_compute.phonons.atomate2_finite_displacement"
-PHONON_WORKFLOW_VERSION = 1
+# Version 2: the relaxation is the BMD Standard Geometry Relaxation
+# (``bmd_compute.geometry_relaxation/1``) and the displacement forces use its
+# species-dependent plane-wave cutoff instead of atomate2's ENCUT = 700 eV;
+# no Hubbard U unless DFT+U is selected (phonon stages never select it).
+PHONON_WORKFLOW_VERSION = 2
 
 PHONON_DISPLACEMENT_ANGSTROM = PROVISIONAL_PHONON_POLICY.displacement_distance_angstrom
 PHONON_SYMPREC = PROVISIONAL_PHONON_POLICY.symprec
@@ -50,12 +54,11 @@ PHONON_KPATH_SCHEME = "seekpath"
 PHONON_USE_SYMMETRIZED_STRUCTURE = None
 PHONON_SYM_REDUCE = True
 
-# Tightened convergence for the Geometry Optimisation stage that feeds a
-# phonon force stage: residual forces must be far below the forces produced by
-# a 0.01 Angstrom displacement, and the cell is relaxed at the same plane-wave
-# cutoff as the displacement-force calculations (atomate2
-# PhononDisplacementMaker ENCUT 700) so the relaxed structure is a minimum of
-# the same basis. Ordinary relaxations keep the BMD default (ENCUT 580).
+# Historical (phonon workflow v1) settings of the Geometry Optimisation stage
+# that fed a phonon force stage. They apply only to workflows recorded before
+# the BMD Standard Geometry Relaxation, which carry no plane-wave cutoff record;
+# new plans relax with ``backend.calculations.geometry_relaxation`` (pass 2:
+# EDIFF 1e-7, EDIFFG -1e-3, species-dependent ENCUT shared with the forces).
 PHONON_PRECURSOR_RELAX_INCAR = {"ENCUT": 700, "EDIFF": 1e-7, "EDIFFG": -1e-3}
 
 # BMD amendments on top of atomate2's PhononDisplacementMaker input set:
@@ -74,11 +77,24 @@ PHONON_PRECURSOR_RELAX_INCAR = {"ENCUT": 700, "EDIFF": 1e-7, "EDIFFG": -1e-3}
 #   smearing (ISMEAR = 0, SIGMA = 0.2, the value atomate2/pymatgen fall back
 #   to), no ionic algorithm (IBRION = -1, NSW = 0), and ISIF is left to the
 #   VASP default.
+# - phonon stages never select DFT+U, so pymatgen's chemistry-based Hubbard U
+#   tags (for example U(Ni) on an oxide) are removed, exactly as BMD's plain
+#   PBE Geometry Optimisation does (backend.workflows.apply_dft_u_settings);
+#   the forces therefore use the same Hamiltonian as the relaxation.
+# - ENCUT is the species-dependent cutoff of the relaxation that produced the
+#   structure (backend.calculations.geometry_relaxation), passed per stage.
 # NCORE is deliberately left unset for force stages.
 PHONON_FORCE_BMD_INCAR_AMENDMENTS = {
     "GGA": None,
     "ENAUG": None,
     "LMIXTAU": None,
+    "LDAU": None,
+    "LDAUTYPE": None,
+    "LDAUL": None,
+    "LDAUU": None,
+    "LDAUJ": None,
+    "LDAUPRINT": None,
+    "LMAXMIX": None,
     "ISPIN": 1,
     "ISMEAR": 0,
     "SIGMA": 0.2,
@@ -132,7 +148,14 @@ def phonon_force_settings_payload() -> dict[str, Any]:
         "bulk_relax_maker": None,
         "static_energy_maker": None,
         "born_maker": None,
-        "precursor_relax_incar": dict(PHONON_PRECURSOR_RELAX_INCAR),
+        "precursor_relaxation": {
+            "protocol": "bmd_compute.geometry_relaxation/1 (final pass feeds the forces)",
+            "plane_wave_cutoff": (
+                "the force calculations use the frozen plane-wave cutoff record of the "
+                "relaxation that produced the structure"
+            ),
+        },
+        "legacy_precursor_relax_incar": dict(PHONON_PRECURSOR_RELAX_INCAR),
         "force_bmd_incar_amendments": dict(PHONON_FORCE_BMD_INCAR_AMENDMENTS),
         "force_auto_ispin": PHONON_FORCE_AUTO_ISPIN,
         # One SIGMA for every displacement (see backend.calculations.custodian_policy).

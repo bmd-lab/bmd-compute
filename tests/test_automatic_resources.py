@@ -110,15 +110,22 @@ def plans():
 # ------------------------------------------------------------ descriptors
 
 
-def test_descriptors_reproduce_recorded_outcar_quantities(plans):
+def test_descriptors_reproduce_recorded_outcar_quantities(plans, monkeypatch, tmp_path):
     # Telemetry 2026-10-16: Si2 7x7x7 Gamma mesh -> 20 irreducible k-points,
     # 32^3 FFT at ENCUT 620; the Si64 phonon supercell -> 6 k-points,
-    # 168 bands, 96^3 FFT at ENCUT 700.
+    # 168 bands, 96^3 FFT at ENCUT 700. The phonon force cutoff is now the
+    # species-dependent relaxation cutoff, so the recorded 700 eV run is
+    # reproduced with SYNTHETIC metadata that resolves to 700 eV.
+    from conftest import synthetic_enmax_metadata, use_enmax_metadata
+
     si2 = _estimate(plans["si2_static"])["stages"][0]["descriptors"]
     assert si2["kpoints"] == 20
     assert si2["fft_grid"] == [32, 32, 32]
     assert si2["electrons"] == 8
-    phonon = _estimate(plans["si2_phonons"])["stages"][1]["descriptors"]
+    use_enmax_metadata(monkeypatch, tmp_path / "enmax.json", synthetic_enmax_metadata({"Si": 538.0}))
+    phonon_plan = _plan(desired_output="phonons")
+    assert phonon_plan.submission_spec["flow_spec"]["workflow_spec"]["stages"][2]["options"]["plane_wave_cutoff"]["ENCUT"] == 700
+    phonon = _estimate(phonon_plan)["stages"][2]["descriptors"]
     assert (phonon["kpoints"], phonon["bands"], phonon["fft_grid"]) == (6, 168, [96, 96, 96])
     assert phonon["calculations"] == 1
 
@@ -209,11 +216,12 @@ def test_hybrid_stages_use_identified_fallbacks_not_the_pbe_model(plans):
     stages = _estimate(plans["si2_hse_dos"])["stages"]
     assert [stage["class"] for stage in stages] == [
         auto.STAGE_CALIBRATED,
+        auto.STAGE_CALIBRATED,
         auto.STAGE_HYBRID_FALLBACK,
         auto.STAGE_HYBRID_FALLBACK,
     ]
-    assert stages[1]["seconds"] == 36 * 3600
-    assert "HSE06" in stages[1]["reason"]
+    assert stages[2]["seconds"] == 36 * 3600
+    assert "HSE06" in stages[2]["reason"]
     assert _estimate(plans["si2_hse_dos"])["basis"] == auto.BASIS_FALLBACK
     assert "Conservative fallback" in _estimate(plans["si2_hse_dos"])["explanation"]
 
@@ -344,11 +352,12 @@ def test_browser_rendering_shows_automatic_choices_and_submitted_resources():
     # estimator basis stays in the plan record, not on the page.
     assert re.search(r'data-hardware-value="cpus">24<', html)
     assert re.search(r'data-hardware-value="memory_gb">128 GB<', html)
-    assert re.search(r'data-hardware-value="walltime" title="73:00:00">3 days 1 hour<', html)
+    # Two relaxation passes (BMD Standard Geometry Relaxation) add one hour.
+    assert re.search(r'data-hardware-value="walltime" title="74:00:00">3 days 2 hours<', html)
     assert response.context["submission_spec"]["flow_spec"]["resource_selection"]["walltime_estimate"]["basis"] == "conservative_fallback"
     assert response.context["submission_spec"]["cluster"]["qos"] == "owner100d"
     # Prepare and Submit carry the requested (Automatic) values and the planned resources.
-    assert html.count('name="planned_resources" value="cpus=24:automatic;memory_gb=128:automatic;walltime=73:00:00:automatic;') == 2
+    assert html.count('name="planned_resources" value="cpus=24:automatic;memory_gb=128:automatic;walltime=74:00:00:automatic;') == 2
 
 
 # ------------------------------------------------------------ consistency
@@ -476,13 +485,13 @@ def _digest(plan):
         (NIO_POSCAR, "relaxed_energy", None, 32, 1, "PBE, at most 32 atoms"),  # spin + DFT+U
         (BI2SE3_POSCAR, "relaxed_structure", None, 32, 1, "PBE, at most 32 atoms"),  # D3
         (BI2SE3_POSCAR, "relaxed_energy", None, 128, 3, "outside the calibrated range"),  # final SOC static
-        (SI_POSCAR, "phonons", None, 64, 2, "phonon displacement supercells"),
+        (SI_POSCAR, "phonons", None, 64, 3, "phonon displacement supercells"),
         (SI_POSCAR, None, [_stage("static", "pbe", ["soc"])], 64, 1, "spin-orbit coupling"),
         (SI40_POSCAR, "energy_only", None, 64, 1, "more than 32 atoms"),
         (SI64_POSCAR, "relaxed_energy", None, 64, 1, "more than 32 atoms"),
         (SI216_POSCAR, "energy_only", None, 128, 1, "outside the calibrated range"),
         (SI_POSCAR, None, [_stage("static", "hse06")], 128, 1, "hybrid functional"),
-        (SI_POSCAR, "electronic_dos", None, 128, 2, "hybrid functional"),
+        (SI_POSCAR, "electronic_dos", None, 128, 3, "hybrid functional"),
     ],
     ids=[
         "si-static", "si-relaxed-energy", "nio-relaxed-energy", "bi2se3-relaxed-structure",

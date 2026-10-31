@@ -1,0 +1,848 @@
+{
+  "functional": "PBE_64",
+  "potcars": {
+    "Ac": {
+      "ENMAX": 172.351,
+      "TITEL": "PAW_PBE Ac 06Sep2000",
+      "library_paths": [
+        "PBE_64/Ac/POTCAR",
+        "POT_PAW_PBE_64/Ac/POTCAR"
+      ],
+      "sha256": "8a1196116d1f7863026624ffaa8d5d1059621d4a176a281251b591e3ded8d5ac"
+    },
+    "Ag": {
+      "ENMAX": 249.844,
+      "TITEL": "PAW_PBE Ag 02Apr2005",
+      "library_paths": [
+        "PBE_64/Ag/POTCAR",
+        "POT_PAW_PBE_64/Ag/POTCAR"
+      ],
+      "sha256": "d2e399fa2a358bf13ab57d58824fd42a4ef5f6695a3a1eeeacbf07fc02dc5b5b"
+    },
+    "Al": {
+      "ENMAX": 240.3,
+      "TITEL": "PAW_PBE Al 04Jan2001",
+      "library_paths": [
+        "PBE_64/Al/POTCAR",
+        "POT_PAW_PBE_64/Al/POTCAR"
+      ],
+      "sha256": "1b07010218b572e3404ce1eea8fed39e24b52859ebef1517bffa2ef69b8d1315"
+    },
+    "Am": {
+      "ENMAX": 255.875,
+      "TITEL": "PAW_PBE Am 08May2007",
+      "library_paths": [
+        "PBE_64/Am/POTCAR",
+        "POT_PAW_PBE_64/Am/POTCAR"
+      ],
+      "sha256": "a66b11fb1274c5aefe53916e702b1ddb151a4f12348b762560c2bb700c02743b"
+    },
+    "Ar": {
+      "ENMAX": 266.408,
+      "TITEL": "PAW_PBE Ar 07Sep2000",
+      "library_paths": [
+        "PBE_64/Ar/POTCAR",
+        "POT_PAW_PBE_64/Ar/POTCAR"
+      ],
+      "sha256": "0e8a9eb0b327596448460cb41f8a8197d255e567865c5b1419c308fc07939c4e"
+    },
+    "As": {
+      "ENMAX": 208.702,
+      "TITEL": "PAW_PBE As 22Sep2009",
+      "library_paths": [
+        "PBE_64/As/POTCAR",
+        "POT_PAW_PBE_64/As/POTCAR"
+      ],
+      "sha256": "2e6d15be17a8728345ee1a67c31ae5820a4efbee2e6447da7ae9c8c8b077c941"
+    },
+    "At": {
+      "ENMAX": 161.43,
+      "TITEL": "PAW_PBE At 21May2007",
+      "library_paths": [
+        "PBE_64/At/POTCAR",
+        "POT_PAW_PBE_64/At/POTCAR"
+      ],
+      "sha256": "dab761456cfd69ff0dcc6331382720f3ba9c0cfc3e35e2dd2ae29d498b51d4c3"
+    },
+    "Au": {
+      "ENMAX": 229.943,
+      "TITEL": "PAW_PBE Au 04Oct2007",
+      "library_paths": [
+        "PBE_64/Au/POTCAR",
+        "POT_PAW_PBE_64/Au/POTCAR"
+      ],
+      "sha256": "ec1ee5aca8475a9214c670a1c2127468662b62a6adf2550f15324cbe139af665"
+    },
+    "B": {
+      "ENMAX": 318.614,
+      "TITEL": "PAW_PBE B 06Sep2000",
+      "library_paths": [
+        "PBE_64/B/POTCAR",
+        "POT_PAW_PBE_64/B/POTCAR"
+      ],
+      "sha256": "3c576d41d253782b61eacc6b38f22578b3e9d5f15e67b0b0b37215a332ce8a35"
+    },
+    "Ba_sv": {
+      "ENMAX": 187.181,
+      "TITEL": "PAW_PBE Ba_sv 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Ba_sv/POTCAR"
+      ],
+      "sha256": "80d83c46d456075aa25e15b2c9d175162fad19a89a231883c48a57ae42ad62ed"
+    },
+    "Be": {
+      "ENMAX": 247.543,
+      "TITEL": "PAW_PBE Be 06Sep2000",
+      "library_paths": [
+        "PBE_64/Be/POTCAR",
+        "POT_PAW_PBE_64/Be/POTCAR"
+      ],
+      "sha256": "6385cf56a3e7634e88774213e8c081cfbfa046b6a6eeb64c1e62fae86a8bfa64"
+    },
+    "Bi_d": {
+      "ENMAX": 242.839,
+      "TITEL": "PAW_PBE Bi_d 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Bi_d/POTCAR"
+      ],
+      "sha256": "19489cf8682d97931a837b8da7bd7bcbf0777766a05659c456a4a6d9be938548"
+    },
+    "Br": {
+      "ENMAX": 216.285,
+      "TITEL": "PAW_PBE Br 06Sep2000",
+      "library_paths": [
+        "PBE_64/Br/POTCAR",
+        "POT_PAW_PBE_64/Br/POTCAR"
+      ],
+      "sha256": "c76103971c04f7987d206b245752535bcac1f15e7af19a9e430848e1be2845b6"
+    },
+    "C": {
+      "ENMAX": 400.0,
+      "TITEL": "PAW_PBE C 08Apr2002",
+      "library_paths": [
+        "PBE_64/C/POTCAR",
+        "POT_PAW_PBE_64/C/POTCAR"
+      ],
+      "sha256": "e324f39f282d3fd6b99a7bff390f4b2441edd3dd3eac607d1f1c01376f3d0dc0"
+    },
+    "Ca_sv": {
+      "ENMAX": 266.622,
+      "TITEL": "PAW_PBE Ca_sv 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Ca_sv/POTCAR"
+      ],
+      "sha256": "8dce80a24be8c5ff693fb75030bc75d0271b6445cad28579bb0950703fb52643"
+    },
+    "Cd": {
+      "ENMAX": 274.336,
+      "TITEL": "PAW_PBE Cd 06Sep2000",
+      "library_paths": [
+        "PBE_64/Cd/POTCAR",
+        "POT_PAW_PBE_64/Cd/POTCAR"
+      ],
+      "sha256": "d05cfe5e86f68dd511f07cc24345a088413980016b98bb2c220619760f6fa17f"
+    },
+    "Ce": {
+      "ENMAX": 273.042,
+      "TITEL": "PAW_PBE Ce 23Dec2003",
+      "library_paths": [
+        "PBE_64/Ce/POTCAR",
+        "POT_PAW_PBE_64/Ce/POTCAR"
+      ],
+      "sha256": "817842ad853486869a007c396d7f657c30c8a1d064e47cd4848fa05613ad6d5f"
+    },
+    "Cf": {
+      "ENMAX": 414.614,
+      "TITEL": "PAW_PBE Cf 17Oct2013",
+      "library_paths": [
+        "POT_PAW_PBE_64/Cf/POTCAR"
+      ],
+      "sha256": "36436fcab4e631c9609cd5c1b55fa8bc3fcacb6c5f8d912517c815967de7ad2f"
+    },
+    "Cl": {
+      "ENMAX": 262.472,
+      "TITEL": "PAW_PBE Cl 06Sep2000",
+      "library_paths": [
+        "PBE_64/Cl/POTCAR",
+        "POT_PAW_PBE_64/Cl/POTCAR"
+      ],
+      "sha256": "5cf7cdbf0ea3349bae530d58a74234730aedbdd224243ec9cabf7aa5d236a794"
+    },
+    "Cm": {
+      "ENMAX": 257.953,
+      "TITEL": "PAW_PBE Cm 17Jan2011",
+      "library_paths": [
+        "PBE_64/Cm/POTCAR",
+        "POT_PAW_PBE_64/Cm/POTCAR"
+      ],
+      "sha256": "bd07c7bba76d4982bd4fefca8b1bdf34aafa16a21a33af9942ccefdc366e16b8"
+    },
+    "Co": {
+      "ENMAX": 267.968,
+      "TITEL": "PAW_PBE Co 02Aug2007",
+      "library_paths": [
+        "PBE_64/Co/POTCAR",
+        "POT_PAW_PBE_64/Co/POTCAR"
+      ],
+      "sha256": "3ae14252e5e27e2e5a5730c8d8131c6a7ea573dcc9d4d3d392959f07a3f519ee"
+    },
+    "Cr_pv": {
+      "ENMAX": 265.681,
+      "TITEL": "PAW_PBE Cr_pv 02Aug2007",
+      "library_paths": [
+        "POT_PAW_PBE_64/Cr_pv/POTCAR"
+      ],
+      "sha256": "836672959fc86f3b167531577dbf63d7fb0b8d96aaf8b40fb3c4265879bd744b"
+    },
+    "Cs_sv": {
+      "ENMAX": 220.318,
+      "TITEL": "PAW_PBE Cs_sv 25Jan2019",
+      "library_paths": [
+        "POT_PAW_PBE_64/Cs_sv/POTCAR"
+      ],
+      "sha256": "a0763b32b8abdfa4b151e9d47a8e87e03876004a4d68c7cc299c8be2579745ed"
+    },
+    "Cu": {
+      "ENMAX": 295.446,
+      "TITEL": "PAW_PBE Cu 22Jun2005",
+      "library_paths": [
+        "PBE_64/Cu/POTCAR",
+        "POT_PAW_PBE_64/Cu/POTCAR"
+      ],
+      "sha256": "b64dae53834dc113c0e23e6a6d919c9f23446fffbe5b6a1a7c48410998f6f67d"
+    },
+    "Dy_3": {
+      "ENMAX": 155.713,
+      "TITEL": "PAW_PBE Dy_3 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Dy_3/POTCAR"
+      ],
+      "sha256": "8475f43f8453e647291f4cbee750b02c355a3e2ec1e7800bcc5bc1b2701ca7fe"
+    },
+    "Er_3": {
+      "ENMAX": 155.037,
+      "TITEL": "PAW_PBE Er_3 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Er_3/POTCAR"
+      ],
+      "sha256": "c2226db2b88c6dd3b908d257c4993195f4cb5ce1094c6239be67bab43976b89a"
+    },
+    "Eu_2": {
+      "ENMAX": 99.328,
+      "TITEL": "PAW_PBE Eu_2 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Eu_2/POTCAR"
+      ],
+      "sha256": "5403633fc75b48f37e7f5e794e1aa9318cdd856e737260b5016677e5b91075ea"
+    },
+    "F": {
+      "ENMAX": 400.0,
+      "TITEL": "PAW_PBE F 08Apr2002",
+      "library_paths": [
+        "PBE_64/F/POTCAR",
+        "POT_PAW_PBE_64/F/POTCAR"
+      ],
+      "sha256": "ec55d2d2ba9b66dab8054d479e8aa803f576915d541bf26f5d1ecce77f4e501c"
+    },
+    "Fe": {
+      "ENMAX": 267.882,
+      "TITEL": "PAW_PBE Fe 06Sep2000",
+      "library_paths": [
+        "PBE_64/Fe/POTCAR",
+        "POT_PAW_PBE_64/Fe/POTCAR"
+      ],
+      "sha256": "519ad496e3627c9885028da91cc038103aabe65859ad2bde1964f223ccb49c0f"
+    },
+    "Fr_sv": {
+      "ENMAX": 214.54,
+      "TITEL": "PAW_PBE Fr_sv 29May2007",
+      "library_paths": [
+        "POT_PAW_PBE_64/Fr_sv/POTCAR"
+      ],
+      "sha256": "6356e82dd944949c754e70d0a414dba35b6e73b8f6d70b52d9617a1fa9b3142d"
+    },
+    "Ga_d": {
+      "ENMAX": 282.691,
+      "TITEL": "PAW_PBE Ga_d 06Jul2010",
+      "library_paths": [
+        "POT_PAW_PBE_64/Ga_d/POTCAR"
+      ],
+      "sha256": "af4c9f6ed9866f396fed214e4aff301d3900c7d6017cdaf0ba000e0ee72d8943"
+    },
+    "Gd_3": {
+      "ENMAX": 154.332,
+      "TITEL": "PAW_PBE Gd_3 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Gd_3/POTCAR"
+      ],
+      "sha256": "8c9f902bc9748a9f8948897fe7b8e3b9ccac89acd6059085e494613b64a5cec1"
+    },
+    "Ge_d": {
+      "ENMAX": 310.294,
+      "TITEL": "PAW_PBE Ge_d 03Jul2007",
+      "library_paths": [
+        "POT_PAW_PBE_64/Ge_d/POTCAR"
+      ],
+      "sha256": "65e7bb492cbd552640d962a3020d969879f40de8b67d4756532e26336e2a2cb1"
+    },
+    "H": {
+      "ENMAX": 250.0,
+      "TITEL": "PAW_PBE H 15Jun2001",
+      "library_paths": [
+        "PBE_64/H/POTCAR",
+        "POT_PAW_PBE_64/H/POTCAR"
+      ],
+      "sha256": "c7c1440066f80b3689496d8a45f8df6af183c40e59b514734edddfaa6840a3be"
+    },
+    "He": {
+      "ENMAX": 478.896,
+      "TITEL": "PAW_PBE He 05Jan2001",
+      "library_paths": [
+        "PBE_64/He/POTCAR",
+        "POT_PAW_PBE_64/He/POTCAR"
+      ],
+      "sha256": "d0ee36bc0d37f064eb65b43685fcfa1d5e214b983132fa15d74f0fb26077fd60"
+    },
+    "Hf_pv": {
+      "ENMAX": 220.334,
+      "TITEL": "PAW_PBE Hf_pv 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Hf_pv/POTCAR"
+      ],
+      "sha256": "db42cd3e4a48e81eaff18895282e2f5a37f2c8c6a4b9ac45e357affc13c83b84"
+    },
+    "Hg": {
+      "ENMAX": 233.204,
+      "TITEL": "PAW_PBE Hg 06Sep2000",
+      "library_paths": [
+        "PBE_64/Hg/POTCAR",
+        "POT_PAW_PBE_64/Hg/POTCAR"
+      ],
+      "sha256": "726081bc86f013dfd23974a771aa41b66373d637793263002c402c025ad3193f"
+    },
+    "Ho_3": {
+      "ENMAX": 154.137,
+      "TITEL": "PAW_PBE Ho_3 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Ho_3/POTCAR"
+      ],
+      "sha256": "9c7e3ae970eced36ee1bb2810eb0a0d6f8de913fbbc0680b875ff0de6f592353"
+    },
+    "I": {
+      "ENMAX": 175.647,
+      "TITEL": "PAW_PBE I 08Apr2002",
+      "library_paths": [
+        "PBE_64/I/POTCAR",
+        "POT_PAW_PBE_64/I/POTCAR"
+      ],
+      "sha256": "021ab15943696b4a3bfdbd280c80ea30fde7cdaf21511abc7275380a49b7e3dc"
+    },
+    "In_d": {
+      "ENMAX": 239.211,
+      "TITEL": "PAW_PBE In_d 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/In_d/POTCAR"
+      ],
+      "sha256": "7304ac38b021ab26045db53715877cd85c6b9953df21a324a138bfc34372a92f"
+    },
+    "Ir": {
+      "ENMAX": 210.864,
+      "TITEL": "PAW_PBE Ir 06Sep2000",
+      "library_paths": [
+        "PBE_64/Ir/POTCAR",
+        "POT_PAW_PBE_64/Ir/POTCAR"
+      ],
+      "sha256": "1a22da3672b114729b5f9ec8e36b09719dc19d22e27d40a296255630dd42b2d2"
+    },
+    "K_sv": {
+      "ENMAX": 259.264,
+      "TITEL": "PAW_PBE K_sv 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/K_sv/POTCAR"
+      ],
+      "sha256": "85540f86ce902109258423bbdc4c8e85482cbb179763cbce115045d4e1f51784"
+    },
+    "Kr": {
+      "ENMAX": 185.331,
+      "TITEL": "PAW_PBE Kr 07Sep2000",
+      "library_paths": [
+        "PBE_64/Kr/POTCAR",
+        "POT_PAW_PBE_64/Kr/POTCAR"
+      ],
+      "sha256": "2cc417d1ec034a21d0c33278e5b4654e1f44927f811c0c359d2f5d3fb56ca72d"
+    },
+    "La": {
+      "ENMAX": 219.292,
+      "TITEL": "PAW_PBE La 06Sep2000",
+      "library_paths": [
+        "PBE_64/La/POTCAR",
+        "POT_PAW_PBE_64/La/POTCAR"
+      ],
+      "sha256": "b82fe40c2975cc8fdcc799a4214d30348f6c2eddf64d656f5a30654915296211"
+    },
+    "Li_sv": {
+      "ENMAX": 499.034,
+      "TITEL": "PAW_PBE Li_sv 10Sep2004",
+      "library_paths": [
+        "POT_PAW_PBE_64/Li_sv/POTCAR"
+      ],
+      "sha256": "201875120238865c2f235e24081bce20639c4ae21bc4e97e31f9e3b7cc8fb95b"
+    },
+    "Lu_3": {
+      "ENMAX": 154.992,
+      "TITEL": "PAW_PBE Lu_3 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Lu_3/POTCAR"
+      ],
+      "sha256": "65b4c03c660bc60819cc02ebab529e9fe6e5db067a195fa4e22631132c880afd"
+    },
+    "Mg": {
+      "ENMAX": 200.0,
+      "TITEL": "PAW_PBE Mg 13Apr2007",
+      "library_paths": [
+        "PBE_64/Mg/POTCAR",
+        "POT_PAW_PBE_64/Mg/POTCAR"
+      ],
+      "sha256": "91e560d99171f01a757253583d9a257ca7aab8911d7fa28ebabfbf3e6356a096"
+    },
+    "Mn_pv": {
+      "ENMAX": 269.864,
+      "TITEL": "PAW_PBE Mn_pv 02Aug2007",
+      "library_paths": [
+        "POT_PAW_PBE_64/Mn_pv/POTCAR"
+      ],
+      "sha256": "5da6f925d338804d4244b231b43927f3fccb021320fc01db0f865b4eda5a756d"
+    },
+    "Mo_sv": {
+      "ENMAX": 242.676,
+      "TITEL": "PAW_PBE Mo_sv 02Feb2006",
+      "library_paths": [
+        "POT_PAW_PBE_64/Mo_sv/POTCAR"
+      ],
+      "sha256": "29a65a182647334604f816a41535c21ad09ebfbafcc6075db2a442480e908bc9"
+    },
+    "N": {
+      "ENMAX": 400.0,
+      "TITEL": "PAW_PBE N 08Apr2002",
+      "library_paths": [
+        "PBE_64/N/POTCAR",
+        "POT_PAW_PBE_64/N/POTCAR"
+      ],
+      "sha256": "c3b51ab8258f836d3c8d29beefa95be51fc95b5d0ab7aca6cba204207a69162a"
+    },
+    "Na_pv": {
+      "ENMAX": 259.561,
+      "TITEL": "PAW_PBE Na_pv 19Sep2006",
+      "library_paths": [
+        "POT_PAW_PBE_64/Na_pv/POTCAR"
+      ],
+      "sha256": "2b32d860c36ba9efd322064e6ef91f9ebc70c2d6cae24ff69702d8368748bb32"
+    },
+    "Nb_sv": {
+      "ENMAX": 293.235,
+      "TITEL": "PAW_PBE Nb_sv 25May2007",
+      "library_paths": [
+        "POT_PAW_PBE_64/Nb_sv/POTCAR"
+      ],
+      "sha256": "6bc08b216e11c48e1663f63de7bbb5c7f96f184a6467d89e3bbffbc0a9d365ac"
+    },
+    "Nd_3": {
+      "ENMAX": 182.619,
+      "TITEL": "PAW_PBE Nd_3 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Nd_3/POTCAR"
+      ],
+      "sha256": "9407aea2e1dd5556e9d2ae88f0758a027db3ddc44a083bd4b2d5e4b90c614e0e"
+    },
+    "Ne": {
+      "ENMAX": 343.606,
+      "TITEL": "PAW_PBE Ne 05Jan2001",
+      "library_paths": [
+        "PBE_64/Ne/POTCAR",
+        "POT_PAW_PBE_64/Ne/POTCAR"
+      ],
+      "sha256": "4f74c8044087750ac02d8534ea880918cbe070c8d1ad98d1c33a6d6b1ad523d5"
+    },
+    "Ni": {
+      "ENMAX": 269.532,
+      "TITEL": "PAW_PBE Ni 02Aug2007",
+      "library_paths": [
+        "PBE_64/Ni/POTCAR",
+        "POT_PAW_PBE_64/Ni/POTCAR"
+      ],
+      "sha256": "bde0b7a69dbbe5155e6aeef3a1bec4c2f1dadf9dd7abd715899ab051906b2808"
+    },
+    "Np": {
+      "ENMAX": 254.26,
+      "TITEL": "PAW_PBE Np 06Sep2000",
+      "library_paths": [
+        "PBE_64/Np/POTCAR",
+        "POT_PAW_PBE_64/Np/POTCAR"
+      ],
+      "sha256": "a89562f28961494d231809956848429cf086170c196c30e882f08a61bd7147a0"
+    },
+    "O": {
+      "ENMAX": 400.0,
+      "TITEL": "PAW_PBE O 08Apr2002",
+      "library_paths": [
+        "PBE_64/O/POTCAR",
+        "POT_PAW_PBE_64/O/POTCAR"
+      ],
+      "sha256": "8a74b9a1f5fdb3d0c3e0183c7873177abdbef07d407b310b7edcd9ed0a3eea64"
+    },
+    "Os": {
+      "ENMAX": 228.022,
+      "TITEL": "PAW_PBE Os 17Jan2003",
+      "library_paths": [
+        "PBE_64/Os/POTCAR",
+        "POT_PAW_PBE_64/Os/POTCAR"
+      ],
+      "sha256": "d5a7b6c7c0b5eb76a38468d07bc5954c294ec12965d1142489ca184b787dbef7"
+    },
+    "P": {
+      "ENMAX": 255.04,
+      "TITEL": "PAW_PBE P 06Sep2000",
+      "library_paths": [
+        "PBE_64/P/POTCAR",
+        "POT_PAW_PBE_64/P/POTCAR"
+      ],
+      "sha256": "ff56d25c245497eab82fbf156c8a80195e6c8278b657680eda7251824aa36cf8"
+    },
+    "Pa": {
+      "ENMAX": 252.193,
+      "TITEL": "PAW_PBE Pa 07Sep2000",
+      "library_paths": [
+        "PBE_64/Pa/POTCAR",
+        "POT_PAW_PBE_64/Pa/POTCAR"
+      ],
+      "sha256": "dd8f0ee287931bdc6afb69466a1b37790e3c13b8de97ef4b4b869f81c51c0433"
+    },
+    "Pb_d": {
+      "ENMAX": 237.835,
+      "TITEL": "PAW_PBE Pb_d 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Pb_d/POTCAR"
+      ],
+      "sha256": "201fc0b9ddd0f4b7ba3d6bdcc3d91c12b2e6df746dfd6f9ca673ec9e6d15f80b"
+    },
+    "Pd": {
+      "ENMAX": 250.925,
+      "TITEL": "PAW_PBE Pd 04Jan2005",
+      "library_paths": [
+        "PBE_64/Pd/POTCAR",
+        "POT_PAW_PBE_64/Pd/POTCAR"
+      ],
+      "sha256": "511b1d219e8296389751f0b51dbb97c1dafa933aa13acda49a4f60f5357a04ff"
+    },
+    "Pm_3": {
+      "ENMAX": 176.959,
+      "TITEL": "PAW_PBE Pm_3 07Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Pm_3/POTCAR"
+      ],
+      "sha256": "51bea17cc222fae9a280a073432e6e00db412bfccd227a6f0eb00cfe93490804"
+    },
+    "Po_d": {
+      "ENMAX": 264.565,
+      "TITEL": "PAW_PBE Po_d 25May2007",
+      "library_paths": [
+        "POT_PAW_PBE_64/Po_d/POTCAR"
+      ],
+      "sha256": "0283c8d2d3fe73bb4045b5a3005197c7bacd9f691beb44ae40aa58124e0605cc"
+    },
+    "Pr_3": {
+      "ENMAX": 181.719,
+      "TITEL": "PAW_PBE Pr_3 07Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Pr_3/POTCAR"
+      ],
+      "sha256": "deaca04e9e3ea551af36196ff9d4b223fe3e7090fa96438dd5c0f06f71c478f0"
+    },
+    "Pt": {
+      "ENMAX": 230.283,
+      "TITEL": "PAW_PBE Pt 04Feb2005",
+      "library_paths": [
+        "PBE_64/Pt/POTCAR",
+        "POT_PAW_PBE_64/Pt/POTCAR"
+      ],
+      "sha256": "5107ae6ecfb7f3f49d57bb32293bfd41b371cf552993149a4f048670dd5c1cbf"
+    },
+    "Pu": {
+      "ENMAX": 254.353,
+      "TITEL": "PAW_PBE Pu 06Sep2000",
+      "library_paths": [
+        "PBE_64/Pu/POTCAR",
+        "POT_PAW_PBE_64/Pu/POTCAR"
+      ],
+      "sha256": "81009dad48fa1768308aa6211e401060528db63dadedbb866fe806676ce1757f"
+    },
+    "Ra_sv": {
+      "ENMAX": 237.367,
+      "TITEL": "PAW_PBE Ra_sv 29May2007",
+      "library_paths": [
+        "POT_PAW_PBE_64/Ra_sv/POTCAR"
+      ],
+      "sha256": "96627eb31b8b9613f5e082228402da8cafe1e6462b7990d580b7cc6598882554"
+    },
+    "Rb_sv": {
+      "ENMAX": 220.112,
+      "TITEL": "PAW_PBE Rb_sv 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Rb_sv/POTCAR"
+      ],
+      "sha256": "7249d2a79a581c2bfd7017f7656ada90cca6554b17132962532b903131311cf8"
+    },
+    "Re": {
+      "ENMAX": 226.216,
+      "TITEL": "PAW_PBE Re 17Jan2003",
+      "library_paths": [
+        "PBE_64/Re/POTCAR",
+        "POT_PAW_PBE_64/Re/POTCAR"
+      ],
+      "sha256": "7f338a3a7130fe1819439b555c78c6f7bd6f771c973740d03049155a74a464c8"
+    },
+    "Rh_pv": {
+      "ENMAX": 247.408,
+      "TITEL": "PAW_PBE Rh_pv 25Jan2005",
+      "library_paths": [
+        "POT_PAW_PBE_64/Rh_pv/POTCAR"
+      ],
+      "sha256": "6509dff522a291f7a1796886a03a6db8c034544705d9e0f2bff513d8972fb05a"
+    },
+    "Rn": {
+      "ENMAX": 151.497,
+      "TITEL": "PAW_PBE Rn 12Aug2016",
+      "library_paths": [
+        "PBE_64/Rn/POTCAR",
+        "POT_PAW_PBE_64/Rn/POTCAR"
+      ],
+      "sha256": "05f9c2fe4a262eb88c5c67bbbdff2bde9702e4636d0ce2ad17637927c33d358f"
+    },
+    "Ru_pv": {
+      "ENMAX": 240.049,
+      "TITEL": "PAW_PBE Ru_pv 28Jan2005",
+      "library_paths": [
+        "POT_PAW_PBE_64/Ru_pv/POTCAR"
+      ],
+      "sha256": "b667ae3aa3a39e2897514c34081f8d68837fc98f63f959e2149ad09ee85d7a12"
+    },
+    "S": {
+      "ENMAX": 258.689,
+      "TITEL": "PAW_PBE S 06Sep2000",
+      "library_paths": [
+        "PBE_64/S/POTCAR",
+        "POT_PAW_PBE_64/S/POTCAR"
+      ],
+      "sha256": "a0db583a5582a6ea7248e439ca0fc308947aa01f78aa2c9fae40f93d335218de"
+    },
+    "Sb": {
+      "ENMAX": 172.069,
+      "TITEL": "PAW_PBE Sb 06Sep2000",
+      "library_paths": [
+        "PBE_64/Sb/POTCAR",
+        "POT_PAW_PBE_64/Sb/POTCAR"
+      ],
+      "sha256": "d650db5f43c3c9453af0aae40a430728a5e3c7ab639239aa3eae4da1ee93019b"
+    },
+    "Sc_sv": {
+      "ENMAX": 222.66,
+      "TITEL": "PAW_PBE Sc_sv 07Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Sc_sv/POTCAR"
+      ],
+      "sha256": "4526ab123855eb4efa39903becc1e4720ee9ba6169544b04c3558e0796b4c38f"
+    },
+    "Se": {
+      "ENMAX": 211.555,
+      "TITEL": "PAW_PBE Se 06Sep2000",
+      "library_paths": [
+        "PBE_64/Se/POTCAR",
+        "POT_PAW_PBE_64/Se/POTCAR"
+      ],
+      "sha256": "a05c46eb38f572c2de1fee7a555d4b6220baa57b41bdf4f82cef84f7b0e114c1"
+    },
+    "Si": {
+      "ENMAX": 245.345,
+      "TITEL": "PAW_PBE Si 05Jan2001",
+      "library_paths": [
+        "PBE_64/Si/POTCAR",
+        "POT_PAW_PBE_64/Si/POTCAR"
+      ],
+      "sha256": "2a6df1c19701e5d97aaa59e5470b14653ddbd76935b76dacdd8792eb2eba252c"
+    },
+    "Sm_3": {
+      "ENMAX": 177.087,
+      "TITEL": "PAW_PBE Sm_3 07Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Sm_3/POTCAR"
+      ],
+      "sha256": "89de4335b9387b7c4d27a255bbf036bd3bea26ba9d4e266ce528ebddbb138b2c"
+    },
+    "Sn_d": {
+      "ENMAX": 241.083,
+      "TITEL": "PAW_PBE Sn_d 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Sn_d/POTCAR"
+      ],
+      "sha256": "6d289e176be4e6a602e9ff50df7281005ccf93cf49e4a9d11c5ea717e0b974ee"
+    },
+    "Sr_sv": {
+      "ENMAX": 229.353,
+      "TITEL": "PAW_PBE Sr_sv 07Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Sr_sv/POTCAR"
+      ],
+      "sha256": "26957a1630f71512c13dcfcbb74950a3188e7890abd628900a2aa06246dbe8f4"
+    },
+    "Ta_pv": {
+      "ENMAX": 223.667,
+      "TITEL": "PAW_PBE Ta_pv 07Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Ta_pv/POTCAR"
+      ],
+      "sha256": "ffb05e92ac3f68ca84c26af10a80f2fbb0cf79e16fcc96fcae98089455bbbaaa"
+    },
+    "Tb_3": {
+      "ENMAX": 155.613,
+      "TITEL": "PAW_PBE Tb_3 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Tb_3/POTCAR"
+      ],
+      "sha256": "9ab571792f1abf4a7e63390bca09e6a8c34d81c78fdd81e0761d7a08853255c2"
+    },
+    "Tc_pv": {
+      "ENMAX": 263.523,
+      "TITEL": "PAW_PBE Tc_pv 04Feb2005",
+      "library_paths": [
+        "POT_PAW_PBE_64/Tc_pv/POTCAR"
+      ],
+      "sha256": "778a7e9e6b12c2e1833d90112be68f532852d1b3ee3d342beb13c80183cccac7"
+    },
+    "Te": {
+      "ENMAX": 174.982,
+      "TITEL": "PAW_PBE Te 08Apr2002",
+      "library_paths": [
+        "PBE_64/Te/POTCAR",
+        "POT_PAW_PBE_64/Te/POTCAR"
+      ],
+      "sha256": "420e8b7fcf5a5d19a78e04e0a5e018a05054b0d224e312acd94c67083917fab3"
+    },
+    "Th": {
+      "ENMAX": 247.306,
+      "TITEL": "PAW_PBE Th 07Sep2000",
+      "library_paths": [
+        "PBE_64/Th/POTCAR",
+        "POT_PAW_PBE_64/Th/POTCAR"
+      ],
+      "sha256": "8419f9267a3418d0b54b6c542ba87f9f18933056be559ae14aeed0333ea85ef0"
+    },
+    "Ti_sv": {
+      "ENMAX": 274.61,
+      "TITEL": "PAW_PBE Ti_sv 26Sep2005",
+      "library_paths": [
+        "POT_PAW_PBE_64/Ti_sv/POTCAR"
+      ],
+      "sha256": "f934456615deae22f39efb60fbfa2b95e0d80c3d5b4e8c19ee764aca0a62aa01"
+    },
+    "Tl_d": {
+      "ENMAX": 237.053,
+      "TITEL": "PAW_PBE Tl_d 06Sep2000",
+      "library_paths": [
+        "POT_PAW_PBE_64/Tl_d/POTCAR"
+      ],
+      "sha256": "b03ea1528b3be1b00dfcb6a513b14a03a4af5644963e75d9dcb75e3f421363c2"
+    },
+    "Tm_3": {
+      "ENMAX": 149.221,
+      "TITEL": "PAW_PBE Tm_3 20Jan2003",
+      "library_paths": [
+        "POT_PAW_PBE_64/Tm_3/POTCAR"
+      ],
+      "sha256": "9571f13b37450b29f8f5cf9492d65b02d2e730df50adc3905f2625ee6bc8896c"
+    },
+    "U": {
+      "ENMAX": 252.502,
+      "TITEL": "PAW_PBE U 06Sep2000",
+      "library_paths": [
+        "PBE_64/U/POTCAR",
+        "POT_PAW_PBE_64/U/POTCAR"
+      ],
+      "sha256": "863853eab8d65b6672e84488288ea6005d3b6d0f27c3471d8ef93be17d3a66c4"
+    },
+    "V_sv": {
+      "ENMAX": 263.673,
+      "TITEL": "PAW_PBE V_sv 02Aug2007",
+      "library_paths": [
+        "POT_PAW_PBE_64/V_sv/POTCAR"
+      ],
+      "sha256": "68ef807e4dea74b50e20b47ff97f0e1ccef33e1a620ed15957beb3c31f1159e8"
+    },
+    "W_sv": {
+      "ENMAX": 223.057,
+      "TITEL": "PAW_PBE W_sv 04Sep2015",
+      "library_paths": [
+        "POT_PAW_PBE_64/W_sv/POTCAR"
+      ],
+      "sha256": "018702d3778391c47ac506bb892e4722fbea8196c12f53aec686e9cef2cd5311"
+    },
+    "Xe": {
+      "ENMAX": 153.118,
+      "TITEL": "PAW_PBE Xe 07Sep2000",
+      "library_paths": [
+        "PBE_64/Xe/POTCAR",
+        "POT_PAW_PBE_64/Xe/POTCAR"
+      ],
+      "sha256": "d48d51acafd24a42768be29441f2d56ebcac0b76a20671f33dc1594c89f2b884"
+    },
+    "Y_sv": {
+      "ENMAX": 202.626,
+      "TITEL": "PAW_PBE Y_sv 25May2007",
+      "library_paths": [
+        "POT_PAW_PBE_64/Y_sv/POTCAR"
+      ],
+      "sha256": "81f1f2340ed9ea0669478dabe2649395ba9a4585f0436f993c30afebce522a2a"
+    },
+    "Yb_3": {
+      "ENMAX": 188.359,
+      "TITEL": "PAW_PBE Yb_3 08Jul2013",
+      "library_paths": [
+        "POT_PAW_PBE_64/Yb_3/POTCAR"
+      ],
+      "sha256": "f4d8e39c06b569bdcda1f6ab454e850f07659281aa3ab9eca3ecf1d8ebe5e914"
+    },
+    "Zn": {
+      "ENMAX": 276.723,
+      "TITEL": "PAW_PBE Zn 06Sep2000",
+      "library_paths": [
+        "PBE_64/Zn/POTCAR",
+        "POT_PAW_PBE_64/Zn/POTCAR"
+      ],
+      "sha256": "a9e75569c74432b6efe4f522da7317143f7ca230c1076b8adbff8e3ef9494c0b"
+    },
+    "Zr_sv": {
+      "ENMAX": 229.898,
+      "TITEL": "PAW_PBE Zr_sv 04Jan2005",
+      "library_paths": [
+        "POT_PAW_PBE_64/Zr_sv/POTCAR"
+      ],
+      "sha256": "e3d75732e64ed47e733ef12202d7082321f6b043dd450e16fe03b686b180cdc0"
+    }
+  },
+  "schema": "bmd_compute.potcar_enmax",
+  "schema_version": 1,
+  "source": {
+    "generated_by": "backend.calculations.potcar_enmax_metadata.build_enmax_metadata",
+    "library_root": "/bmd-db/potcars",
+    "packages": {
+      "atomate2": "0.1.5",
+      "pymatgen": "2026.5.4",
+      "pymatgen-core": "2026.7.16"
+    },
+    "subdirectories": [
+      "POT_PAW_PBE_64",
+      "PBE_64"
+    ],
+    "symbol_selection": "union of atomate2 generator POTCAR mappings"
+  },
+  "synthetic": false
+}

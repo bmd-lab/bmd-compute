@@ -10,13 +10,15 @@ under "Results" below (Milestone B).
 
 `phonons` Desired Output (browser and machine API, `--desired-output phonons`):
 
-1. **Stage 1 — PBE Geometry Optimisation** (`stage_01`): the existing BMD relax
-   (RelaxSetGenerator, ISIF 3, automatic NCORE) with phonon-grade settings
-   `ENCUT = 700` (matching the force calculations), `EDIFF = 1e-7`,
-   `EDIFFG = -1e-3`. Applied only to a relax that directly feeds a phonon
-   stage; ordinary relaxations keep ENCUT 580, EDIFF 1e-6, EDIFFG -0.01.
-2. **Stage 2 — Phonon Force Calculations** (`stage_02`): atomate2 0.1.5
-   `atomate2.vasp.flows.phonons.PhononMaker` on the stage-1 output structure,
+1. **Stages 1–2 — BMD Standard Geometry Relaxation** (`stage_01`, `stage_02`;
+   `bmd_compute.geometry_relaxation/1`, `methodology.md` section 3): two PBE
+   Geometry Optimisation passes at the species-dependent cutoff
+   (`ENCUT = ceil(1.3 × max ENMAX / 50) × 50` eV), pass 1 `EDIFF = 1e-6`,
+   `EDIFFG = -0.01`, pass 2 `EDIFF = 1e-7`, `EDIFFG = -1e-3`, no `ADDGRID`, no
+   LargeSigmaHandler. A Custom relax directly before a phonon stage uses the
+   pass-2 convergence.
+2. **Stage 3 — Phonon Force Calculations** (`stage_03`): atomate2 0.1.5
+   `atomate2.vasp.flows.phonons.PhononMaker` on the final relaxation's output structure,
    with `bulk_relax_maker`, `static_energy_maker` and `born_maker` set to
    `None`:
    - `get_supercell_size` — automatic supercell, minimum image length 10 Å,
@@ -32,12 +34,15 @@ under "Results" below (Milestone B).
      DOS. No LO–TO correction.
 
 Force calculations use atomate2's `PhononDisplacementMaker` input set
-(ENCUT 700, EDIFF 1e-7, reciprocal density 100, LREAL False, ALGO Normal) with
-BMD amendments: `GGA`, `ENAUG`, `LMIXTAU` removed (PBE, as in every BMD stage;
+(EDIFF 1e-7, reciprocal density 100, LREAL False, ALGO Normal) at the plane-wave
+cutoff of the relaxation that produced the structure (phonon workflow v2; v1
+used atomate2's ENCUT 700), with BMD amendments: `GGA`, `ENAUG`, `LMIXTAU` removed (PBE, as in every BMD stage;
 atomate2's base set is PBEsol), `ISPIN = 1` with `auto_ispin` off, single-point
 Gaussian-smeared forces (`ISMEAR = 0`, `SIGMA = 0.2`, `IBRION = -1`, `NSW = 0`,
 `ISIF` unset — overriding atomate2 0.1.5's `IBRION = 2`/`ISIF = 3` and the
-static set's `ISMEAR = -5`), and NCORE never set. No WAVECAR/CHGCAR is carried from the relax.
+static set's `ISMEAR = -5`), no Hubbard U (pymatgen's chemistry-based `LDAU*`
+and `LMAXMIX` tags removed, as for plain PBE relaxations; phonon stages never
+select DFT+U), and NCORE never set. No WAVECAR/CHGCAR is carried from the relax.
 Displacement calculations run every BMD Custodian handler except
 `LargeSigmaHandler`, so `SIGMA = 0.2` is the same in every displacement of the
 force set (that handler would lower it separately in each displacement of a

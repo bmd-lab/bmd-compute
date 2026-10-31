@@ -385,7 +385,9 @@ def test_hse06_dos_execution_uses_hsebs_maker_and_uniform_generator():
 
 
 def test_electronic_dos_desired_output_uses_existing_hse_static_and_hse_dos_paths():
-    workflow = desired_output_workflow_spec("electronic_dos")
+    from conftest import planned
+
+    workflow = planned(_si_structure(), desired_output_workflow_spec("electronic_dos"))
 
     with fake_atomate2_and_jobflow():
         flow = build_atomate2_flow_for_workflow_spec(
@@ -395,8 +397,9 @@ def test_electronic_dos_desired_output_uses_existing_hse_static_and_hse_dos_path
             resources={"ntasks": 24},
         )
 
-    assert [job.name for job in flow.jobs] == ["stage_01", "stage_02", "stage_03"]
-    relax_job, static_job, dos_job = flow.jobs
+    assert [job.name for job in flow.jobs] == ["stage_01", "stage_02", "stage_03", "stage_04"]
+    first_pass_job, relax_job, static_job, dos_job = flow.jobs
+    assert relax_job.structure == first_pass_job.output.structure
     assert static_job.structure == relax_job.output.structure
     assert static_job.prev_dir == relax_job.output.dir_name
     assert dos_job.structure == static_job.output.structure

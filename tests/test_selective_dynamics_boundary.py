@@ -170,8 +170,10 @@ def test_all_true_selective_dynamics_poscar_carries_no_constraint_and_builds_ide
 
 @pytest.mark.parametrize("output", MANAGED_OUTPUTS)
 def test_check_does_not_change_inputs_for_unconstrained_structures(output, monkeypatch):
+    from conftest import planned
+
     structure = parse_structure(PLAIN_POSCAR)
-    workflow = desired_output_workflow_spec(output)
+    workflow = planned(structure, desired_output_workflow_spec(output))
     guarded = [str(p["input_set"].incar) + str(p["input_set"].kpoints) + str(p["input_set"].poscar)
                for p in generated_input_stage_previews(structure, workflow)]
     monkeypatch.setattr(

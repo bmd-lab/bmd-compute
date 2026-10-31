@@ -31,7 +31,11 @@ from backend.remote_runtime import (
     connection_profile_from_submission_spec,
     default_connection_profile,
 )
-from backend.remote_result_parser import PRECEDING_STATIC_OUTCAR_KEY, parse_result_paths
+from backend.remote_result_parser import (
+    GEOMETRY_RELAXATION_VASPRUN_KEY,
+    PRECEDING_STATIC_OUTCAR_KEY,
+    parse_result_paths,
+)
 from backend.workflow_results import (
     PHONON_RESULT_FILES,
     workflow_has_phonon_results,
@@ -49,6 +53,9 @@ RESULT_FILES = {
     # Optional: the preceding PBE static's OUTCAR, for the Fermi reference of a
     # non-self-consistent PBE band structure.
     PRECEDING_STATIC_OUTCAR_KEY: "OUTCAR",
+    # Optional: vasprun.xml of the final Geometry Optimisation stage when it is
+    # not the reported stage, for the cell-convergence diagnostic.
+    GEOMETRY_RELAXATION_VASPRUN_KEY: "vasprun.xml",
 }
 LOGGER = logging.getLogger(__name__)
 RESULTS_CACHE_MAX_ENTRIES = 4
@@ -279,6 +286,9 @@ def results_location_from_submission_spec(submission_spec: dict | None) -> dict:
     static_outcar = preceding_static_outcar_path(run_dir, workflow_spec)
     if static_outcar is not None:
         optional_paths[PRECEDING_STATIC_OUTCAR_KEY] = static_outcar
+    relaxation_vasprun = final_relaxation_vasprun_path(run_dir, workflow_spec, output_dir)
+    if relaxation_vasprun is not None:
+        optional_paths[GEOMETRY_RELAXATION_VASPRUN_KEY] = relaxation_vasprun
     return {
         "run_dir": run_dir,
         "output_dir": output_dir,
@@ -312,6 +322,32 @@ def preceding_static_outcar_path(run_dir: str, workflow_spec) -> str | None:
 
     directories = workflow_stage_directories(workflow_spec)
     return posixpath.join(run_dir.rstrip("/"), directories[-2], "OUTCAR")
+
+
+def final_relaxation_vasprun_path(run_dir: str, workflow_spec, output_dir: str) -> str | None:
+    """vasprun.xml of the last Geometry Optimisation stage, if not the reported stage."""
+
+    stages = list(getattr(workflow_spec, "stages", None) or ())
+    relax_indices = [
+        index
+        for index, stage in enumerate(stages)
+        if getattr(stage.stage_type, "value", None) == "relax"
+    ]
+    if not relax_indices or len(stages) < 2:
+        return None
+    # Only calculations planned with the BMD Standard Geometry Relaxation
+    # (plane-wave cutoff record) carry the diagnostic; older runs are unchanged.
+    if "plane_wave_cutoff" not in dict(getattr(stages[relax_indices[-1]], "options", None) or {}):
+        return None
+    from backend.calculations.registry import workflow_stage_directories
+
+    directories = workflow_stage_directories(workflow_spec)
+    if not directories:
+        return None
+    path = posixpath.join(run_dir.rstrip("/"), directories[relax_indices[-1]], "vasprun.xml")
+    if path == posixpath.join(str(output_dir).rstrip("/"), "vasprun.xml"):
+        return None
+    return path
 
 
 def resolve_results_location(
@@ -812,6 +848,8 @@ def parse_vasp_result_files(files: dict, monitoring_result: dict) -> dict:
                 local_paths[key] = tmp / filename
         if PRECEDING_STATIC_OUTCAR_KEY in files:
             local_paths[PRECEDING_STATIC_OUTCAR_KEY] = tmp / "preceding_static_OUTCAR"
+        if GEOMETRY_RELAXATION_VASPRUN_KEY in files:
+            local_paths[GEOMETRY_RELAXATION_VASPRUN_KEY] = tmp / "final_relaxation_vasprun.xml"
 
         for key, local_path in local_paths.items():
             local_path.write_text(files[key]["text"], encoding="utf-8")

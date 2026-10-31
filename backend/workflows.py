@@ -40,6 +40,7 @@ from backend.calculations.structure_constraints import reject_unsupported_struct
 from backend.calculations.custodian_policy import (
     bmd_custodian_handlers,
     hse_band_structure_run_vasp_kwargs,
+    relax_run_vasp_kwargs,
     unsuccessful_stage_stop_children_kwargs,
 )
 from backend.calculations.vasp_stage_definitions import (
@@ -319,6 +320,47 @@ def apply_phonon_precursor_incar_settings(
 
         settings.update(PHONON_PRECURSOR_RELAX_INCAR)
     return settings
+
+
+def apply_geometry_relaxation_incar_settings(
+    user_incar,
+    *,
+    workflow: WorkflowSpec,
+    index: int,
+) -> dict:
+    """Relaxation settings of stage ``index`` (0-based), for builds and previews.
+
+    A Geometry Optimisation stage with a frozen plane-wave cutoff record uses
+    the BMD Standard Geometry Relaxation settings
+    (``backend.calculations.geometry_relaxation``); a Static Energy stage after
+    it (and a PBE DOS/Band Structure reading that static's charge density)
+    never uses a lower ENCUT. Stages recorded before that protocol keep the
+    former phonon-precursor rule.
+    """
+
+    from backend.calculations.geometry_relaxation import (
+        downstream_cutoff_floor,
+        relaxation_incar_settings,
+        stage_cutoff_record,
+    )
+
+    stage = workflow.stages[index]
+    if stage.stage_type is StageType.RELAX and stage_cutoff_record(stage) is not None:
+        settings = dict(user_incar or {})
+        settings.update(relaxation_incar_settings(workflow, index))
+        return settings
+    floor = downstream_cutoff_floor(workflow, index)
+    if floor is not None:
+        # The stage's own ENCUT floor still applies on top (620 eV for Static
+        # Energy and the PBE restart stages), giving max(own, relaxation).
+        settings = dict(user_incar or {})
+        try:
+            current = int(float(settings.get("ENCUT", 0)))
+        except (TypeError, ValueError):
+            current = 0
+        settings["ENCUT"] = max(current, floor)
+        return settings
+    return apply_phonon_precursor_incar_settings(user_incar, workflow=workflow, index=index)
 
 
 def apply_stage_artifact_incar_settings(user_incar, *, artifact_policy=None) -> dict:
@@ -1683,7 +1725,11 @@ def _single_stage_job_name(stage: StageSpec, user_incar: dict | None = None) -> 
 
 
 def _workflow_flow_suffix(workflow: WorkflowSpec) -> str:
-    compatible_spec = calculation_spec_from_workflow_spec(workflow)
+    # Naming only: the relaxation protocol marks and frozen cutoff records do
+    # not change which legacy flow name a stage sequence has always had.
+    from backend.calculations.geometry_relaxation import without_relaxation_options
+
+    compatible_spec = calculation_spec_from_workflow_spec(without_relaxation_options(workflow))
     if compatible_spec is not None:
         if (
             compatible_spec.purpose is Purpose.RELAX
@@ -1759,6 +1805,9 @@ def build_atomate2_flow_for_workflow_spec(
 
     reject_unsupported_structure_constraints(structure)
     workflow = validate_workflow_spec(workflow_spec)
+    from backend.calculations.geometry_relaxation import require_cutoff_functional
+
+    require_cutoff_functional(workflow, potcar_functional)
     stage_directories = workflow_stage_directories(workflow)
     stage_artifacts = workflow_stage_artifact_policies(workflow)
     jobs = []
@@ -1770,7 +1819,7 @@ def build_atomate2_flow_for_workflow_spec(
             user_incar,
             artifact_policy=stage_artifacts[index],
         )
-        user_incar = apply_phonon_precursor_incar_settings(
+        user_incar = apply_geometry_relaxation_incar_settings(
             user_incar,
             workflow=workflow,
             index=index,
@@ -1812,7 +1861,8 @@ def build_atomate2_flow_for_workflow_spec(
                 stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
                 input_set_generator=generator,
                 name=stage_name,
-                run_vasp_kwargs=run_vasp_kwargs,
+                # One SIGMA for every relaxation: no LargeSigmaHandler.
+                run_vasp_kwargs=relax_run_vasp_kwargs(run_vasp_kwargs),
             ).make(stage_structure)
 
         elif stage.stage_type is StageType.STATIC:
@@ -1965,9 +2015,15 @@ def build_phonon_force_input_set_generator_for_stage(
 ):
     """atomate2's phonon-grade force-calculation generator for ``stage``."""
 
+    from backend.calculations.geometry_relaxation import stage_cutoff_record
     from backend.phonons.workflow import build_phonon_force_input_set_generator
 
+    # The species-dependent cutoff of the relaxation that produced the
+    # structure (frozen on this stage at planning); stages recorded before the
+    # BMD Standard Geometry Relaxation keep atomate2's phonon ENCUT.
+    record = stage_cutoff_record(stage)
     return build_phonon_force_input_set_generator(
+        incar={"ENCUT": int(record["ENCUT"])} if record is not None else None,
         potcar_functional=potcar_functional,
         dispersion_vdw=_dispersion_vdw_for_modifiers(
             stage.modifiers,

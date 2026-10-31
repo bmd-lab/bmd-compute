@@ -17,6 +17,12 @@ from backend.calculations.dispersion import (
     dispersion_method_from_options,
 )
 from backend.calculations.dft_u_policy import FROZEN_OPTION_KEY as DFT_U_OPTION_KEY
+from backend.calculations import geometry_relaxation
+from backend.calculations.geometry_relaxation import (
+    CUTOFF_OPTION_KEY as PLANE_WAVE_CUTOFF_OPTION_KEY,
+    PROTOCOL_OPTION_KEY as GEOMETRY_RELAXATION_OPTION_KEY,
+    protocol_relaxation_stages,
+)
 from backend.calculations.vasp_stage_definitions import (
     stage_inherits_previous_band_count,
     stage_reads_previous_charge_density,
@@ -305,6 +311,12 @@ def _recommended_workflow_recipes() -> tuple[dict, ...]:
             ),
         ),
         (
+            "geometry_relaxation",
+            "BMD Standard Geometry Relaxation",
+            "Two-pass PBE geometry optimisation with BMD's standard convergence (pass 1, then pass 2).",
+            WorkflowSpec(protocol_relaxation_stages(), recipe="geometry_relaxation"),
+        ),
+        (
             "double_relax",
             "Double Geometry Optimisation",
             "Run two consecutive geometry optimisations.",
@@ -370,8 +382,7 @@ def _desired_output_workflows() -> tuple[tuple[str, str, str, WorkflowSpec | Non
             "Optimises the crystal structure and calculates its final total energy.",
             WorkflowSpec(
                 [
-                    StageSpec(StageType.RELAX, Theory.PBE),
-                    StageSpec(StageType.RELAX, Theory.PBE),
+                    *protocol_relaxation_stages(Theory.PBE),
                     StageSpec(StageType.STATIC, Theory.PBE),
                 ],
                 recipe="relaxed_energy",
@@ -389,12 +400,9 @@ def _desired_output_workflows() -> tuple[tuple[str, str, str, WorkflowSpec | Non
         (
             "relaxed_structure",
             "Relaxed structure",
-            "Run two successive PBE geometry optimisations for the final relaxed structure.",
+            "Relax the structure with the BMD Standard Geometry Relaxation (two PBE passes).",
             WorkflowSpec(
-                [
-                    StageSpec(StageType.RELAX, Theory.PBE),
-                    StageSpec(StageType.RELAX, Theory.PBE),
-                ],
+                protocol_relaxation_stages(Theory.PBE),
                 recipe="relaxed_structure",
             ),
         ),
@@ -404,7 +412,7 @@ def _desired_output_workflows() -> tuple[tuple[str, str, str, WorkflowSpec | Non
             "Use BMD Compute's default staged workflow for an HSE06 density of states.",
             WorkflowSpec(
                 [
-                    StageSpec(StageType.RELAX, Theory.PBE),
+                    *protocol_relaxation_stages(Theory.PBE),
                     StageSpec(StageType.STATIC, Theory.HSE06),
                     StageSpec(StageType.DOS, Theory.HSE06),
                 ],
@@ -417,7 +425,7 @@ def _desired_output_workflows() -> tuple[tuple[str, str, str, WorkflowSpec | Non
             "Use BMD Compute's default staged workflow for an HSE06 band structure.",
             WorkflowSpec(
                 [
-                    StageSpec(StageType.RELAX, Theory.PBE),
+                    *protocol_relaxation_stages(Theory.PBE),
                     StageSpec(StageType.STATIC, Theory.HSE06),
                     StageSpec(StageType.BAND_STRUCTURE, Theory.HSE06),
                 ],
@@ -428,13 +436,13 @@ def _desired_output_workflows() -> tuple[tuple[str, str, str, WorkflowSpec | Non
             "phonons",
             "Phonons",
             (
-                "Relax the structure with phonon-grade PBE convergence, then run "
+                "Relax the structure with the BMD Standard Geometry Relaxation, then run "
                 "finite-displacement force calculations and Phonopy analysis "
                 "(non-magnetic materials only)."
             ),
             WorkflowSpec(
                 [
-                    StageSpec(StageType.RELAX, Theory.PBE),
+                    *protocol_relaxation_stages(Theory.PBE),
                     StageSpec(StageType.PHONON_FORCES, Theory.PBE),
                 ],
                 recipe="phonons",
@@ -557,6 +565,7 @@ def validate_workflow_spec(workflow: WorkflowSpec) -> WorkflowSpec:
     _validate_previous_stage_soc_consistency(normalized)
 
     _validate_phonon_force_stage_placement(normalized)
+    geometry_relaxation.validate_workflow(normalized)
 
     for index, stage in enumerate(normalized.stages):
         stage_number = index + 1
@@ -812,7 +821,16 @@ def calculation_spec_from_workflow_spec(workflow: WorkflowSpec) -> CalculationSp
     normalized = validate_workflow_spec(workflow)
     stages = normalized.stages
     stage_types = tuple(stage.stage_type for stage in stages)
-    if any(stage.options for stage in stages):
+    # A frozen plane-wave cutoff record is derived data (resolved again from
+    # the structure for every plan), not a methodology choice, so it does not
+    # stop a stage sequence from matching its legacy calculation; any other
+    # option (dispersion, frozen DFT+U, the relaxation protocol) does. Builds
+    # always use the recorded workflow, never a workflow rebuilt from this.
+    if any(
+        key != PLANE_WAVE_CUTOFF_OPTION_KEY
+        for stage in stages
+        for key in dict(stage.options or {})
+    ):
         return None
 
     def same_stage_policy() -> tuple[Theory, frozenset[Modifier]] | None:
@@ -932,10 +950,20 @@ def workflow_stage_directories(workflow: WorkflowSpec) -> tuple[str, ...]:
 # ``dft_u`` holds the frozen +U parameters that automatic Desired Output
 # resolution writes. Anything else - including ``incar`` and ``kpoints`` - is
 # rejected, so a workflow spec cannot inject INCAR or KPOINTS values.
-SUPPORTED_STAGE_OPTION_KEYS = frozenset({DISPERSION_OPTION_KEY, DFT_U_OPTION_KEY})
-# Keys a client may supply in a Custom workflow. Frozen +U parameters are only
-# produced by BMD Compute's automatic treatment resolution.
-USER_STAGE_OPTION_KEYS = frozenset({DISPERSION_OPTION_KEY})
+# ``geometry_relaxation`` marks the passes of the BMD Standard Geometry
+# Relaxation and ``plane_wave_cutoff`` holds the species-dependent cutoff record
+# frozen at planning (``backend.calculations.geometry_relaxation``).
+SUPPORTED_STAGE_OPTION_KEYS = frozenset(
+    {
+        DISPERSION_OPTION_KEY,
+        DFT_U_OPTION_KEY,
+        GEOMETRY_RELAXATION_OPTION_KEY,
+        PLANE_WAVE_CUTOFF_OPTION_KEY,
+    }
+)
+# Keys a client may supply in a Custom workflow. Frozen +U parameters and the
+# plane-wave cutoff record are only produced by BMD Compute itself.
+USER_STAGE_OPTION_KEYS = frozenset({DISPERSION_OPTION_KEY, GEOMETRY_RELAXATION_OPTION_KEY})
 
 
 def _validate_stage_option_keys(stage: StageSpec, allowed=SUPPORTED_STAGE_OPTION_KEYS) -> None:
@@ -972,12 +1000,35 @@ def canonical_custom_workflow_spec(workflow: WorkflowSpec) -> WorkflowSpec:
     ``label`` and each stage's ``label``. Those name BMD Compute's managed
     Desired Outputs and their display; a Custom workflow has none, exactly as
     the browser (which posts ``null``) and the machine API (which has no such
-    fields) already send it. Stage types, theories, modifiers and the
+    fields) already send it. A frozen plane-wave cutoff record is dropped too:
+    it is BMD-generated and resolved again for every request. Stage types, theories, modifiers and the
     user-selectable stage options are kept unchanged. Normalising instead of
     rejecting keeps stale browser pages working while ensuring a client cannot
     record a managed identity, or display name, on a Custom workflow.
     """
 
+    # A plane-wave cutoff record is never user input: BMD Compute resolves it
+    # again for every request. A record echoed back by a browser form (the
+    # Custom workflow is carried between Build, Prepare and Submit) is dropped
+    # rather than rejected; any other BMD-generated option is still refused.
+    workflow = WorkflowSpec(
+        stages=[
+            StageSpec(
+                stage.stage_type,
+                stage.theory,
+                stage.modifiers,
+                label=stage.label,
+                options={
+                    key: value
+                    for key, value in dict(stage.options or {}).items()
+                    if key != PLANE_WAVE_CUTOFF_OPTION_KEY
+                },
+            )
+            for stage in WorkflowSpec(stages=workflow.stages, label=workflow.label, recipe=workflow.recipe).stages
+        ],
+        label=workflow.label,
+        recipe=workflow.recipe,
+    )
     validated = validate_user_workflow_spec(workflow)
     return validate_workflow_spec(
         WorkflowSpec(
@@ -1063,6 +1114,7 @@ def _validate_stage_support(stage: StageSpec) -> None:
 
     _validate_dispersion_stage_support(stage)
     _validate_frozen_dft_u_option(stage)
+    geometry_relaxation.validate_stage_options(stage)
 
 
 def _validate_frozen_dft_u_option(stage: StageSpec) -> None:
@@ -1264,7 +1316,15 @@ def workflow_display_name(workflow: WorkflowSpec) -> str:
     if compatible_spec is not None:
         return calculation_display_name(compatible_spec)
 
-    stage_names = [stage_display_name(stage) for stage in normalized.stages]
+    stage_names = []
+    for stage in normalized.stages:
+        # The two passes of the BMD Standard Geometry Relaxation are one step.
+        if geometry_relaxation.stage_protocol_pass(stage) == 2:
+            continue
+        name = stage_display_name(stage)
+        if geometry_relaxation.stage_protocol_pass(stage) == 1:
+            name = f"{name} (two passes)"
+        stage_names.append(name)
     if len(stage_names) == 1:
         return stage_names[0]
 

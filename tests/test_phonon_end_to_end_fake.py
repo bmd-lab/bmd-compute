@@ -140,8 +140,9 @@ def test_simulated_si_phonon_run_produces_force_constants_and_frequencies(tmp_pa
         execution.run_submission(spec)
 
     root = tmp_path.resolve()
-    relax_dir = root / "stage_01"
-    phonon_dir = root / "stage_02"
+    first_pass_dir = root / "stage_01"
+    relax_dir = root / "stage_02"
+    phonon_dir = root / "stage_03"
     displacement_root = phonon_dir / "run_phonon_displacements"
     analysis_dir = phonon_dir / "generate_frequencies_eigenvectors"
 
@@ -151,29 +152,38 @@ def test_simulated_si_phonon_run_produces_force_constants_and_frequencies(tmp_pa
     assert len(displacement_dirs) == displacement_count
     assert [path.relative_to(root).as_posix() for path in fake_vasp.directories] == [
         "stage_01",
+        "stage_02",
         *[path.relative_to(root).as_posix() for path in displacement_dirs],
     ]
     assert not (root / "INCAR").exists()
 
     # Phonon-grade relax feeds the phonons; force calculations use atomate2's
     # phonon settings, PBE, non-spin, and no automatic NCORE.
+    # BMD Standard Geometry Relaxation: both passes and the forces share the
+    # species-dependent cutoff (550 eV with the SYNTHETIC test metadata).
+    first_pass_incar = incar(first_pass_dir)
+    assert first_pass_incar["ENCUT"] == 550
+    assert (first_pass_incar["EDIFF"], first_pass_incar["EDIFFG"]) == (1e-6, -0.01)
     relax_incar = incar(relax_dir)
-    assert relax_incar["ENCUT"] == 700
+    assert relax_incar["ENCUT"] == 550
     assert relax_incar["EDIFF"] == 1e-7
     assert relax_incar["EDIFFG"] == -1e-3
+    assert "ADDGRID" not in first_pass_incar and "ADDGRID" not in relax_incar
     # The INCAR VASP receives is exactly the one the plan previewed (the fake
     # relax returns the submitted structure, so the displaced supercell is
     # identical).
     from pymatgen.io.vasp.inputs import Incar
 
-    planned_section = plan.generated_inputs["incar"].split("# Stage 2")[1]
+    planned_section = plan.generated_inputs["incar"].split("# Stage 3")[1]
     planned = Incar.from_str(
         "\n".join(line for line in planned_section.splitlines()[1:] if not line.startswith("#"))
     )
     for directory in displacement_dirs:
         settings = incar(directory)
         assert Incar(settings) == planned
-        assert settings["ENCUT"] == 700
+        assert settings["ENCUT"] == 550
+        assert "ADDGRID" not in settings
+        assert "LDAU" not in settings
         assert settings["EDIFF"] == 1e-7
         assert settings["NSW"] == 0
         assert settings["IBRION"] == -1

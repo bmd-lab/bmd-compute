@@ -131,15 +131,18 @@ def test_desired_output_options_are_backend_owned_and_beginner_facing():
     ]
     assert _stage_pairs(workflows["electronic_dos"]) == [
         ("relax", "pbe"),
+        ("relax", "pbe"),
         ("static", "hse06"),
         ("dos", "hse06"),
     ]
     assert _stage_pairs(workflows["electronic_band_structure"]) == [
         ("relax", "pbe"),
+        ("relax", "pbe"),
         ("static", "hse06"),
         ("band_structure", "hse06"),
     ]
     assert _stage_pairs(workflows["phonons"]) == [
+        ("relax", "pbe"),
         ("relax", "pbe"),
         ("phonon_forces", "pbe"),
     ]
@@ -266,10 +269,12 @@ def test_default_desired_output_cards_keep_bmd_stage_theories_visible():
         for stage in dos_context["selected_workflow"]["stages"]
     ] == [
         ("relax", "pbe"),
+        ("relax", "pbe"),
         ("static", "hse06"),
         ("dos", "hse06"),
     ]
     assert calculation_plan_from_workflow_spec(dos_workflow) == [
+        "Geometry Optimisation (PBE)",
         "Geometry Optimisation (PBE)",
         "Static Energy (HSE06)",
         "Density of States (HSE06)",
@@ -282,14 +287,23 @@ def test_default_desired_output_cards_keep_bmd_stage_theories_visible():
         for stage in band_context["selected_workflow"]["stages"]
     ] == [
         ("relax", "pbe"),
+        ("relax", "pbe"),
         ("static", "hse06"),
         ("band_structure", "hse06"),
     ]
     assert calculation_plan_from_workflow_spec(band_workflow) == [
         "Geometry Optimisation (PBE)",
+        "Geometry Optimisation (PBE)",
         "Static Energy (HSE06)",
         "Band Structure (HSE06)",
     ]
+
+
+def _planned(structure, workflow):
+    # Planning resolves the species-dependent relaxation cutoff first.
+    from backend.calculations.geometry_relaxation import freeze_plane_wave_cutoffs
+
+    return freeze_plane_wave_cutoffs(structure, workflow, potcar_functional="PBE_64")
 
 
 def test_desired_output_previews_use_current_authoritative_workflows():
@@ -305,20 +319,22 @@ def test_desired_output_previews_use_current_authoritative_workflows():
         ],
         "electronic_dos": [
             "# Stage 1 - Geometry Optimisation (PBE)",
-            "# Stage 2 - Static Energy (HSE06)",
-            "# Stage 3 - Density of States (HSE06)",
+            "# Stage 2 - Geometry Optimisation (PBE)",
+            "# Stage 3 - Static Energy (HSE06)",
+            "# Stage 4 - Density of States (HSE06)",
         ],
         "electronic_band_structure": [
             "# Stage 1 - Geometry Optimisation (PBE)",
-            "# Stage 2 - Static Energy (HSE06)",
-            "# Stage 3 - Band Structure (HSE06)",
+            "# Stage 2 - Geometry Optimisation (PBE)",
+            "# Stage 3 - Static Energy (HSE06)",
+            "# Stage 4 - Band Structure (HSE06)",
         ],
     }
 
     for output, markers in expected_stage_markers.items():
         preview = preview_generated_inputs(
             structure,
-            desired_output_workflow_spec(output),
+            _planned(structure, desired_output_workflow_spec(output)),
             resources={"ntasks": 24},
         )
         for marker in markers:
@@ -326,30 +342,31 @@ def test_desired_output_previews_use_current_authoritative_workflows():
 
     dos_preview = preview_generated_inputs(
         structure,
-        desired_output_workflow_spec("electronic_dos"),
+        _planned(structure, desired_output_workflow_spec("electronic_dos")),
         resources={"ntasks": 24},
     )
     assert "LHFCALC = True" in dos_preview["incar"]
-    assert "# Stage 3 - Density of States (HSE06)" in dos_preview["incar"]
+    assert "# Stage 4 - Density of States (HSE06)" in dos_preview["incar"]
     assert "ICHARG" not in dos_preview["incar"].split(
-        "# Stage 3 - Density of States (HSE06)",
+        "# Stage 4 - Density of States (HSE06)",
         1,
     )[1]
 
     band_preview = preview_generated_inputs(
         structure,
-        desired_output_workflow_spec("electronic_band_structure"),
+        _planned(structure, desired_output_workflow_spec("electronic_band_structure")),
         resources={"ntasks": 24},
     )
-    assert "# Stage 2 - Static Energy (HSE06)" in band_preview["incar"]
-    assert "# Stage 3 - Band Structure (HSE06)" in band_preview["incar"]
+    assert "# Stage 3 - Static Energy (HSE06)" in band_preview["incar"]
+    assert "# Stage 4 - Band Structure (HSE06)" in band_preview["incar"]
     assert "Combined k-points" in band_preview["kpoints"]
 
 
 def test_relaxed_structure_workflow_construction_chains_second_relax_to_first():
-    workflow = desired_output_workflow_spec("relaxed_structure")
+    structure = parse_structure(SI_POSCAR)
+    workflow = _planned(structure, desired_output_workflow_spec("relaxed_structure"))
     flow = build_atomate2_flow_for_workflow_spec(
-        "initial-structure",
+        structure,
         workflow,
         label="Si-relaxed",
         resources={"ntasks": 24},
@@ -358,7 +375,7 @@ def test_relaxed_structure_workflow_construction_chains_second_relax_to_first():
     assert flow.name == "Si-relaxed_double_relax"
     assert flow.metadata["bmd_stage_directories"] == ("relax_01", "relax_02")
     assert [job.name for job in flow.jobs] == ["relax_01", "relax_02"]
-    assert flow.jobs[0].function_args == ("initial-structure",)
+    assert flow.jobs[0].function_args == (structure,)
     second_relax_structure = flow.jobs[1].function_args[0]
     assert repr(second_relax_structure).endswith(", .structure)")
 
@@ -387,13 +404,15 @@ def test_build_route_can_reconstruct_desired_output_without_recipe_fallback():
         for stage in response.context["selected_workflow"]["stages"]
     ] == [
         ("relax", "pbe"),
+        ("relax", "pbe"),
         ("static", "hse06"),
         ("dos", "hse06"),
     ]
     assert response.context["calculation"]["calculation_type"] == (
-        "Geometry Optimisation + Static Energy + Density of States"
+        "Geometry Optimisation (two passes) + Static Energy + Density of States"
     )
     assert response.context["calculation"]["calculation_plan"] == [
+        "Geometry Optimisation (PBE)",
         "Geometry Optimisation (PBE)",
         "Static Energy (HSE06)",
         "Density of States (HSE06)",
