@@ -30,3 +30,6 @@ When migrating or revising notebook behavior:
 
 Do not copy notebook code directly into FastAPI route handlers.
 
+## uspex_pilot/
+
+Manual Phase 0 test scripts for the planned structure-search (USPEX) feature. See `uspex_pilot/README.md` and `docs/structure_search.md`.
