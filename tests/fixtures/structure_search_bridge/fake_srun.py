@@ -1,6 +1,7 @@
-"""Fake ``srun ... vasp_std`` for the launch-bridge tests.
+"""Fake ``srun ... vasp_std`` and ``mpirun ... vasp_std`` for the launch-bridge tests.
 
-Installed as ``srun`` on the PATH of the VASP step environment. It checks the
+Installed as ``srun`` and as ``mpirun`` on the PATH of the VASP step
+environment; it checks the command line for whichever name it was called by. It checks the
 command line the launcher built, records what it saw, and writes the two
 files USPEX reads after a VASP relaxation: OSZICAR (last line holds the
 energy) and CONTCAR (the relaxed structure; here, POSCAR with a marker).
@@ -33,7 +34,9 @@ def main():
             step = int(line.split("=")[1])
     key = f"{cwd.name}:{step}"
     record_path = Path(os.environ["FAKE_SRUN_RECORDS"]) / f"{os.getpid()}-{time.time_ns()}.json"
+    tool = Path(sys.argv[0]).name
     record = {
+        "tool": tool,
         "argv": argv,
         "cwd": str(cwd),
         "key": key,
@@ -43,6 +46,8 @@ def main():
         "terminated": False,
         "I_MPI_DEBUG": os.environ.get("I_MPI_DEBUG"),
         "I_MPI_PIN_DOMAIN": os.environ.get("I_MPI_PIN_DOMAIN"),
+        "I_MPI_PIN_PROCESSOR_LIST": os.environ.get("I_MPI_PIN_PROCESSOR_LIST"),
+        "I_MPI_HYDRA_BOOTSTRAP": os.environ.get("I_MPI_HYDRA_BOOTSTRAP"),
         "XDG_CACHE_HOME": os.environ.get("XDG_CACHE_HOME"),
     }
 
@@ -61,7 +66,10 @@ def main():
     save()
 
     assert argv[-1] == "vasp_std", argv
-    assert argv[:2] == ["--exact", "--mpi=pmi2"], argv
+    if tool == "srun":
+        assert argv[:2] == ["--exact", "--mpi=pmi2"], argv
+    else:
+        assert argv[0] == "-n", argv
 
     if key in control.get("ignore_term", []):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)

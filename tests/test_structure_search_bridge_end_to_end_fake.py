@@ -55,9 +55,10 @@ class Rig:
             path.mkdir(parents=True)
         self.control_path = tmp_path / "control.json"
         self.set_control(control or {"sleep": 0.3})
-        srun = self.bin / "srun"
-        srun.write_text(f"#!{sys.executable}\n" + (FIXTURES / "fake_srun.py").read_text())
-        srun.chmod(0o755)
+        for tool in ("srun", "mpirun"):
+            fake = self.bin / tool
+            fake.write_text(f"#!{sys.executable}\n" + (FIXTURES / "fake_srun.py").read_text())
+            fake.chmod(0o755)
         self._threads: list[threading.Thread] = []
 
     def set_control(self, control: dict) -> None:
@@ -168,6 +169,15 @@ def _max_overlap(records: list[dict]) -> int:
     return best
 
 
+def _launch_records(calcfold: Path) -> list[dict]:
+    return [json.loads(line) for line in (calcfold / "bmd_launch.jsonl").read_text().splitlines()]
+
+
+def _cpus(processor_list: str) -> set[int]:
+    first, _, last = processor_list.partition("-")
+    return set(range(int(first), int(last or first) + 1))
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -225,6 +235,16 @@ def test_fake_search_runs_every_step_through_the_bridge_within_the_concurrency_l
     # Never two steps in one CalcFold at once.
     for name in results:
         assert _max_overlap([r for r in records if Path(r["cwd"]).name == name]) == 1
+    # Each CalcFold has one launch record per step with the exact command.
+    for name in results:
+        launches = _launch_records(rig.search / name)
+        assert [launch["step"] for launch in launches] == [1, 2, 3]
+        for launch in launches:
+            assert launch["launch_mode"] == "srun_steps"
+            assert launch["argv"][0] == "srun"
+            assert launch["environment_set"] == {"I_MPI_DEBUG": "4"}
+            assert launch["environment_removed"] == ["I_MPI_PIN_DOMAIN"]
+            assert launch["slot"] in (0, 1)
 
     assert all(done["status"] == "0" for done in rig.done_files())
     assert len(rig.done_files()) == 15
@@ -235,6 +255,79 @@ def test_fake_search_runs_every_step_through_the_bridge_within_the_concurrency_l
     assert events[0] == "started" and events[-1] == "stopped"
     assert "environment_removed" in events
     assert events.count("finished") == 15
+
+
+def test_fake_search_in_mpirun_pinned_mode_gives_each_slot_its_own_cores(rig):
+    rig.set_control({"sleep": 0.4})
+    settings = rig.settings(
+        launch_mode="mpirun_pinned",
+        max_parallel=4,
+        ranks=48,
+        mem=None,
+        ranks_per_step={2: 24},
+        environment=rig.step_environment(I_MPI_PIN_DOMAIN="core"),
+    )
+    status = run_search(
+        [
+            sys.executable, str(FIXTURES / "fake_uspex.py"),
+            "--search-dir", str(rig.search), "--bridge", BRIDGE,
+            "--structures", "8", "--steps", "2", "--parallel", "4",
+        ],
+        rig.bridge_environment(),
+        rig.search,
+        settings,
+        master_log=rig.root / "master.log",
+    )
+    assert status == 0, (rig.root / "master.log").read_text()
+    results = json.loads((rig.search / "fake_uspex_results.json").read_text())
+    assert all(result["exit_codes"] == [0, 0] for result in results.values())
+
+    records = rig.srun_records()
+    assert len(records) == 16 and _max_overlap(records) == 4
+    slot_lists = {0: "0-47", 1: "96-143", 2: "48-95", 3: "144-191"}
+    for record in records:
+        step = int(record["key"].split(":")[1])
+        assert record["tool"] == "mpirun"
+        assert record["argv"] == ["-n", "48" if step == 1 else "24", "vasp_std"]
+        assert record["I_MPI_HYDRA_BOOTSTRAP"] == "fork"
+        assert record["I_MPI_PIN_DOMAIN"] is None
+        assert record["I_MPI_DEBUG"] == "4"
+    # Steps that ran at the same time never shared a core.
+    for a in records:
+        for b in records:
+            if a is not b and a["start"] < b["end"] and b["start"] < a["end"]:
+                assert not _cpus(a["I_MPI_PIN_PROCESSOR_LIST"]) & _cpus(b["I_MPI_PIN_PROCESSOR_LIST"])
+    # The CalcFold launch records match what VASP actually received.
+    by_key = {record["key"]: record for record in records}
+    for name in results:
+        for launch in _launch_records(rig.search / name):
+            record = by_key[f"{name}:{launch['step']}"]
+            expected = slot_lists[launch["slot"]]
+            if launch["step"] == 2:
+                first = int(expected.split("-")[0])
+                expected = f"{first}-{first + 23}"
+            assert launch["environment_set"] == {
+                "I_MPI_DEBUG": "4",
+                "I_MPI_PIN_PROCESSOR_LIST": expected,
+                "I_MPI_HYDRA_BOOTSTRAP": "fork",
+            }
+            assert record["I_MPI_PIN_PROCESSOR_LIST"] == expected
+            assert ["mpirun", *record["argv"]] == launch["argv"]
+    rig.assert_no_partial_files()
+
+
+def test_srun_mode_derives_mem_from_the_node_memory_slurm_reports(rig):
+    settings = rig.settings(
+        mem=None, max_parallel=4, environment=rig.step_environment(SLURM_MEM_PER_NODE="1000000")
+    )
+    assert settings.step_mem == "225000M"  # 1,000,000 MB less 10 %, over 4 steps
+    event = rig.start_launcher_thread(settings)
+    bridge = rig.start_bridge(rig.calcfold("CalcFold1"))
+    bridge.communicate(timeout=30)
+    assert bridge.returncode == 0
+    rig.join(event)
+    (record,) = rig.srun_records()
+    assert "--mem=225000M" in record["argv"]
 
 
 def test_failed_step_returns_the_vasp_exit_status_and_others_continue(rig):
@@ -491,7 +584,9 @@ def test_malformed_and_out_of_tree_requests_are_rejected(rig, tmp_path):
 
 
 def test_missing_step_command_is_answered_with_127(rig):
-    event = rig.start_launcher_thread(rig.settings(command_template="no-such-srun -n {ranks} vasp_std"))
+    event = rig.start_launcher_thread(
+        rig.settings(command_template="no-such-srun -n {ranks} --mem={mem} vasp_std")
+    )
     bridge = rig.start_bridge(rig.calcfold("CalcFold1"))
     bridge.communicate(timeout=30)
     assert bridge.returncode == 127

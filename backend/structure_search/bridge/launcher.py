@@ -5,12 +5,17 @@ Design: docs/structure_search.md, section 4; issue #66.
 USPEX runs inside its Singularity image and cannot call ``srun``. For each
 relaxation step it runs ``bmd_bridge.sh``, which drops a request file into a
 spool directory and waits. This module runs on the host, in the same SLURM
-allocation, and turns each request into a SLURM job step:
+allocation, and runs VASP for each request:
 
 * watch ``<spool>/requests`` for new requests
-* run each one in its CalcFold with a configurable command, by default
-  ``srun --exact --mpi=pmi2 -n {ranks} --mem={mem} vasp_std``, at most
-  ``max_parallel`` at a time and never two in the same CalcFold at once
+* run each one in its CalcFold, at most ``max_parallel`` at a time and never
+  two in the same CalcFold at once, in one of two launch modes (see
+  ``LauncherSettings``): ``srun_steps`` (``srun --exact --mpi=pmi2 -n {ranks}
+  --mem={mem} vasp_std``, SLURM places the cores) or ``mpirun_pinned``
+  (``mpirun -n {ranks} vasp_std`` with a fixed core range per slot)
+* before each run, append the exact command, the variables the launcher set
+  and the slot index to ``<CalcFold>/bmd_launch.jsonl``, so core placement can
+  be checked afterwards against the ``I_MPI_DEBUG=4`` report in the step log
 * write ``<spool>/done/<id>.done`` with the exit status, which releases the
   waiting bridge script
 * stop a step when its bridge gives up (``<spool>/cancel/<id>``)
@@ -58,16 +63,34 @@ from backend.structure_search.bridge import protocol
 from backend.structure_search.bridge.protocol import StepRequest
 
 
-DEFAULT_COMMAND_TEMPLATE = "srun --exact --mpi=pmi2 -n {ranks} --mem={mem} vasp_std"
-"""Default step command. ``{ranks}``, ``{mem}`` and ``{step}`` are filled in.
+SRUN_STEPS = "srun_steps"
+MPIRUN_PINNED = "mpirun_pinned"
+LAUNCH_MODES = (SRUN_STEPS, MPIRUN_PINNED)
+
+SRUN_COMMAND_TEMPLATE = "srun --exact --mpi=pmi2 -n {ranks} --mem={mem} vasp_std"
+MPIRUN_COMMAND_TEMPLATE = "mpirun -n {ranks} vasp_std"
+DEFAULT_COMMAND_TEMPLATE = SRUN_COMMAND_TEMPLATE
+DEFAULT_COMMAND_TEMPLATES = {
+    SRUN_STEPS: SRUN_COMMAND_TEMPLATE,
+    MPIRUN_PINNED: MPIRUN_COMMAND_TEMPLATE,
+}
+"""Default step command per launch mode. ``{ranks}``, ``{mem}`` and ``{step}`` are filled in.
 
 If ``mem`` is ``None`` every argument that contains ``{mem}`` is left out,
 so write the memory option as one argument (``--mem={mem}``), not two.
 """
 
+# leeburton-pool compute nodes, from the lab's VASP notes (August 2026):
+# 2 sockets x 96 cores, no hyperthreading. compute-0-332/333 have a different
+# NUMA layout (docs/structure_search.md §5.5) and need their own values.
+DEFAULT_SOCKETS = 2
+DEFAULT_CORES_PER_SOCKET = 96
+DEFAULT_MEMORY_MARGIN_FRACTION = 0.10
+
 MPI_ENVIRONMENT_OVERRIDES = {"I_MPI_DEBUG": "4"}
 FORBIDDEN_STEP_ENVIRONMENT = ("I_MPI_PIN_DOMAIN",)
 EXIT_COMMAND_NOT_STARTED = 127
+LAUNCH_RECORD_FILE = "bmd_launch.jsonl"
 
 _MEMORY_PATTERN = re.compile(r"^[1-9][0-9]*[KMGT]?$")
 
@@ -129,17 +152,95 @@ def slurm_job_environment(source: Mapping[str, str]) -> dict[str, str]:
     return {key: value for key, value in source.items() if key.startswith("SLURM_")}
 
 
+def default_step_memory_mb(node_memory_mb: int, max_parallel: int, margin_fraction: float) -> int:
+    """Memory per ``srun`` step: node memory less a margin, shared by the parallel steps."""
+
+    if node_memory_mb < 1 or max_parallel < 1 or not 0 <= margin_fraction < 1:
+        raise ValueError("need node_memory_mb >= 1, max_parallel >= 1 and 0 <= margin_fraction < 1")
+    per_step = int(node_memory_mb * (1 - margin_fraction)) // max_parallel
+    if per_step < 1:
+        raise ValueError("node memory is too small for this many parallel steps")
+    return per_step
+
+
+def pinned_slot_first_cores(
+    *, slots: int, ranks: int, sockets: int, cores_per_socket: int
+) -> tuple[int, ...]:
+    """Return the first core of each slot's contiguous core range, balanced across sockets.
+
+    Slots go round-robin over the sockets, packed from the start of each
+    socket. For 4 slots x 48 ranks on 2 x 96 cores: slot 0 -> 0-47, slot 1 ->
+    96-143, slot 2 -> 48-95, slot 3 -> 144-191. A slot larger than a socket
+    must be a whole number of sockets and gets whole sockets. Raises
+    ``ValueError`` if the slots do not fit on the node.
+
+    The numbers are OS CPU numbers, assuming socket ``s`` holds CPUs
+    ``s * cores_per_socket`` to ``(s + 1) * cores_per_socket - 1``. That is
+    not yet checked on POWER: compare with ``lscpu`` and the ``I_MPI_DEBUG=4``
+    pinning report in the bridge pilot.
+    """
+
+    if min(slots, ranks, sockets, cores_per_socket) < 1:
+        raise ValueError("slots, ranks, sockets and cores_per_socket must all be at least 1")
+    if ranks <= cores_per_socket:
+        per_socket = -(-slots // sockets)
+        if per_socket * ranks > cores_per_socket:
+            raise ValueError(
+                f"{slots} slots x {ranks} ranks do not fit: {per_socket} slots per socket "
+                f"need {per_socket * ranks} of {cores_per_socket} cores"
+            )
+        return tuple(
+            (slot % sockets) * cores_per_socket + (slot // sockets) * ranks for slot in range(slots)
+        )
+    if ranks % cores_per_socket:
+        raise ValueError(
+            f"{ranks} ranks is more than one socket ({cores_per_socket} cores) "
+            "but not a whole number of sockets"
+        )
+    sockets_per_slot = ranks // cores_per_socket
+    if slots * sockets_per_slot > sockets:
+        raise ValueError(f"{slots} slots x {ranks} ranks need more than {sockets} sockets")
+    return tuple(slot * sockets_per_slot * cores_per_socket for slot in range(slots))
+
+
+def cpu_range(first: int, count: int) -> str:
+    """Intel MPI processor list for ``count`` cores from ``first`` (``"0-47"`` or ``"5"``)."""
+
+    return str(first) if count == 1 else f"{first}-{first + count - 1}"
+
+
 @dataclass(frozen=True)
 class LauncherSettings:
     """Configuration of the launch loop.
 
-    ``mem`` has no default on purpose: whether each ``srun`` step inside a
-    ``--mem=0`` allocation needs an explicit ``--mem`` is still to be shown
-    by the cluster step test (#59). Pass ``None`` to leave ``--mem`` out.
+    ``launch_mode`` chooses how a step starts VASP; the bridge pilot (#59)
+    decides the default, so it is a single value:
+
+    ``"srun_steps"``
+        ``srun --exact --mpi=pmi2 -n {ranks} --mem={mem} vasp_std``; SLURM
+        places the cores. ``--mem`` is required: in the step test on POWER
+        (#59, 2 Nov 2026) concurrent ``srun --exact`` steps without a
+        per-step ``--mem`` ran one after another, and with one they ran
+        together on separate cores. If ``mem`` is not given it defaults to
+        the node memory less ``memory_margin_fraction``, divided by
+        ``max_parallel``. Node memory is ``node_memory_mb`` or, if that is
+        not given, ``SLURM_MEM_PER_NODE`` from ``environment`` (under
+        ``--mem=0`` SLURM reports the node's memory there; not yet checked
+        on POWER, so prefer passing ``node_memory_mb``).
+
+    ``"mpirun_pinned"``
+        ``mpirun -n {ranks} vasp_std``, the launch path of the lab's VASP
+        benchmarks. Each of the ``max_parallel`` slots gets a fixed core
+        range (``pinned_slot_first_cores``) passed as
+        ``I_MPI_PIN_PROCESSOR_LIST``, with ``I_MPI_HYDRA_BOOTSTRAP=fork`` so
+        Intel MPI starts its ranks directly rather than through SLURM on a
+        single node. Not yet tested on the cluster. Steps given fewer ranks
+        by ``ranks_per_step`` use the first cores of their slot; more ranks
+        than ``ranks`` are rejected.
 
     ``environment`` is the complete environment of the VASP steps (modules
     already loaded); nothing is inherited from the launcher's own process.
-    It must contain the job's ``SLURM_*`` variables; see
+    For ``srun_steps`` it must contain the job's ``SLURM_*`` variables; see
     ``slurm_job_environment``.
     """
 
@@ -147,13 +248,20 @@ class LauncherSettings:
     search_dir: Path
     max_parallel: int
     ranks: int
-    mem: str | None
     environment: Mapping[str, str]
+    launch_mode: str = SRUN_STEPS
+    mem: str | None = None
+    node_memory_mb: int | None = None
+    memory_margin_fraction: float = DEFAULT_MEMORY_MARGIN_FRACTION
+    sockets: int = DEFAULT_SOCKETS
+    cores_per_socket: int = DEFAULT_CORES_PER_SOCKET
     ranks_per_step: Mapping[int, int] = field(default_factory=dict)
-    command_template: str = DEFAULT_COMMAND_TEMPLATE
+    command_template: str | None = None
     poll_seconds: float = 1.0
     heartbeat_interval_seconds: float = 10.0
     kill_grace_seconds: float = 10.0
+    step_mem: str | None = field(init=False)
+    slot_first_cores: tuple[int, ...] | None = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "spool_dir", Path(self.spool_dir))
@@ -163,6 +271,8 @@ class LauncherSettings:
         for name in ("spool_dir", "search_dir"):
             if not getattr(self, name).is_absolute():
                 raise ValueError(f"{name} must be an absolute path")
+        if self.launch_mode not in LAUNCH_MODES:
+            raise ValueError(f"launch_mode must be one of {LAUNCH_MODES}, got {self.launch_mode!r}")
         if self.max_parallel < 1:
             raise ValueError("max_parallel must be at least 1")
         if self.ranks < 1:
@@ -171,12 +281,49 @@ class LauncherSettings:
             if not isinstance(step, int) or step < 1 or not isinstance(ranks, int) or ranks < 1:
                 raise ValueError("ranks_per_step maps step numbers (from 1) to rank counts (from 1)")
         if self.mem is not None and not _MEMORY_PATTERN.match(self.mem):
-            raise ValueError(f"mem must look like '200G' or '4000M', got {self.mem!r}")
+            raise ValueError(f"mem must look like '200G' or '4000M' (not zero), got {self.mem!r}")
         for seconds in ("poll_seconds", "heartbeat_interval_seconds", "kill_grace_seconds"):
             value = getattr(self, seconds)
             if not (isinstance(value, (int, float)) and math.isfinite(value) and value > 0):
                 raise ValueError(f"{seconds} must be a positive number")
-        build_step_argv(self.command_template, ranks=self.ranks, mem=self.mem, step=1)
+        if self.command_template is None:
+            object.__setattr__(self, "command_template", DEFAULT_COMMAND_TEMPLATES[self.launch_mode])
+
+        step_mem = self.mem
+        slot_first_cores = None
+        if self.launch_mode == SRUN_STEPS:
+            if "{mem}" not in self.command_template:
+                raise ValueError(
+                    "srun_steps needs '--mem={mem}' in the command template: without a per-step "
+                    "--mem, concurrent srun steps run one after another (#59)"
+                )
+            if step_mem is None:
+                step_mem = f"{self._default_step_memory_mb()}M"
+        else:
+            if any(ranks > self.ranks for ranks in self.ranks_per_step.values()):
+                raise ValueError("mpirun_pinned: ranks_per_step may not exceed ranks (the slot size)")
+            slot_first_cores = pinned_slot_first_cores(
+                slots=self.max_parallel,
+                ranks=self.ranks,
+                sockets=self.sockets,
+                cores_per_socket=self.cores_per_socket,
+            )
+        object.__setattr__(self, "step_mem", step_mem)
+        object.__setattr__(self, "slot_first_cores", slot_first_cores)
+        build_step_argv(self.command_template, ranks=self.ranks, mem=self.step_mem, step=1)
+
+    def _default_step_memory_mb(self) -> int:
+        node_memory_mb = self.node_memory_mb
+        if node_memory_mb is None:
+            reported = self.environment.get("SLURM_MEM_PER_NODE", "")
+            if not reported.isdigit() or int(reported) < 1:
+                raise ValueError(
+                    "srun_steps needs a per-step --mem: pass mem, or node_memory_mb, or an "
+                    "environment with SLURM_MEM_PER_NODE (concurrent steps without --mem run "
+                    "one after another, #59)"
+                )
+            node_memory_mb = int(reported)
+        return default_step_memory_mb(node_memory_mb, self.max_parallel, self.memory_margin_fraction)
 
     def ranks_for_step(self, step: int) -> int:
         return self.ranks_per_step.get(step, self.ranks)
@@ -185,9 +332,20 @@ class LauncherSettings:
         return build_step_argv(
             self.command_template,
             ranks=self.ranks_for_step(step),
-            mem=self.mem,
+            mem=self.step_mem,
             step=step,
         )
+
+    def environment_for_slot(self, step: int, slot: int) -> dict[str, str]:
+        """Variables set for this step on top of the step environment."""
+
+        if self.launch_mode != MPIRUN_PINNED:
+            return {}
+        assert self.slot_first_cores is not None
+        return {
+            "I_MPI_PIN_PROCESSOR_LIST": cpu_range(self.slot_first_cores[slot], self.ranks_for_step(step)),
+            "I_MPI_HYDRA_BOOTSTRAP": "fork",
+        }
 
 
 @dataclass
@@ -195,6 +353,7 @@ class _RunningStep:
     request: StepRequest
     calcfold: Path
     argv: list[str]
+    slot: int
     process: subprocess.Popen
     log: IO[bytes]
     started_wall: float
@@ -244,7 +403,13 @@ class Launcher:
             command_template=self.settings.command_template,
             ranks=self.settings.ranks,
             ranks_per_step={str(k): v for k, v in sorted(self.settings.ranks_per_step.items())},
-            mem=self.settings.mem,
+            launch_mode=self.settings.launch_mode,
+            mem=self.settings.step_mem,
+            slot_cores=(
+                None
+                if self.settings.slot_first_cores is None
+                else [cpu_range(first, self.settings.ranks) for first in self.settings.slot_first_cores]
+            ),
         )
         if self._removed_environment:
             self.journal("environment_removed", names=self._removed_environment)
@@ -395,6 +560,7 @@ class Launcher:
         self.journal(
             "finished",
             id=request_id,
+            slot=running.slot,
             step=running.request.step,
             calcfold=str(running.calcfold),
             status=status,
@@ -452,16 +618,39 @@ class Launcher:
             if self._start(request, calcfold):
                 busy.add(calcfold)
 
+    def _free_slot(self) -> int:
+        used = {running.slot for running in self._running.values()}
+        return min(slot for slot in range(self.settings.max_parallel) if slot not in used)
+
     def _start(self, request: StepRequest, calcfold: Path) -> bool:
+        slot = self._free_slot()
         argv = self.settings.argv_for_step(request.step)
+        slot_environment = self.settings.environment_for_slot(request.step, slot)
+        environment = {**self._step_environment, **slot_environment}
         log_path = self.spool / protocol.LOGS_DIR / f"{request.request_id}.log"
-        log = open(log_path, "ab")
         started = time.time()
+        launch_record = {
+            "time": round(started, 3),
+            "id": request.request_id,
+            "step": request.step,
+            "slot": slot,
+            "launch_mode": self.settings.launch_mode,
+            "argv": argv,
+            "cwd": str(calcfold),
+            "environment_set": {**MPI_ENVIRONMENT_OVERRIDES, **slot_environment},
+            "environment_removed": self._removed_environment,
+            "output_log": str(log_path),
+        }
+        try:
+            _append_line(calcfold / LAUNCH_RECORD_FILE, json.dumps(launch_record, sort_keys=True))
+        except OSError as exc:
+            self.journal("launch_record_failed", id=request.request_id, error=str(exc))
+        log = open(log_path, "ab")
         try:
             process = subprocess.Popen(
                 argv,
                 cwd=calcfold,
-                env=self._step_environment,
+                env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -486,6 +675,7 @@ class Launcher:
             request=request,
             calcfold=calcfold,
             argv=argv,
+            slot=slot,
             process=process,
             log=log,
             started_wall=started,
@@ -494,8 +684,10 @@ class Launcher:
             "started_step",
             id=request.request_id,
             step=request.step,
+            slot=slot,
             calcfold=str(calcfold),
             argv=argv,
+            environment_set=launch_record["environment_set"],
             pid=process.pid,
         )
         return True
@@ -551,18 +743,21 @@ class Launcher:
         """Append one event to ``<spool>/launcher.jsonl`` (one JSON object per line)."""
 
         record = {"time": round(time.time(), 3), "event": event, **fields}
-        line = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
-        descriptor = os.open(
-            self.spool / protocol.JOURNAL_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644
-        )
-        try:
-            os.write(descriptor, line)
-        finally:
-            os.close(descriptor)
+        _append_line(self.spool / protocol.JOURNAL_FILE, json.dumps(record, sort_keys=True))
 
     def _remove_launcher_temporaries(self) -> None:
         for path in (self.spool / protocol.TMP_DIR).glob(".launcher-*"):
             path.unlink(missing_ok=True)
+
+
+def _append_line(path: Path, line: str) -> None:
+    """Append one line with a single ``write`` in append mode, so lines never interleave."""
+
+    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(descriptor, (line + "\n").encode("utf-8"))
+    finally:
+        os.close(descriptor)
 
 
 def _exit_status(returncode: int) -> int:
@@ -682,11 +877,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--search-dir", required=True, type=Path)
     parser.add_argument("--max-parallel", required=True, type=int)
     parser.add_argument("--ranks", required=True, type=int)
-    memory = parser.add_mutually_exclusive_group(required=True)
-    memory.add_argument("--mem", help="memory per step, for example 200G")
-    memory.add_argument("--no-mem", action="store_true", help="leave --mem out of the step command")
+    parser.add_argument("--launch-mode", choices=LAUNCH_MODES, default=SRUN_STEPS)
+    parser.add_argument("--mem", help="memory per srun step, for example 200G (default: from node memory)")
+    parser.add_argument("--node-memory-mb", type=int, help="default: SLURM_MEM_PER_NODE")
+    parser.add_argument(
+        "--memory-margin-fraction", type=float, default=DEFAULT_MEMORY_MARGIN_FRACTION
+    )
+    parser.add_argument("--sockets", type=int, default=DEFAULT_SOCKETS)
+    parser.add_argument("--cores-per-socket", type=int, default=DEFAULT_CORES_PER_SOCKET)
     parser.add_argument("--ranks-per-step", nargs="*", default=[], metavar="STEP=RANKS")
-    parser.add_argument("--command-template", default=DEFAULT_COMMAND_TEMPLATE)
+    parser.add_argument("--command-template", help="default: depends on --launch-mode")
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("--heartbeat-interval-seconds", type=float, default=10.0)
     parser.add_argument("--kill-grace-seconds", type=float, default=10.0)
@@ -697,8 +897,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         search_dir=args.search_dir.absolute(),
         max_parallel=args.max_parallel,
         ranks=args.ranks,
-        mem=None if args.no_mem else args.mem,
         environment=dict(os.environ),
+        launch_mode=args.launch_mode,
+        mem=args.mem,
+        node_memory_mb=args.node_memory_mb,
+        memory_margin_fraction=args.memory_margin_fraction,
+        sockets=args.sockets,
+        cores_per_socket=args.cores_per_socket,
         ranks_per_step=_parse_ranks_per_step(args.ranks_per_step),
         command_template=args.command_template,
         poll_seconds=args.poll_seconds,
@@ -713,6 +918,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "DEFAULT_COMMAND_TEMPLATE",
+    "DEFAULT_COMMAND_TEMPLATES",
+    "DEFAULT_CORES_PER_SOCKET",
+    "DEFAULT_MEMORY_MARGIN_FRACTION",
+    "DEFAULT_SOCKETS",
+    "LAUNCH_MODES",
+    "LAUNCH_RECORD_FILE",
+    "MPIRUN_COMMAND_TEMPLATE",
+    "MPIRUN_PINNED",
+    "SRUN_COMMAND_TEMPLATE",
+    "SRUN_STEPS",
+    "cpu_range",
+    "default_step_memory_mb",
+    "pinned_slot_first_cores",
     "EXIT_COMMAND_NOT_STARTED",
     "FORBIDDEN_STEP_ENVIRONMENT",
     "Launcher",
