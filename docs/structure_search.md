@@ -115,6 +115,22 @@ Intel MPI: set `I_MPI_DEBUG=4` and never set `I_MPI_PIN_DOMAIN` (in the lab's
 benchmarks it silently overrode the processor list and placed concurrent jobs
 on the same cores).
 
+Launch mode (a single config value; the Phase 0 pilot picks the default):
+
+- `srun_steps`: `srun --exact --mpi=pmi2 -n 48 --mem=<M> vasp_std`. SLURM
+  places the cores. The lab's benchmarks did **not** use this path.
+- `mpirun_pinned`: the host launcher knows each request's slot, so it can pin
+  each slot to a fixed core list balanced across the two sockets (for 4 × 48:
+  `0-47`, `96-143`, `48-95`, `144-191`) and run `mpirun -n 48 vasp_std` with
+  `I_MPI_PIN_PROCESSOR_LIST` set, `I_MPI_PIN_DOMAIN` unset and
+  `I_MPI_HYDRA_BOOTSTRAP=fork` (no SLURM step on a single node). This reuses
+  the `mpirun` path the benchmarks measured and does not depend on SLURM step
+  behaviour (inferred, not yet tested on POWER).
+
+Without explicit pinning, Intel MPI jobs of 96 ranks or fewer land on cores
+0..N-1, inside one socket; the partition's default memory is 1 GB per job, so
+an exclusive job always needs `--mem=0`.
+
 Rejected alternatives:
 
 - **One sbatch per relaxation** from a driver job: scales beyond one node, but
@@ -276,9 +292,11 @@ replaces these numbers with measurements.
 
 ## 9. Open questions
 
-- Do concurrent `srun --exact` job steps in one `--exclusive --mem=0`
-  allocation run at the same time on separate cores, and does each need an
-  explicit `--mem`? (`reference/uspex_pilot/`, #59)
+- Do concurrent `srun --exact` job steps run at the same time on separate
+  cores, and does each need an explicit `--mem`? (`reference/uspex_pilot/`,
+  #59; a small 8-core version avoids waiting for a whole free node.) Which
+  launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks
+  correctly (`I_MPI_DEBUG=4`)?
 - Do the `rocky8` modules in `backend/config.py` load on Rocky 9.7 nodes?
 - Does the bridge pilot work end to end, and does `whichCluster = −1` also run
   calculations in parallel?

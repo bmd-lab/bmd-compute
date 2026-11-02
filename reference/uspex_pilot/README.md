@@ -11,6 +11,10 @@ Checks that the launch bridge's mechanism works: whether several
 run at the same time on separate cores, whether each step needs an explicit
 `--mem`, and whether a job may call `sbatch`.
 
+If the partition is busy, `steptest_small.sbatch` (8 cores, 16 GB) answers
+the same SLURM questions without waiting for a whole free node; read its
+output the same way, with 2-task steps instead of 48.
+
 Run from group storage, not from home (home quotas are small):
 
 ```bash
