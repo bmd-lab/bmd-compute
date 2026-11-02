@@ -32,6 +32,7 @@ from backend.remote_runtime import (
     default_connection_profile,
 )
 from backend.remote_result_parser import (
+    GEOMETRY_CONVERGENCE_RECORD_KEY,
     GEOMETRY_RELAXATION_VASPRUN_KEY,
     PRECEDING_STATIC_OUTCAR_KEY,
     parse_result_paths,
@@ -56,6 +57,8 @@ RESULT_FILES = {
     # Optional: vasprun.xml of the final Geometry Optimisation stage when it is
     # not the reported stage, for the cell-convergence diagnostic.
     GEOMETRY_RELAXATION_VASPRUN_KEY: "vasprun.xml",
+    # Optional: the adaptive geometry-convergence record.
+    GEOMETRY_CONVERGENCE_RECORD_KEY: "geometry_convergence.json",
 }
 LOGGER = logging.getLogger(__name__)
 RESULTS_CACHE_MAX_ENTRIES = 4
@@ -283,6 +286,16 @@ def results_location_from_submission_spec(submission_spec: dict | None) -> dict:
             key: posixpath.join(phonon_dirs["analysis_dir"], filename)
             for key, filename in PHONON_RESULT_FILES.items()
         }
+    convergence_dir = geometry_convergence_directory(run_dir, workflow_spec)
+    if convergence_dir is not None:
+        from backend.calculations.geometry_convergence import ACCEPTED_DIRECTORY, RECORD_FILENAME
+
+        # The geometry the adaptive controller accepted (copies of the accepted
+        # relaxation's files) is the reported relaxation result.
+        stages = list(workflow_spec.stages)
+        if phonon_dirs is not None or stages[-1].stage_type.value == "relax":
+            output_dir = posixpath.join(convergence_dir, ACCEPTED_DIRECTORY)
+        optional_paths[GEOMETRY_CONVERGENCE_RECORD_KEY] = posixpath.join(convergence_dir, RECORD_FILENAME)
     static_outcar = preceding_static_outcar_path(run_dir, workflow_spec)
     if static_outcar is not None:
         optional_paths[PRECEDING_STATIC_OUTCAR_KEY] = static_outcar
@@ -324,8 +337,22 @@ def preceding_static_outcar_path(run_dir: str, workflow_spec) -> str | None:
     return posixpath.join(run_dir.rstrip("/"), directories[-2], "OUTCAR")
 
 
+def geometry_convergence_directory(run_dir: str, workflow_spec) -> str | None:
+    """The adaptive geometry-convergence directory of a run, if it has one."""
+
+    from backend.calculations.geometry_convergence import STAGE_DIRECTORY, stage_convergence_record
+
+    for stage in getattr(workflow_spec, "stages", None) or ():
+        if getattr(stage.stage_type, "value", None) == "relax" and stage_convergence_record(stage) is not None:
+            return posixpath.join(run_dir.rstrip("/"), STAGE_DIRECTORY)
+    return None
+
+
 def final_relaxation_vasprun_path(run_dir: str, workflow_spec, output_dir: str) -> str | None:
-    """vasprun.xml of the last Geometry Optimisation stage, if not the reported stage."""
+    """vasprun.xml of the last Geometry Optimisation stage, if not the reported stage.
+
+    With the adaptive geometry convergence, that is the accepted relaxation.
+    """
 
     stages = list(getattr(workflow_spec, "stages", None) or ())
     relax_indices = [
@@ -345,6 +372,11 @@ def final_relaxation_vasprun_path(run_dir: str, workflow_spec, output_dir: str) 
     if not directories:
         return None
     path = posixpath.join(run_dir.rstrip("/"), directories[relax_indices[-1]], "vasprun.xml")
+    convergence_dir = geometry_convergence_directory(run_dir, workflow_spec)
+    if convergence_dir is not None:
+        from backend.calculations.geometry_convergence import ACCEPTED_DIRECTORY
+
+        path = posixpath.join(convergence_dir, ACCEPTED_DIRECTORY, "vasprun.xml")
     if path == posixpath.join(str(output_dir).rstrip("/"), "vasprun.xml"):
         return None
     return path
@@ -850,6 +882,8 @@ def parse_vasp_result_files(files: dict, monitoring_result: dict) -> dict:
             local_paths[PRECEDING_STATIC_OUTCAR_KEY] = tmp / "preceding_static_OUTCAR"
         if GEOMETRY_RELAXATION_VASPRUN_KEY in files:
             local_paths[GEOMETRY_RELAXATION_VASPRUN_KEY] = tmp / "final_relaxation_vasprun.xml"
+        if GEOMETRY_CONVERGENCE_RECORD_KEY in files:
+            local_paths[GEOMETRY_CONVERGENCE_RECORD_KEY] = tmp / "geometry_convergence.json"
 
         for key, local_path in local_paths.items():
             local_path.write_text(files[key]["text"], encoding="utf-8")

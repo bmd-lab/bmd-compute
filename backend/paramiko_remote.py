@@ -866,6 +866,27 @@ class ParamikoRemoteRunner(RemoteRunner):
         data = self.read_bytes(remote_path, max_bytes=max_bytes)
         return data.decode("utf-8", "ignore")
 
+    def read_contained_file(self, root: str, parts, *, max_bytes: int, python: str | None = None) -> bytes:
+        """One regular file under ``root``: no symbolic link, at most ``max_bytes`` (narrow helper).
+
+        The checks and the read happen in one remote process on one file
+        descriptor (``backend.secure_remote_read``); nothing is followed or
+        truncated. Raises ``ContainedReadError``.
+        """
+
+        from backend.config import DEFAULT_REMOTE_PYTHON
+        from backend.secure_remote_read import ContainedReadError, parse_remote_output, remote_source
+
+        result = self.run_python(
+            remote_source(root, parts, max_bytes),
+            python=python or DEFAULT_REMOTE_PYTHON,
+            check=False,
+            timeout_s=60,
+        )
+        if not result.ok:
+            raise ContainedReadError("remote_failure")
+        return parse_remote_output(result.stdout, max_bytes)
+
     def put_bytes(self, remote_path: str, data: bytes, *, mode: int = 0o640) -> RemoteTransferResult:
         self.ensure_available()
         parent = posixpath.dirname(remote_path.rstrip("/"))

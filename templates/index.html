@@ -1065,6 +1065,33 @@ button.hardware-custom-toggle[aria-expanded="true"] {
 </head>
 
 <body>
+{% macro geometry_convergence_panel(convergence) -%}
+{% set labels = {"accepted": "Accepted", "scientific_non_acceptance": "Not accepted (scientific criteria)", "missing_or_invalid_evidence": "Missing or invalid evidence", "execution_failure": "Execution failure", "resource_exhaustion": "Resource budget exhausted", "interrupted_or_abandoned": "Interrupted or abandoned (no failure observed)"} %}
+<details class="geometry-convergence" data-geometry-convergence="{{ convergence.category or 'unavailable' }}" open>
+    <summary>Adaptive Geometry Convergence: {{ labels.get(convergence.category, "Unavailable") if convergence.status != "unavailable" else "Record unavailable" }}</summary>
+    {% if convergence.status == "unavailable" %}
+    <p>{{ convergence.reason }}</p>
+    {% else %}
+    <p data-geometry-convergence-outcome="{{ convergence.outcome }}">Outcome: {{ convergence.outcome }}{% if convergence.accepted_encut %}; accepted relaxation: {{ convergence.accepted_stage_label }} at ENCUT {{ convergence.accepted_encut }} eV{% endif %}{% if convergence.pending_operation %}; stopped during {{ convergence.pending_operation }}{% endif %}{% if convergence.failed_operation %}; failed operation: {{ convergence.failed_operation }}{% endif %}</p>
+    {% if convergence.reasons %}<p>Reason: {{ convergence.reasons | join("; ") }}</p>{% endif %}
+    <table>
+        <tr><th>Attempt</th><th>Relaxation ENCUT (eV)</th><th>Probe ENCUT (eV)</th><th>Max force (eV/&Aring;)</th><th>P (kbar)</th><th>Max |&sigma;| (kbar)</th><th>Magnetic state</th><th>Decision</th></tr>
+        {% for attempt in convergence.attempts %}
+        <tr data-geometry-convergence-attempt="{{ attempt.role }}">
+            <td>{{ attempt.relaxation_stage }}</td>
+            <td>{{ attempt.relaxation_encut }}</td>
+            <td>{{ attempt.probe_encut }}</td>
+            <td>{{ attempt.probe_max_force_ev_a }}</td>
+            <td>{{ attempt.probe_pressure_kbar }}</td>
+            <td>{{ attempt.probe_max_stress_kbar }}</td>
+            <td>{% if attempt.magnetic_state_verified is none %}not applicable{% elif attempt.magnetic_state_verified %}preserved{% else %}not verified{% endif %}</td>
+            <td>{{ attempt.decision }}{% if attempt.reasons %}: {{ attempt.reasons | join("; ") }}{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+</details>
+{% endmacro %}
 
 
 <div class="container">
@@ -2407,6 +2434,9 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                         </tr>
                     </table>
                 </details>
+                {% if monitoring_result.geometry_convergence %}
+                {{ geometry_convergence_panel(monitoring_result.geometry_convergence) }}
+                {% endif %}
                 {% elif monitoring_result.status == "failed" %}
                 <div class="prep-panel failed">
                     <div class="prep-title">Monitoring Failed</div>
@@ -2549,10 +2579,13 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                         </div>
                     </div>
                     {% endif %}
+                    {% if results_summary.geometry_convergence %}
+                    {{ geometry_convergence_panel(results_summary.geometry_convergence) }}
+                    {% endif %}
                     {% set relaxation = results_summary.geometry_relaxation %}
                     {% if relaxation and relaxation.status == "available" %}
                     {% if relaxation.residual_stress %}
-                    <div class="callout" title="Independent diagnostic of the final Geometry Optimisation stage (stage {{ relaxation.stage_index }}); VASP's ionic convergence uses the force criterion only. Reference: |P| &le; {{ relaxation.residual_stress.reference_kbar.pressure }} kbar and every component &le; {{ relaxation.residual_stress.reference_kbar.max_component }} kbar. Never a failure criterion.">
+                    <div class="callout" title="Independent diagnostic of {% if relaxation.stage_label %}the accepted relaxation: {{ relaxation.stage_label }}{% else %}the final Geometry Optimisation stage (stage {{ relaxation.stage_index }}){% endif %}; VASP's ionic convergence uses the force criterion only. Reference: |P| &le; {{ relaxation.residual_stress.reference_kbar.pressure }} kbar and every component &le; {{ relaxation.residual_stress.reference_kbar.max_component }} kbar. Never a failure criterion.">
                         <div class="callout-title">Residual Stress (diagnostic)</div>
                         <div class="callout-value">
                             P = {{ relaxation.residual_stress.hydrostatic_pressure_kbar }} kbar; max |&sigma;| = {{ relaxation.residual_stress.max_abs_component_kbar }} kbar
@@ -2561,7 +2594,7 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                     </div>
                     {% endif %}
                     {% if relaxation.cell_change %}
-                    <div class="callout" title="Volume change during the final Geometry Optimisation stage (stage {{ relaxation.stage_index }}), {{ relaxation.ionic_steps }} ionic step(s).">
+                    <div class="callout" title="Volume change during {% if relaxation.stage_label %}the accepted relaxation: {{ relaxation.stage_label }}{% else %}the final Geometry Optimisation stage (stage {{ relaxation.stage_index }}){% endif %}, {{ relaxation.ionic_steps }} ionic step(s).">
                         <div class="callout-title">Final-Pass Volume Change</div>
                         <div class="callout-value">
                             {{ relaxation.cell_change.change_percent.volume }} % in {{ relaxation.ionic_steps }} ionic step(s){% if relaxation.cell_change.volume_change_review %} (review){% endif %}

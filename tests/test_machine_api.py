@@ -966,9 +966,10 @@ def test_phonons_desired_output_plan_includes_the_phonopy_plan(client, tokens):
     phonon_plan = stages[2]["phonon_plan"]
     assert phonon_plan["supercell_atom_count"] == stages[2]["poscar"]["num_sites"] == 64
     assert phonon_plan["displacement_count"] == 1
-    # The forces use the final relaxation's species-dependent cutoff
-    # (550 eV with the SYNTHETIC test metadata).
-    assert stages[2]["incar"]["settings"]["ENCUT"] == stages[1]["incar"]["settings"]["ENCUT"] == 550
+    # The forces use the adaptive geometry convergence's probe cutoff
+    # (max(700, 550 + 300) eV with the SYNTHETIC test metadata).
+    assert stages[1]["incar"]["settings"]["ENCUT"] == 550
+    assert stages[2]["incar"]["settings"]["ENCUT"] == 850
     assert "NCORE" not in stages[2]["incar"]["settings"]
     force = stages[2]["incar"]["settings"]
     assert (force["ISMEAR"], force["SIGMA"], force["IBRION"], force["NSW"]) == (0, 0.2, -1, 0)

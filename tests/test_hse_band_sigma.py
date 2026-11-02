@@ -249,6 +249,8 @@ def test_hse06_dos_and_other_stages_are_unchanged():
         SI, planned(SI, desired_output_workflow_spec("electronic_dos")), resources={"ntasks": 24}
     )
     for job in flow.jobs:
+        if job.name == "geometry_convergence":
+            continue  # the adaptive geometry-convergence controller, not a VASP stage
         maker = job.function.__self__
         assert not type(maker.input_set_generator).__name__.startswith("HseBandSigma")
         assert "additional_vasp_files" not in (getattr(maker, "copy_vasp_kwargs", None) or {})
@@ -366,7 +368,7 @@ def test_real_atomate2_maker_path_copies_oszicar_and_writes_consistent_inputs(c2
     flow = build_atomate2_flow_for_workflow_spec(
         SI, planned(SI, desired_output_workflow_spec("electronic_band_structure")), resources={"ntasks": 24}
     )
-    maker = flow.jobs[3].function.__self__
+    maker = flow.jobs[4].function.__self__  # after the geometry-convergence controller
     static_dir = tmp_path / "stage_03"
     static_dir.mkdir()
     for name, text in {

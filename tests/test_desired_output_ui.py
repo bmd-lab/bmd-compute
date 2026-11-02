@@ -373,8 +373,9 @@ def test_relaxed_structure_workflow_construction_chains_second_relax_to_first():
     )
 
     assert flow.name == "Si-relaxed_double_relax"
-    assert flow.metadata["bmd_stage_directories"] == ("relax_01", "relax_02")
-    assert [job.name for job in flow.jobs] == ["relax_01", "relax_02"]
+    # The adaptive geometry-convergence controller follows the final pass.
+    assert flow.metadata["bmd_stage_directories"] == ("relax_01", "relax_02", "geometry_convergence")
+    assert [job.name for job in flow.jobs] == ["relax_01", "relax_02", "geometry_convergence"]
     assert flow.jobs[0].function_args == (structure,)
     second_relax_structure = flow.jobs[1].function_args[0]
     assert repr(second_relax_structure).endswith(", .structure)")

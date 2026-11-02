@@ -45,6 +45,15 @@ stage option (see :func:`protocol_option`).
 
 Workflows recorded before this protocol carry no cutoff record and are built
 exactly as before.
+
+The final pass of the canonical relaxation also carries the frozen policy of
+BMD Adaptive Geometry Relaxation v1 (``bmd_compute.geometry_convergence/1``,
+``backend.calculations.geometry_convergence``): a higher-cutoff probe of the
+relaxed geometry, at most one refinement relaxation, and an explicit
+unresolved outcome. Its phonon force stage carries the same record and uses
+the probe cutoff; Static Energy stages use at least the refinement cutoff.
+Plans recorded with the protocol but without that record are built without
+the controller, exactly as recorded.
 """
 
 from __future__ import annotations
@@ -96,6 +105,7 @@ from backend.calculations.custodian_policy import (  # noqa: E402
 )
 
 _CUTOFF_STAGE_TYPES = frozenset({StageType.RELAX, StageType.PHONON_FORCES})
+_CONVERGENCE_OPTION_KEY = "geometry_convergence"  # backend.calculations.geometry_convergence.OPTION_KEY
 
 
 class PlaneWaveCutoffError(ValueError):
@@ -181,6 +191,12 @@ def relaxation_incar_settings(workflow: WorkflowSpec, index: int) -> dict[str, A
     settings = dict(COMMON_RELAX_SETTINGS)
     settings.update(PASS_CONVERGENCE[relaxation_pass_role(workflow, index)])
     settings["ENCUT"] = int(record["ENCUT"])
+    if _CONVERGENCE_OPTION_KEY in dict(stage.options or {}) and Modifier.SPIN_POLARIZED in stage.modifiers:
+        # Site-resolved moments for the adaptive magnetic-state check (output
+        # only; the probe and refinement inherit it).
+        from backend.calculations.geometry_convergence import MAGNETIC_EVIDENCE_INCAR
+
+        settings.update(MAGNETIC_EVIDENCE_INCAR)
     return settings
 
 
@@ -205,8 +221,14 @@ def downstream_cutoff_floor(workflow: WorkflowSpec, index: int) -> int | None:
     stages = workflow.stages
     stage = stages[index]
     if stage.stage_type is StageType.STATIC:
+        from backend.calculations.geometry_convergence import stage_convergence_record
+
         for previous in reversed(stages[:index]):
             if previous.stage_type is StageType.RELAX:
+                convergence = stage_convergence_record(previous)
+                if convergence is not None:
+                    # The highest relaxation cutoff the adaptive controller may accept.
+                    return int(convergence["refinement_encut"])
                 record = stage_cutoff_record(previous)
                 return int(record["ENCUT"]) if record is not None else None
         return None
@@ -226,7 +248,23 @@ def relaxation_stage_payload(workflow: WorkflowSpec, index: int) -> dict[str, An
     if stage.stage_type is not StageType.RELAX or stage_cutoff_record(stage) is None:
         return None
     marked = stage_protocol_pass(stage)
+    from backend.calculations import geometry_convergence
+
+    convergence = geometry_convergence.stage_convergence_record(stage)
     return {
+        "geometry_convergence": (
+            {
+                "record": convergence,
+                "rule": geometry_convergence.policy_payload(),
+                "possible_stages": {
+                    "initial_probe": {"stage_type": "static", "incar_overrides": geometry_convergence.probe_incar_overrides(convergence)},
+                    "refinement": {"stage_type": "relax", "incar_overrides": geometry_convergence.refinement_incar_overrides(convergence)},
+                    "final_probe": {"stage_type": "static", "incar_overrides": geometry_convergence.probe_incar_overrides(convergence)},
+                },
+            }
+            if convergence is not None
+            else None
+        ),
         "protocol": {"id": PROTOCOL_ID, "version": PROTOCOL_VERSION} if marked is not None else None,
         "pass": marked,
         "convergence_role": relaxation_pass_role(workflow, index),
@@ -266,7 +304,7 @@ def without_relaxation_options(workflow: WorkflowSpec) -> WorkflowSpec:
                 options={
                     key: value
                     for key, value in dict(stage.options or {}).items()
-                    if key not in (PROTOCOL_OPTION_KEY, CUTOFF_OPTION_KEY)
+                    if key not in (PROTOCOL_OPTION_KEY, CUTOFF_OPTION_KEY, _CONVERGENCE_OPTION_KEY)
                 },
             )
             for stage in workflow.stages
@@ -423,9 +461,12 @@ def freeze_plane_wave_cutoffs(
     tools given a recorded workflow); planning always resolves them afresh.
     """
 
+    from backend.calculations.geometry_convergence import convergence_record
+
     stages = []
     changed = False
-    for stage in workflow.stages:
+    newly_resolved: set[int] = set()
+    for index, stage in enumerate(workflow.stages):
         if stage.stage_type not in _CUTOFF_STAGE_TYPES or (
             only_missing and stage_cutoff_record(stage) is not None
         ):
@@ -434,10 +475,29 @@ def freeze_plane_wave_cutoffs(
         symbols = _stage_potcar_symbols(structure, stage, potcar_functional=potcar_functional)
         options = dict(stage.options or {})
         options[CUTOFF_OPTION_KEY] = resolve_cutoff_record(symbols, functional=potcar_functional)
+        options.pop(_CONVERGENCE_OPTION_KEY, None)
         stages.append(
             StageSpec(stage.stage_type, stage.theory, stage.modifiers, label=stage.label, options=options)
         )
+        newly_resolved.add(index)
         changed = True
+    # The adaptive geometry-convergence policy of the final protocol pass (and
+    # of the phonon force stage it feeds) follows from its cutoff. It is
+    # frozen together with a newly resolved cutoff; a recorded workflow keeps
+    # exactly what it recorded.
+    for index, stage in enumerate(stages):
+        if index not in newly_resolved:
+            continue
+        source = None
+        if stage.stage_type is StageType.RELAX and stage_protocol_pass(stage) == 2:
+            source = stage
+        elif stage.stage_type is StageType.PHONON_FORCES and index > 0 and stage_protocol_pass(stages[index - 1]) == 2:
+            source = stages[index - 1]
+        if source is None or stage_cutoff_record(source) is None:
+            continue
+        options = dict(stage.options or {})
+        options[_CONVERGENCE_OPTION_KEY] = convergence_record(int(stage_cutoff_record(source)["ENCUT"]))
+        stages[index] = StageSpec(stage.stage_type, stage.theory, stage.modifiers, label=stage.label, options=options)
     if not changed:
         return workflow
     return WorkflowSpec(stages=stages, label=workflow.label, recipe=workflow.recipe)
@@ -500,6 +560,20 @@ def validate_stage_options(stage: StageSpec) -> None:
             )
     if CUTOFF_OPTION_KEY in options:
         _validate_cutoff_record(stage, options[CUTOFF_OPTION_KEY])
+    if _CONVERGENCE_OPTION_KEY in options:
+        from backend.calculations.geometry_convergence import validate_record
+
+        problems = validate_record(
+            stage,
+            options[_CONVERGENCE_OPTION_KEY],
+            cutoff_record=options.get(CUTOFF_OPTION_KEY) if isinstance(options.get(CUTOFF_OPTION_KEY), Mapping) else None,
+        )
+        if problems:
+            raise _validation_error(
+                "The geometry-convergence record of this stage is invalid (" + "; ".join(problems) + ").",
+                suggestion="Rebuild the calculation, then try again.",
+                code="geometry_convergence_record_invalid",
+            )
 
 
 def _validate_cutoff_record(stage: StageSpec, record: Any) -> None:
@@ -543,6 +617,21 @@ def validate_workflow(workflow: WorkflowSpec) -> None:
     """Protocol pairing and cutoff consistency across stages."""
 
     stages = workflow.stages
+    from backend.calculations.geometry_convergence import MAX_ADAPTIVE_RELAXATIONS
+
+    pairs = [index for index, stage in enumerate(stages) if stage_protocol_pass(stage) == 1]
+    if len(pairs) > MAX_ADAPTIVE_RELAXATIONS:
+        raise _validation_error(
+            f"This workflow contains {len(pairs)} BMD Geometry Relaxations (stages "
+            + ", ".join(f"{index + 1}-{index + 2}" for index in pairs)
+            + "). BMD Compute v1 supports one BMD Geometry Relaxation (with its adaptive "
+            "geometry convergence) per workflow.",
+            suggestion=(
+                "Keep one BMD Geometry Relaxation pair; use ordinary Geometry Optimisation "
+                "stages (Add Stage) for any further relaxation."
+            ),
+            code="geometry_relaxation_multiple_pairs",
+        )
     for index, stage in enumerate(stages):
         marked = stage_protocol_pass(stage)
         if marked == 1:
@@ -563,6 +652,25 @@ def validate_workflow(workflow: WorkflowSpec) -> None:
                     suggestion=_PROTOCOL_SUGGESTION,
                     code="geometry_relaxation_pairing_invalid",
                 )
+        convergence = dict(stage.options or {}).get(_CONVERGENCE_OPTION_KEY)
+        if convergence is not None:
+            previous = stages[index - 1] if index > 0 else None
+            if stage.stage_type is StageType.RELAX:
+                placed = marked == 2
+            else:
+                placed = (
+                    previous is not None
+                    and stage_protocol_pass(previous) == 2
+                    and dict(previous.options or {}).get(_CONVERGENCE_OPTION_KEY) == convergence
+                )
+            if not placed:
+                raise _validation_error(
+                    f"Stage {index + 1} carries a geometry-convergence record but is not the final "
+                    "pass of the BMD Geometry Relaxation (or the phonon force stage it feeds, with "
+                    "the same record).",
+                    suggestion="Rebuild the calculation, then try again.",
+                    code="geometry_convergence_placement_invalid",
+                )
         if stage.stage_type is StageType.PHONON_FORCES and index > 0:
             relax_record = stage_cutoff_record(stages[index - 1])
             force_record = stage_cutoff_record(stage)
@@ -577,7 +685,13 @@ def validate_workflow(workflow: WorkflowSpec) -> None:
 
 def _same_relaxation(first: StageSpec, second: StageSpec) -> bool:
     def comparable(stage: StageSpec):
-        options = {key: value for key, value in dict(stage.options or {}).items() if key != PROTOCOL_OPTION_KEY}
+        from backend.calculations.geometry_convergence import OPTION_KEY as CONVERGENCE_OPTION_KEY
+
+        options = {
+            key: value
+            for key, value in dict(stage.options or {}).items()
+            if key not in (PROTOCOL_OPTION_KEY, CONVERGENCE_OPTION_KEY)
+        }
         return (stage.theory, frozenset(stage.modifiers), json.dumps(options, sort_keys=True, default=str))
 
     return comparable(first) == comparable(second)

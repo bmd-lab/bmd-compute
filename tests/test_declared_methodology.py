@@ -212,7 +212,9 @@ def test_pbe_dos_and_band_structure_are_non_self_consistent():
 def test_hse06_stages():
     _, relax, static, dos = stages(SI, desired_output_workflow_spec("electronic_dos"))
     assert "LHFCALC" not in relax["input_set"].incar
-    assert_incar(static["input_set"].incar, {**COMMON, **HSE06_STATIC})
+    # The static's ENCUT floor is the highest relaxation cutoff the adaptive
+    # geometry convergence may accept (550 + 150 eV with the SYNTHETIC metadata).
+    assert_incar(static["input_set"].incar, {**COMMON, **HSE06_STATIC, "ENCUT": 700})
     assert_incar(dos["input_set"].incar, {**COMMON, **HSE06_DOS})
     assert "ICHARG" not in dos["input_set"].incar
     _, _, _, band = stages(SI, desired_output_workflow_spec("electronic_band_structure"))

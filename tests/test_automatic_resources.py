@@ -114,17 +114,17 @@ def test_descriptors_reproduce_recorded_outcar_quantities(plans, monkeypatch, tm
     # Telemetry 2026-10-16: Si2 7x7x7 Gamma mesh -> 20 irreducible k-points,
     # 32^3 FFT at ENCUT 620; the Si64 phonon supercell -> 6 k-points,
     # 168 bands, 96^3 FFT at ENCUT 700. The phonon force cutoff is now the
-    # species-dependent relaxation cutoff, so the recorded 700 eV run is
-    # reproduced with SYNTHETIC metadata that resolves to 700 eV.
+    # adaptive geometry convergence's probe cutoff, max(700, E0 + 300), so the
+    # recorded 700 eV run is reproduced with SYNTHETIC metadata giving E0 = 400 eV.
     from conftest import synthetic_enmax_metadata, use_enmax_metadata
 
     si2 = _estimate(plans["si2_static"])["stages"][0]["descriptors"]
     assert si2["kpoints"] == 20
     assert si2["fft_grid"] == [32, 32, 32]
     assert si2["electrons"] == 8
-    use_enmax_metadata(monkeypatch, tmp_path / "enmax.json", synthetic_enmax_metadata({"Si": 538.0}))
+    use_enmax_metadata(monkeypatch, tmp_path / "enmax.json", synthetic_enmax_metadata({"Si": 300.0}))
     phonon_plan = _plan(desired_output="phonons")
-    assert phonon_plan.submission_spec["flow_spec"]["workflow_spec"]["stages"][2]["options"]["plane_wave_cutoff"]["ENCUT"] == 700
+    assert phonon_plan.submission_spec["flow_spec"]["workflow_spec"]["stages"][2]["options"]["geometry_convergence"]["probe_encut"] == 700
     phonon = _estimate(phonon_plan)["stages"][2]["descriptors"]
     assert (phonon["kpoints"], phonon["bands"], phonon["fft_grid"]) == (6, 168, [96, 96, 96])
     assert phonon["calculations"] == 1
@@ -219,7 +219,12 @@ def test_hybrid_stages_use_identified_fallbacks_not_the_pbe_model(plans):
         auto.STAGE_CALIBRATED,
         auto.STAGE_HYBRID_FALLBACK,
         auto.STAGE_HYBRID_FALLBACK,
+        # The worst-case adaptive geometry convergence (probe, refinement, probe).
+        auto.STAGE_CALIBRATED,
+        auto.STAGE_CALIBRATED,
+        auto.STAGE_CALIBRATED,
     ]
+    assert [stage.get("geometry_convergence_role") for stage in stages[4:]] == ["initial_probe", "refinement", "final_probe"]
     assert stages[2]["seconds"] == 36 * 3600
     assert "HSE06" in stages[2]["reason"]
     assert _estimate(plans["si2_hse_dos"])["basis"] == auto.BASIS_FALLBACK
@@ -352,12 +357,13 @@ def test_browser_rendering_shows_automatic_choices_and_submitted_resources():
     # estimator basis stays in the plan record, not on the page.
     assert re.search(r'data-hardware-value="cpus">24<', html)
     assert re.search(r'data-hardware-value="memory_gb">128 GB<', html)
-    # Two relaxation passes (BMD Standard Geometry Relaxation) add one hour.
-    assert re.search(r'data-hardware-value="walltime" title="74:00:00">3 days 2 hours<', html)
+    # Two relaxation passes (BMD Standard Geometry Relaxation) add one hour,
+    # the worst-case adaptive geometry convergence one more.
+    assert re.search(r'data-hardware-value="walltime" title="75:00:00">3 days 3 hours<', html)
     assert response.context["submission_spec"]["flow_spec"]["resource_selection"]["walltime_estimate"]["basis"] == "conservative_fallback"
     assert response.context["submission_spec"]["cluster"]["qos"] == "owner100d"
     # Prepare and Submit carry the requested (Automatic) values and the planned resources.
-    assert html.count('name="planned_resources" value="cpus=24:automatic;memory_gb=128:automatic;walltime=74:00:00:automatic;') == 2
+    assert html.count('name="planned_resources" value="cpus=24:automatic;memory_gb=128:automatic;walltime=75:00:00:automatic;') == 2
 
 
 # ------------------------------------------------------------ consistency

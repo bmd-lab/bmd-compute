@@ -210,7 +210,8 @@ def runtime_jobs(submission_spec: dict):
         run_name=submission_spec["run_name"],
         resources=submission_spec["resources"],
     )
-    return runtime_structure, list(flow.jobs)
+    # VASP stages only: the adaptive geometry-convergence controller is not one.
+    return runtime_structure, [job for job in flow.jobs if job.name != "geometry_convergence"]
 
 
 def job_maker(job):

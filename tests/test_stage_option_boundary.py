@@ -46,9 +46,12 @@ def _custom(options, modifiers=frozenset()):
 
 
 def test_accepted_option_keys_are_exactly_the_supported_treatments():
-    # BMD-generated: frozen +U and the plane-wave cutoff record. A client may
-    # choose dispersion and the BMD Standard Geometry Relaxation passes.
-    assert SUPPORTED_STAGE_OPTION_KEYS == {"dispersion", "dft_u", "geometry_relaxation", "plane_wave_cutoff"}
+    # BMD-generated: frozen +U, the plane-wave cutoff record and the adaptive
+    # geometry-convergence record. A client may choose dispersion and the BMD
+    # Standard Geometry Relaxation passes.
+    assert SUPPORTED_STAGE_OPTION_KEYS == {
+        "dispersion", "dft_u", "geometry_relaxation", "plane_wave_cutoff", "geometry_convergence",
+    }
     assert USER_STAGE_OPTION_KEYS == {"dispersion", "geometry_relaxation"}
 
 

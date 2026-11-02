@@ -269,19 +269,21 @@ def _run_locally_with_stage_directories(
             errored.add(job.uuid)
             return None, False
 
-        if raise_immediately:
+        try:
             response = job.run(store=store)
-        else:
-            try:
-                response = job.run(store=store)
-            except Exception:
-                import traceback
+        except Exception as exc:
+            # Where the failure is observed: a controller operation of the
+            # adaptive geometry convergence records it; then unchanged.
+            _observe_job_failure(job, exc)
+            if raise_immediately:
+                raise
+            import traceback
 
-                logger.info(
-                    f"{job.name} failed with exception:\n{traceback.format_exc()}"
-                )
-                errored.add(job.uuid)
-                return None, False
+            logger.info(
+                f"{job.name} failed with exception:\n{traceback.format_exc()}"
+            )
+            errored.add(job.uuid)
+            return None, False
 
         responses[job.uuid][job.index] = response
 
@@ -377,6 +379,27 @@ def _run_locally_with_stage_directories(
         raise RuntimeError("Flow did not finish running successfully")
 
     return dict(responses)
+
+
+def _observe_job_failure(job, exc: Exception) -> None:
+    """Record an observed failure of an adaptive geometry-convergence operation.
+
+    Only jobs the controller tagged (``OPERATION_METADATA_KEY`` in their
+    metadata) are affected; recording problems are logged and never replace
+    the original failure.
+    """
+
+    # geometry_convergence_jobs.OPERATION_METADATA_KEY (nothing is imported
+    # for any other job).
+    observer = (getattr(job, "metadata", None) or {}).get("bmd_geometry_convergence_operation")
+    if not isinstance(observer, dict):
+        return
+    try:
+        from backend.calculations.geometry_convergence_jobs import record_observed_failure
+
+        record_observed_failure(observer, exc)
+    except Exception:  # noqa: BLE001 - provenance never masks the failure
+        logging.getLogger(__name__).exception("Could not record the failure of %s.", getattr(job, "name", "job"))
 
 
 def _flow_stage_artifacts(flow) -> tuple[dict, ...]:

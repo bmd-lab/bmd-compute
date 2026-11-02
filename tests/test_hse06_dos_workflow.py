@@ -388,6 +388,16 @@ def test_electronic_dos_desired_output_uses_existing_hse_static_and_hse_dos_path
     from conftest import planned
 
     workflow = planned(_si_structure(), desired_output_workflow_spec("electronic_dos"))
+    # The fake Jobflow below cannot host the adaptive geometry-convergence
+    # controller (a real Jobflow job; tests/test_geometry_convergence.py), so
+    # the stage paths are checked on the plan without its record.
+    workflow = WorkflowSpec(
+        [
+            StageSpec(stage.stage_type, stage.theory, stage.modifiers, options={k: v for k, v in stage.options.items() if k != "geometry_convergence"})
+            for stage in workflow.stages
+        ],
+        recipe=workflow.recipe,
+    )
 
     with fake_atomate2_and_jobflow():
         flow = build_atomate2_flow_for_workflow_spec(

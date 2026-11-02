@@ -18,7 +18,8 @@ under "Results" below (Milestone B).
    LargeSigmaHandler. A Custom relax directly before a phonon stage uses the
    pass-2 convergence.
 2. **Stage 3 — Phonon Force Calculations** (`stage_03`): atomate2 0.1.5
-   `atomate2.vasp.flows.phonons.PhononMaker` on the final relaxation's output structure,
+   `atomate2.vasp.flows.phonons.PhononMaker` on the geometry accepted by the
+   adaptive geometry convergence (`geometry_convergence`, between stages 2 and 3),
    with `bulk_relax_maker`, `static_energy_maker` and `born_maker` set to
    `None`:
    - `get_supercell_size` — automatic supercell, minimum image length 10 Å,
@@ -34,9 +35,11 @@ under "Results" below (Milestone B).
      DOS. No LO–TO correction.
 
 Force calculations use atomate2's `PhononDisplacementMaker` input set
-(EDIFF 1e-7, reciprocal density 100, LREAL False, ALGO Normal) at the plane-wave
-cutoff of the relaxation that produced the structure (phonon workflow v2; v1
-used atomate2's ENCUT 700), with BMD amendments: `GGA`, `ENAUG`, `LMIXTAU` removed (PBE, as in every BMD stage;
+(EDIFF 1e-7, reciprocal density 100, LREAL False, ALGO Normal) at the probe
+cutoff of the adaptive geometry convergence, `max(700 eV, E0 + 300 eV)`, at
+which the accepted geometry was verified (`methodology.md`; plans recorded
+without that record use the relaxation's cutoff, phonon workflow v2; v1 used
+atomate2's ENCUT 700), and only from an accepted geometry, with BMD amendments: `GGA`, `ENAUG`, `LMIXTAU` removed (PBE, as in every BMD stage;
 atomate2's base set is PBEsol), `ISPIN = 1` with `auto_ispin` off, single-point
 Gaussian-smeared forces (`ISMEAR = 0`, `SIGMA = 0.2`, `IBRION = -1`, `NSW = 0`,
 `ISIF` unset — overriding atomate2 0.1.5's `IBRION = 2`/`ISIF = 3` and the

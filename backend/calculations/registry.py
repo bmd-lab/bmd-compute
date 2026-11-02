@@ -23,6 +23,7 @@ from backend.calculations.geometry_relaxation import (
     PROTOCOL_OPTION_KEY as GEOMETRY_RELAXATION_OPTION_KEY,
     protocol_relaxation_stages,
 )
+from backend.calculations.geometry_convergence import OPTION_KEY as GEOMETRY_CONVERGENCE_OPTION_KEY
 from backend.calculations.vasp_stage_definitions import (
     stage_inherits_previous_band_count,
     stage_reads_previous_charge_density,
@@ -952,13 +953,16 @@ def workflow_stage_directories(workflow: WorkflowSpec) -> tuple[str, ...]:
 # rejected, so a workflow spec cannot inject INCAR or KPOINTS values.
 # ``geometry_relaxation`` marks the passes of the BMD Standard Geometry
 # Relaxation and ``plane_wave_cutoff`` holds the species-dependent cutoff record
-# frozen at planning (``backend.calculations.geometry_relaxation``).
+# frozen at planning (``backend.calculations.geometry_relaxation``);
+# ``geometry_convergence`` holds the frozen adaptive geometry-convergence policy
+# of the final pass (``backend.calculations.geometry_convergence``).
 SUPPORTED_STAGE_OPTION_KEYS = frozenset(
     {
         DISPERSION_OPTION_KEY,
         DFT_U_OPTION_KEY,
         GEOMETRY_RELAXATION_OPTION_KEY,
         PLANE_WAVE_CUTOFF_OPTION_KEY,
+        GEOMETRY_CONVERGENCE_OPTION_KEY,
     }
 )
 # Keys a client may supply in a Custom workflow. Frozen +U parameters and the
@@ -1007,7 +1011,8 @@ def canonical_custom_workflow_spec(workflow: WorkflowSpec) -> WorkflowSpec:
     record a managed identity, or display name, on a Custom workflow.
     """
 
-    # A plane-wave cutoff record is never user input: BMD Compute resolves it
+    # A plane-wave cutoff record (and the geometry-convergence record that
+    # follows from it) is never user input: BMD Compute resolves it
     # again for every request. A record echoed back by a browser form (the
     # Custom workflow is carried between Build, Prepare and Submit) is dropped
     # rather than rejected; any other BMD-generated option is still refused.
@@ -1021,7 +1026,7 @@ def canonical_custom_workflow_spec(workflow: WorkflowSpec) -> WorkflowSpec:
                 options={
                     key: value
                     for key, value in dict(stage.options or {}).items()
-                    if key != PLANE_WAVE_CUTOFF_OPTION_KEY
+                    if key not in (PLANE_WAVE_CUTOFF_OPTION_KEY, GEOMETRY_CONVERGENCE_OPTION_KEY)
                 },
             )
             for stage in WorkflowSpec(stages=workflow.stages, label=workflow.label, recipe=workflow.recipe).stages

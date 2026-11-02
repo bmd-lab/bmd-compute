@@ -152,7 +152,9 @@ def phonon_force_settings_payload() -> dict[str, Any]:
             "protocol": "bmd_compute.geometry_relaxation/1 (final pass feeds the forces)",
             "plane_wave_cutoff": (
                 "the force calculations use the frozen plane-wave cutoff record of the "
-                "relaxation that produced the structure"
+                "relaxation that produced the structure; with the adaptive geometry "
+                "convergence (bmd_compute.geometry_convergence/1) they use its probe "
+                "cutoff, at which the accepted geometry was verified"
             ),
         },
         "legacy_precursor_relax_incar": dict(PHONON_PRECURSOR_RELAX_INCAR),

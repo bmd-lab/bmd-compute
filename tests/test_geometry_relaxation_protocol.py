@@ -294,7 +294,9 @@ def test_production_metadata_resolves_the_representative_cutoffs(monkeypatch, po
     assert [item["symbol"] for item in record["potcars"]] == symbols
     assert _cutoff(plan, 0) == record
     assert first["ENCUT"] == final["ENCUT"] == record["ENCUT"] == encut
-    assert static["ENCUT"] == max(620, encut)
+    # The static covers the highest relaxation cutoff the adaptive controller
+    # may accept (bmd_compute.geometry_convergence/1: E0 + 150 eV).
+    assert static["ENCUT"] == max(620, encut + 150)
 
 
 # ------------------------------------------------------ two-pass protocol
@@ -322,7 +324,8 @@ def test_every_managed_relaxation_is_the_two_pass_protocol(desired_output):
 def test_second_pass_starts_from_the_first_pass_structure_with_a_new_basis():
     plan = _plan(desired_output="relaxed_structure")
     flow = build_atomate2_flow_for_workflow_spec(plan.structure, plan.workflow_spec, resources={"ntasks": 24})
-    first, second = flow.jobs
+    first, second, controller = flow.jobs
+    assert controller.name == "geometry_convergence"
     reference = second.function_args[0]
     assert reference.uuid == first.uuid and reference.attributes == (("a", "structure"),)
     # No previous directory: no WAVECAR or CHGCAR, so VASP builds a new basis.
@@ -333,7 +336,8 @@ def test_second_pass_starts_from_the_first_pass_structure_with_a_new_basis():
 def test_no_large_sigma_handler_in_any_relaxation():
     plan = _plan(desired_output="relaxed_energy")
     flow = build_atomate2_flow_for_workflow_spec(plan.structure, plan.workflow_spec, resources={"ntasks": 24})
-    names = [[f"{type(h).__module__}.{type(h).__name__}" for h in job.maker.run_vasp_kwargs["handlers"]] for job in flow.jobs]
+    vasp_jobs = [job for job in flow.jobs if job.name != "geometry_convergence"]
+    names = [[f"{type(h).__module__}.{type(h).__name__}" for h in job.maker.run_vasp_kwargs["handlers"]] for job in vasp_jobs]
     assert LARGE_SIGMA_HANDLER not in names[0] and LARGE_SIGMA_HANDLER not in names[1]
     assert LARGE_SIGMA_HANDLER in names[2]  # the static stage is unchanged
 
@@ -388,7 +392,9 @@ def test_custom_workflows_can_request_the_canonical_relaxation():
     plan = _plan(custom={"stages": stages})
     first, final, static = (p["input_set"].incar for p in _previews(plan))
     assert (first["EDIFFG"], final["EDIFFG"]) == (-0.01, -0.001)
-    assert static["ENCUT"] == 620  # the static stage keeps its own methodology
+    # The static keeps its own methodology, with the floor of the highest
+    # relaxation cutoff the adaptive controller may accept (550 + 150 eV).
+    assert static["ENCUT"] == 700
     assert "plane_wave_cutoff" not in plan.workflow_spec.stages[2].options
     from backend.calculations.registry import calculation_form_options
 
@@ -444,14 +450,19 @@ def test_phonon_forces_share_the_final_relaxation_cutoff_and_smearing_policy():
     plan = _plan(desired_output="phonons")
     previews = _previews(plan)
     final, forces = previews[1]["input_set"].incar, previews[2]["input_set"].incar
-    assert forces["ENCUT"] == final["ENCUT"]
+    # The forces use the adaptive controller's probe cutoff, at which the
+    # accepted geometry is verified (bmd_compute.geometry_convergence/1).
+    probe_encut = plan.workflow_spec.stages[2].options["geometry_convergence"]["probe_encut"]
+    assert forces["ENCUT"] == probe_encut == 850 and final["ENCUT"] == 550
+    assert (forces["ISMEAR"], forces["SIGMA"]) == (final["ISMEAR"], final["SIGMA"])
     flow = build_atomate2_flow_for_workflow_spec(plan.structure, plan.workflow_spec, resources={"ntasks": 24})
     relax_handlers = [f"{type(h).__module__}.{type(h).__name__}" for h in flow.jobs[1].maker.run_vasp_kwargs["handlers"]]
-    phonon_jobs = {job.name: job for job in flow.jobs[2].jobs}
+    assert flow.jobs[2].name == "geometry_convergence"
+    phonon_jobs = {job.name: job for job in flow.jobs[3].jobs}
     force_maker = phonon_jobs["run_phonon_displacements"].function_kwargs["phonon_maker"]
     force_handlers = [f"{type(h).__module__}.{type(h).__name__}" for h in force_maker.run_vasp_kwargs["handlers"]]
     assert LARGE_SIGMA_HANDLER not in relax_handlers and LARGE_SIGMA_HANDLER not in force_handlers
-    assert force_maker.input_set_generator.user_incar_settings["ENCUT"] == final["ENCUT"]
+    assert force_maker.input_set_generator.user_incar_settings["ENCUT"] == probe_encut
 
 
 def test_a_phonon_cutoff_differing_from_its_relaxation_is_refused():
@@ -482,7 +493,11 @@ def test_downstream_stage_inputs_do_not_depend_on_the_relaxation_protocol():
             warnings.simplefilter("ignore")
             legacy = generated_input_stage_previews(plan.structure, historical, resources=plan.execution_resources)[1:]
         for new, old in zip(protocol, legacy):
-            assert dict(new["input_set"].incar) == dict(old["input_set"].incar), output
+            new_incar, old_incar = dict(new["input_set"].incar), dict(old["input_set"].incar)
+            # Only the ENCUT floor of the adaptive geometry convergence differs
+            # (statics, and PBE stages reading their charge density).
+            assert {key for key in set(new_incar) | set(old_incar) if new_incar.get(key) != old_incar.get(key)} <= {"ENCUT"}, output
+            assert new_incar["ENCUT"] in (old_incar["ENCUT"], max(old_incar["ENCUT"], 700)), output
             assert str(new["input_set"].kpoints) == str(old["input_set"].kpoints), output
 
 
@@ -622,7 +637,8 @@ def test_diagnostic_is_recorded_only_for_protocol_relaxations(tmp_path):
     spec["paths"].pop("result_dir", None)
     location = results_location_from_submission_spec(spec)
     assert location["optional_result_file_paths"][GEOMETRY_RELAXATION_VASPRUN_KEY] == (
-        "/bmd-db/guest/flows/run/stage_02/vasprun.xml"
+        # The relaxation the adaptive geometry convergence accepted.
+        "/bmd-db/guest/flows/run/geometry_convergence/accepted/vasprun.xml"
     )
     workflow = spec["flow_spec"]["workflow_spec"]
     vasprun = _relax_vasprun([[0.1, 0, 0], [0, 0.1, 0], [0, 0, 0.1]])
@@ -650,12 +666,13 @@ def _encuts(plan):
 
 def test_static_never_uses_a_lower_cutoff_than_its_relaxation(monkeypatch, tmp_path):
     use_enmax_metadata(monkeypatch, tmp_path / "enmax.json", synthetic_enmax_metadata({"Li_sv": 499.0, "O": 400.0}))
-    # Relaxation cutoff 650 eV > the static floor 620 eV: the static follows it.
+    # Relaxation cutoff 650 eV; the adaptive controller may accept a refinement
+    # at 800 eV (> the static floor 620 eV): the static covers it.
     assert _encuts(_plan(LI2O_POSCAR, desired_output="relaxed_energy")) == [
-        ("relax", 650), ("relax", 650), ("static", 650)
+        ("relax", 650), ("relax", 650), ("static", 800)
     ]
     dos = _encuts(_plan(LI2O_POSCAR, desired_output="electronic_dos"))
-    assert dos == [("relax", 650), ("relax", 650), ("static", 650), ("dos", 620)]  # HSE06 DOS: own SCF, unchanged
+    assert dos == [("relax", 650), ("relax", 650), ("static", 800), ("dos", 620)]  # HSE06 DOS: own SCF, unchanged
     # A PBE DOS / Band Structure reads the static's charge density: it keeps the static's basis.
     for terminal in ("dos", "band_structure"):
         custom = {"stages": [_stage("relax"), _stage("static"), _stage(terminal)]}
@@ -664,9 +681,12 @@ def test_static_never_uses_a_lower_cutoff_than_its_relaxation(monkeypatch, tmp_p
     assert _encuts(_plan(LI2O_POSCAR, custom={"stages": [_stage("static")]})) == [("static", 620)]
 
 
-def test_static_keeps_its_own_cutoff_when_it_is_higher():
-    # SYNTHETIC metadata: relaxation 550 eV < static floor 620 eV.
-    assert _encuts(_plan(desired_output="relaxed_energy")) == [("relax", 550), ("relax", 550), ("static", 620)]
+def test_static_keeps_its_own_cutoff_when_it_is_higher(monkeypatch, tmp_path):
+    # SYNTHETIC metadata: relaxation 350 eV, highest possible refinement 500 eV < static floor 620 eV.
+    use_enmax_metadata(monkeypatch, tmp_path / "enmax.json", synthetic_enmax_metadata({"Si": 245.0}))
+    assert _encuts(_plan(desired_output="relaxed_energy")) == [("relax", 350), ("relax", 350), ("static", 620)]
+    # Without the adaptive record the static floor is the relaxation cutoff, as before.
+    assert _encuts(_plan(custom={"stages": [_stage("relax"), _stage("static")]})) == [("relax", 350), ("static", 620)]
 
 
 def test_static_cutoff_rule_does_not_touch_historical_workflows():

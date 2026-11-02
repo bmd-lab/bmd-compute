@@ -298,12 +298,12 @@ def test_non_magnetic_pbe_phonons_are_admitted_with_a_planning_preview():
     assert phonon_plan["settings"]["born_maker"] is None
     assert [item["name"] for item in phonon_plan["stages"]][1:] == list(PHONON_JOB_NAMES)
     incar = resolved.generated_inputs["incar"]
-    # The forces use the final relaxation's species-dependent cutoff
-    # (550 eV with the SYNTHETIC test metadata).
+    # The forces use the adaptive geometry convergence's probe cutoff
+    # (850 eV with the SYNTHETIC test metadata); the relaxation 550 eV.
     assert "# Stage 3 - Phonon Force Calculations (PBE)" in incar
     forces = incar.split("# Stage 3")[1]
     final_pass = incar.split("# Stage 3")[0].split("# Stage 2")[1]
-    assert "ENCUT = 550.0" in forces
+    assert "ENCUT = 850.0" in forces
     assert "NCORE" not in forces
     assert "EDIFFG = -0.001" in final_pass
     assert "ENCUT = 550" in final_pass
@@ -323,7 +323,7 @@ def test_planned_force_incar_is_single_point_gaussian_for_the_64_atom_si_cell():
     assert force["IBRION"] == -1
     assert force["NSW"] == 0
     assert "ISIF" not in force
-    assert force["ENCUT"] == 550
+    assert force["ENCUT"] == 850  # the adaptive geometry convergence's probe cutoff
     assert force["EDIFF"] == 1e-7
     assert force["LREAL"] is False
     assert force["ISPIN"] == 1

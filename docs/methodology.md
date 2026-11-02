@@ -201,13 +201,53 @@ ionic step count are recorded as an independent diagnostic
 (|P| <= 1 kbar and every component <= 2 kbar; review up to 5 kbar; final-pass
 volume change above 0.5 %). In v1 they never fail a calculation.
 
-Downstream cutoff: a Static Energy stage never uses a lower `ENCUT` than the
-Geometry Optimisation that produced its structure, so it runs at
-`max(620 eV, resolved relaxation cutoff)`; a PBE DOS or Band Structure that
-restarts from that static's charge density (`ICHARG = 11`) keeps the static's
-cutoff. HSE06 DOS and Band Structure (self-consistent; they take only the
-structure and `NBANDS` from the static) keep their own 620 eV. In practice the
-static changes only for datasets with ENMAX above about 476 eV (Li_sv, He).
+Adaptive geometry convergence (`bmd_compute.geometry_convergence/1`,
+`backend/calculations/geometry_convergence.py`; run-time jobs in
+`geometry_convergence_jobs.py`). After pass 2, inside the same SLURM
+allocation, a single point of the relaxed geometry at the probe cutoff
+`Ep = max(700 eV, E0 + 300 eV)` (pass-2 settings, `NSW = 0`, `IBRION = -1`) is
+evaluated: the relaxation converged electronically and ionically, the probe
+converged electronically, maximum residual force <= 0.001 eV/A,
+|P| <= 1 kbar, largest |stress component| <= 2 kbar, and (spin-polarised) total
+magnetisation, and site moments when written, within 0.1 mu_B of the
+relaxation's. Spin-polarised final passes and every adaptive stage set
+`LORBIT = 11` (output only) so VASP writes the site moments; without them, or
+with only the total moment, the evidence is invalid and never accepted. Every
+probe and the refinement use the actual `KPOINTS` file of the relaxation they
+follow (frozen, never regenerated from the changed cell); the record keeps its
+identity, and a stage on another mesh is invalid evidence. One BMD Geometry
+Relaxation per workflow. Accepted: the geometry is released. Rejected: one refinement
+relaxation at `E1 = E0 + 150 eV` (pass-2 settings, from the rejected geometry)
+and one final probe at `Ep`; a second rejection is *unresolved*. A magnetic
+state change is unresolved without refinement; missing, malformed or
+inconsistent evidence is invalid evidence; unconverged VASP or a crashed stage
+is an execution failure; a stage whose planning estimate exceeds the
+remaining walltime is not started (resource budget exhausted). Any stop raises
+in the run, so no downstream stage starts; every VASP directory is kept. The
+cutoffs, tolerances and refinement limit are frozen into the final pass (and
+the phonon force stage) at planning, covered by the plan digest, and the
+walltime and memory request covers the worst-case path (probe, refinement,
+probe); the run may finish earlier. The record
+`geometry_convergence/geometry_convergence.json` holds every cutoff, probe
+result, check, decision, stage directory and remaining-walltime check, and
+`geometry_convergence/accepted/` copies the accepted relaxation's outputs
+(reported as the relaxation result, labelled as the refinement when it
+came from the refinement). The record names each dynamic operation before it
+runs; for a FAILED job, authenticated monitoring shows a bounded summary of
+it (cutoffs, forces, stress, decisions and the reason; no file paths). k-points, smearing, magnetism, DFT+U,
+dispersion and POTCARs are those of the relaxation. These are engineering
+acceptance criteria (the geometry is stationary, to these tolerances, for the
+probe-cutoff Hamiltonian), not a proof of complete basis-set convergence.
+Plans recorded with the protocol but without this record build without it.
+
+Downstream cutoff (plan-fixed): a Static Energy stage runs at
+`max(620 eV, E1)`, the highest relaxation cutoff the controller may accept
+(`max(620 eV, resolved relaxation cutoff)` for a relaxation without the
+adaptive record); a PBE DOS or Band Structure that restarts from that static's
+charge density (`ICHARG = 11`) keeps the static's cutoff. HSE06 DOS and Band
+Structure (self-consistent; they take only the structure and `NBANDS` from the
+static) keep their own 620 eV. Phonon displacement forces use `Ep`. The record
+lists the cutoff each downstream stage uses.
 
 Custom workflows keep their explicit stages. A Custom Geometry Optimisation
 uses the species-dependent cutoff, no `ADDGRID` and no LargeSigmaHandler, with

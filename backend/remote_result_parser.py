@@ -11,6 +11,11 @@ BAND_STRUCTURE_INITIAL_YAXIS_RANGE = [-10, 10]
 # vasprun.xml of the final Geometry Optimisation stage when the reported stage
 # is a later one (for example the static of Relaxed Energy).
 GEOMETRY_RELAXATION_VASPRUN_KEY = "geometry_relaxation_vasprun"
+# The adaptive geometry-convergence record (geometry_convergence.json).
+GEOMETRY_CONVERGENCE_RECORD_KEY = "geometry_convergence_record"
+GEOMETRY_CONVERGENCE_RECORD_SCHEMA = "bmd_compute.geometry_convergence_record"
+# The only record version this parser reads (never inferred or defaulted).
+GEOMETRY_CONVERGENCE_RECORD_SCHEMA_VERSION = 1
 # Indicative reference levels of the residual-stress diagnostic (kbar). With
 # dV/V ~ P/B, 1 kbar is ~0.1 % in volume for B = 100 GPa. They classify the
 # diagnostic only; they never fail a calculation.
@@ -153,8 +158,165 @@ def parse_result_paths(
     )
     if relaxation is not None:
         result["geometry_relaxation"] = relaxation
+    convergence = geometry_convergence_payload(paths.get(GEOMETRY_CONVERGENCE_RECORD_KEY))
+    if convergence is not None:
+        result["geometry_convergence"] = convergence
+        apply_accepted_relaxation(relaxation, convergence)
     return result
 
+
+def apply_accepted_relaxation(relaxation, convergence) -> None:
+    """Label the stress diagnostic with the relaxation the controller accepted.
+
+    An accepted refinement is not stage 2 of the workflow: its stage number is
+    removed and the label names the refinement. Results without a convergence
+    record (historical runs) are unchanged.
+    """
+
+    if not isinstance(relaxation, dict) or not isinstance(convergence, dict) or not convergence.get("accepted_stage"):
+        return
+    relaxation["accepted_stage"] = convergence["accepted_stage"]
+    relaxation["stage_label"] = convergence["accepted_stage_label"]
+    if convergence["accepted_stage"] == "refinement":
+        relaxation["stage_index"] = None
+
+
+def geometry_convergence_payload(path) -> dict | None:
+    """Summary of the adaptive geometry-convergence record at ``path`` (self-contained)."""
+
+    if not path:
+        return None
+    import json
+
+    try:
+        with open(path, encoding="utf-8") as handle:
+            record = json.load(handle)
+    except Exception as exc:  # noqa: BLE001 - the record is optional evidence
+        return {"status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"}
+    return geometry_convergence_summary(record)
+
+
+# Display categories of the adaptive geometry-convergence outcome.
+GEOMETRY_CONVERGENCE_CATEGORIES = {
+    "accepted": "accepted",
+    "unresolved": "scientific_non_acceptance",
+    "invalid_evidence": "missing_or_invalid_evidence",
+    "execution_failure": "execution_failure",
+    "resource_budget_exhausted": "resource_exhaustion",
+    "interrupted": "interrupted_or_abandoned",
+}
+_SUMMARY_TEXT_MAX = 500
+_SUMMARY_LIST_MAX = 20
+
+
+def geometry_convergence_summary(record) -> dict:
+    """The bounded, display-safe part of a geometry-convergence record.
+
+    Mirrors ``backend.calculations.geometry_convergence``. Only whitelisted
+    fields, numbers and bounded text are returned (never file-system paths
+    or raw content). A record still ``in_progress`` belongs to a run that
+    stopped without an observed failure in its pending operation:
+    interrupted or abandoned. An observed failure of a VASP operation is
+    recorded by the runner as an execution failure.
+    """
+
+    if not isinstance(record, dict) or record.get("schema") != GEOMETRY_CONVERGENCE_RECORD_SCHEMA:
+        return {"status": "unavailable", "reason": "not a geometry-convergence record"}
+    version = record.get("schema_version")
+    if type(version) is not int or version != GEOMETRY_CONVERGENCE_RECORD_SCHEMA_VERSION:
+        return {"status": "unavailable", "reason": "unsupported geometry-convergence record version"}
+
+    def number(value):
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
+
+    def text(value):
+        return str(value)[:_SUMMARY_TEXT_MAX] if isinstance(value, (str, int, float)) and not isinstance(value, bool) else None
+
+    def texts(values):
+        return [text(v) for v in (values if isinstance(values, list) else [])[:_SUMMARY_LIST_MAX] if text(v) is not None]
+
+    status = record.get("status")
+    if status not in GEOMETRY_CONVERGENCE_CATEGORIES and status != "in_progress":
+        return {"status": "unavailable", "reason": "unknown geometry-convergence status"}
+    interrupted = status == "in_progress"
+    status = "interrupted" if interrupted else status
+    pending = record.get("pending_stage") if isinstance(record.get("pending_stage"), dict) else {}
+    pending_operation = text(pending.get("operation")) if interrupted else None
+    reasons = texts(record.get("reasons"))
+    if interrupted:
+        reasons.append(
+            f"the run stopped during {pending_operation or 'an operation'} without an observed failure (interrupted or abandoned)"
+        )
+    failed_operation = next(
+        (
+            text(entry.get("operation"))
+            for entry in reversed(record.get("operations") if isinstance(record.get("operations"), list) else [])
+            if isinstance(entry, dict) and entry.get("state") == "failed"
+        ),
+        None,
+    )
+
+    attempts = []
+    for attempt in (record.get("attempts") if isinstance(record.get("attempts"), list) else [])[:_SUMMARY_LIST_MAX]:
+        if not isinstance(attempt, dict):
+            continue
+        probe = attempt.get("probe") if isinstance(attempt.get("probe"), dict) else {}
+        checks = attempt.get("checks") if isinstance(attempt.get("checks"), list) else []
+        magnetic = next((c for c in checks if isinstance(c, dict) and c.get("name") == "probe_magnetisation"), None)
+        verified = (magnetic or {}).get("magnetic_state_verified")
+        mesh = attempt.get("probe_kpoints") if isinstance(attempt.get("probe_kpoints"), dict) else {}
+        attempts.append(
+            {
+                "role": text(attempt.get("role")),
+                "relaxation_stage": text(attempt.get("relaxation_stage")),
+                "relaxation_encut": number(attempt.get("relaxation_encut")),
+                "probe_encut": number(attempt.get("probe_encut")),
+                "probe_max_force_ev_a": number(probe.get("max_force_ev_a")),
+                "probe_pressure_kbar": number(probe.get("pressure_kbar")),
+                "probe_max_stress_kbar": number(probe.get("max_stress_kbar")),
+                "magnetic_state_verified": verified if isinstance(verified, bool) else None,
+                "kpoints_sha256": text(mesh.get("sha256")),
+                "category": text(attempt.get("category")),
+                "decision": text(attempt.get("decision")),
+                "reasons": texts(attempt.get("reasons")),
+            }
+        )
+    policy = record.get("policy") if isinstance(record.get("policy"), dict) else {}
+    acceptance = policy.get("acceptance") if isinstance(policy.get("acceptance"), dict) else {}
+    downstream = []
+    for item in (record.get("downstream_cutoffs") if isinstance(record.get("downstream_cutoffs"), list) else [])[:_SUMMARY_LIST_MAX]:
+        if isinstance(item, dict):
+            downstream.append({"stage_type": text(item.get("stage_type")), "theory": text(item.get("theory")), "encut": number(item.get("encut"))})
+    frozen = record.get("frozen_kpoints") if isinstance(record.get("frozen_kpoints"), dict) else {}
+    accepted_stage = record.get("accepted_stage") if status == "accepted" and record.get("accepted_stage") in ("initial", "refinement") else None
+    return {
+        "status": status,
+        "category": GEOMETRY_CONVERGENCE_CATEGORIES[status],
+        "outcome": text(record.get("outcome")) or ("interrupted" if interrupted else None),
+        "reasons": reasons,
+        "failed_operation": failed_operation,
+        "policy": {
+            **{key: number(policy.get(key)) for key in ("initial_encut", "refinement_encut", "probe_encut", "max_refinements")},
+            "acceptance": {
+                key: number(acceptance.get(key))
+                for key in ("max_force_ev_a", "max_abs_pressure_kbar", "max_abs_stress_component_kbar", "max_magnetisation_change_mub")
+            },
+        },
+        "accepted_encut": number(record.get("accepted_encut")),
+        "accepted_stage": accepted_stage,
+        "accepted_stage_label": (
+            "refinement relaxation (adaptive geometry convergence)"
+            if accepted_stage == "refinement"
+            else "stage 2 (final pass of the canonical relaxation)"
+            if accepted_stage == "initial"
+            else None
+        ),
+        "refinements": number(record.get("refinements")),
+        "downstream_cutoffs": downstream,
+        "frozen_kpoints_sha256": text(frozen.get("sha256")),
+        "pending_operation": pending_operation,
+        "attempts": attempts,
+    }
 
 def remote_failure_result(paths: dict[str, str], exc: Exception) -> dict:
     return {

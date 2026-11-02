@@ -148,7 +148,8 @@ def test_successful_build_shows_three_recommended_values_and_nothing_else():
     ("workflow", "walltime"),
     # Recalculated from the BMD Standard Geometry Relaxation stage descriptors
     # (ENCUT 550 eV with the SYNTHETIC test metadata; two relaxation passes).
-    [("relaxed_structure", "1 hour 30 min"), ("phonons", "4 hours"), ("electronic_band_structure", "3 days 2 hours")],
+    # Worst case including the adaptive geometry convergence (probe, refinement, probe).
+    [("relaxed_structure", "3 hours"), ("phonons", "7 hours 15 min"), ("electronic_band_structure", "3 days 3 hours")],
 )
 def test_summary_shows_the_resolved_values_for_each_workflow(workflow, walltime):
     context = _build(workflow=workflow).context

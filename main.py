@@ -1409,6 +1409,11 @@ def resolve_resources_for_workflow(
         resources=preview_resources,
         potcar_functional=potcar_functional,
     )
+    # The adaptive geometry convergence may run a probe, one refinement
+    # relaxation and a final probe: the request covers that worst case.
+    from backend.calculations.geometry_convergence import worst_case_stage_previews
+
+    stage_previews = (*stage_previews, *worst_case_stage_previews(stage_previews))
     return resolve_execution_resources(
         requested,
         stage_previews=stage_previews,
