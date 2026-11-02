@@ -50,6 +50,9 @@ Later, not in Phases 0–2:
 | 2026-11-01 | Use USPEX 25.0 (Singularity image), not the 10.5 MATLAB-runtime build. | Design, from cluster checks (§5) |
 | 2026-11-01 | Run the USPEX master inside a SLURM allocation, never on a login node (the HPC department kills long-running login-node processes). | Design |
 | 2026-11-01 | Launch VASP through a file-based bridge from the container to host `srun` steps (§4). | Design; Phase 0 pilot pending (#59) |
+| 2026-11-02 | Test system for pilots and the acceptance run: Si, 8 atoms, 0 GPa (expected answer: diamond Si, space group 227). It is the lab's usual quick test. | BMD Lab |
+| 2026-11-02 | USPEX's unpacked copy and the sandbox live in `/bmd/shared` (§5.4), group `enginer_leeburton`. | BMD Lab |
+| 2026-11-02 | `KPAR = 1` in every search INCAR until Phase 0 measures the alternative. One INCAR serves every candidate, and `KPAR` must not exceed the number of irreducible k-points, which can be below 4 for large cells or coarse early meshes. | Design (#75); lab decision pending |
 
 ## 3. How USPEX fits bmd-compute
 
@@ -217,8 +220,37 @@ environment). A sandbox built by hand works:
 srun -p leeburton-pool -N 1 -n 1 -t 00:30:00 bash -lc 'module load uspex-25 >/dev/null 2>&1; cd /bmd/shared && singularity sif dump 4 "$USPEX_SIF" > uspex25.sqfs && unsquashfs -d uspex25_sandbox uspex25.sqfs && rm uspex25.sqfs'
 ```
 
-(Partition 4 is the squashfs partition listed by `singularity sif list`.) The
-sandbox must be group-readable for `bmdguest`.
+(Partition 4 is the squashfs partition listed by `singularity sif list`.)
+
+Shared layout (set up 2026-11-02, group `enginer_leeburton`):
+
+- `/bmd/shared/uspex25_sandbox`: the sandbox, group-readable.
+- `/bmd/shared/uspex_cache/uspex_sfx/<payload sha>/`: the unpacked
+  program, group-readable. Run USPEX with
+  `XDG_CACHE_HOME=/bmd/shared/uspex_cache`.
+- `uspex_cache/` and `uspex_cache/uspex_sfx/` are **group-writable with
+  the setgid bit** (`chmod g+ws`). On every start, before it checks whether
+  it is already unpacked, the start-up script creates and removes a lock
+  file in `uspex_sfx/`. It also checks that `uspex_cache/` is writable; if it
+  is not, it falls back to `/tmp/uspex_sfx_$USER` and unpacks the 2 GB
+  again. (From reading the script; not yet tested as another user.)
+
+Checked from the shared location: USPEX starts in about 19 s (no unpack),
+and no `/tmp/uspex_sfx_*` is created. The same command run as `bmdguest`
+is still to do:
+
+```bash
+srun -p leeburton-pool -N 1 -n 1 -t 00:05:00 bash -lc 'module load uspex-25 >/dev/null 2>&1; cd "$(mktemp -d)"; time SINGULARITYENV_XDG_CACHE_HOME=/bmd/shared/uspex_cache singularity exec -B /bmd /bmd/shared/uspex25_sandbox /opt/uspex/uspex 2>&1 | grep -E "Loading|Error|error" | head; ls /tmp | grep uspex_sfx'
+```
+
+(An `IndexError` is expected there: the folder has no `INPUT.txt`. A
+`dateutil/zoneinfo` "No such file" warning also appears; it looks harmless,
+but log timestamps should be checked in the pilot.)
+
+Using the SIF directly needs `unsquashfs` on `PATH` for the per-start
+conversion; on POWER it is only in the `uspex-25` module's mamba
+environment. The launch code therefore uses the sandbox (see the review on
+#73).
 
 ### 5.5 Other cluster facts relevant here
 
@@ -229,9 +261,13 @@ sandbox must be group-readable for `bmdguest`.
   to one core. Every concurrent step therefore needs an explicit `--mem`.
   `sbatch` from inside a job is allowed.
 
-- Compute nodes run Rocky Linux 9.7. `backend/config.py` loads
-  `intel/rocky8-oneAPI-2023` and `vasp/rocky8-intel-6.4.1`; whether these
-  still load on the nodes is **open** (#59).
+- Compute nodes run Rocky Linux 9 at different minor releases (9.5 and
+  9.7 seen). All Rocky 9 releases ship glibc 2.34, so USPEX 25 needs its
+  container on every node (inferred, not checked node by node).
+- `intel/rocky8-oneAPI-2023` and `vasp/rocky8-intel-6.4.1`, which
+  `backend/config.py` loads, still load on Rocky 9 nodes:
+  `vasp_std` is `/powerapps/sources/rocky8/vasp.6.4.1/bin/vasp_std` with no
+  missing libraries (checked 2026-11-02, #59).
 - `compute-0-332` and `compute-0-333` have a different NUMA layout and were
   not part of the lab's VASP benchmarks; pilots exclude them.
 - Strings inside the USPEX 25 program show that `commandExecutable` and
@@ -302,13 +338,22 @@ replaces these numbers with measurements.
 - Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks
   correctly on a full node (`I_MPI_DEBUG=4`)? Does Intel MPI respect SLURM's
   per-task core binding?
-- Do the `rocky8` modules in `backend/config.py` load on Rocky 9.7 nodes?
-- Does the bridge pilot work end to end, and does `whichCluster = −1` also run
-  calculations in parallel?
-- Which file holds the enthalpies for `goodStructures_POSCARS`; are survivors
-  recalculated?
-- Which shared `/bmd` directory holds the unpacked cache and sandbox, and who
-  maintains them?
-- Lab sign-off on the INCAR ladder and final-step smearing (#65).
+- Does the Si8 bridge pilot (`reference/uspex_pilot/si_bridge/`, #76) work
+  end to end? In particular: does `srun --mpi=pmi2` start Intel MPI VASP
+  with the requested number of ranks, does `whichCluster = 0` core control
+  work inside the container (or is −1 needed), and do `SINGULARITYENV_*`
+  variables reach the container under `--cleanenv`?
+- What does USPEX 25 write: the `Individuals` columns and units, the
+  individual IDs in `*POSCARS` files, which file holds the enthalpies for
+  `goodStructures_POSCARS`, whether survivors are recalculated, and whether
+  IDs continue across `results1/` → `results2/` after a restart? (Needed
+  before the results parser #72 is relied on.)
+- Is `value : sleepSeconds` the right `INPUT.txt` form? The manual shows the
+  keyword only in prose.
+- Who maintains `/bmd/shared/uspex_cache` and the sandbox, and does
+  `bmdguest` reach them with the current permissions?
+- Lab sign-off on the INCAR ladder (#75): final-step smearing, the early-step
+  ENCUT (must not fall below any POTCAR's ENMAX in a search), `PREC` of the
+  loose steps, how tightly step 4 relaxes every candidate, and `KPAR`.
 - BMD review of the resume and cancel exception (#69).
 - Who looks after multi-week searches that occupy a whole node?
