@@ -314,3 +314,69 @@ packages or input-altering atomate2 settings differ from preparation.
 
 Output-writing flags (for example `LCHARG`, `LWAVE`, `LVTOT`, `LAECHG`, `LELF`)
 are not part of the declared methodology.
+
+## 10. Structure searches (USPEX) — proposal, not yet in use
+
+Status: **proposal awaiting BMD scientific review and lab sign-off (#65).**
+No structure search can be started from bmd-compute yet; the design is in
+`structure_search.md`. The values here are implemented in
+`backend/structure_search/incar_policy.py` and `potcar.py` and pinned by
+golden files in `tests/fixtures/structure_search/`.
+
+USPEX copies the same `INCAR_1 .. INCAR_5` into every candidate's
+calculation, so nothing in them can depend on a particular structure. The
+ladder starts looser than BMD standards and tightens so that the last two
+steps meet them:
+
+| Step | Purpose | ISIF | IBRION / POTIM | NSW | ENCUT (eV) | EDIFF | EDIFFG | Smearing |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | cell shape, far from a minimum | 4 | 2 / 0.02 | 99 | 430 * | 1e-2 | 0.1 | MP (`ISMEAR = 1`), `SIGMA = 0.10` |
+| 2 | cell shape | 4 | 1 / 0.3 | 99 | 430 * | 1e-3 | 0.01 | MP, `SIGMA = 0.10` |
+| 3 | cell shape and volume | 3 | 1 / 0.3 | 99 | 580 | 1e-4 | 0.001 | MP, `SIGMA = 0.05` |
+| 4 | BMD relaxation standard | 3 | 1 / 0.3 | 99 | 580 | 1e-6 | -0.01 | final * |
+| 5 | single point: ranking energy | 2 | -1 | 0 | 620 | 1e-6 | — | final * |
+
+\* needs a lab decision (below).
+
+Every step also sets `PREC = Accurate`, `LREAL = False`, `ADDGRID = True`,
+`LASPH = True`, `NELM = 200`, `ISPIN = 1`, `NCORE = 4`, `KPAR = 1` *,
+`LWAVE = False` and `LCHARG = False`. No step sets `PSTRESS` (pressure is set
+only by `ExternalPressure` in `INPUT.txt`), `MAGMOM`, `NBANDS`, DFT+U, SOC or
+a dispersion correction.
+
+Reasons:
+
+- The step pattern (ISIF 4, 4, 3, 3, then a single point), the
+  loose-to-tight EDIFF/EDIFFG of steps 1–3, IBRION 2 with POTIM 0.02 far from
+  a minimum and IBRION 1 with POTIM 0.3 after it, and Methfessel–Paxton
+  smearing for the early steps follow the USPEX 25.0 manual (section 3.1).
+- Steps that change the volume use the BMD relaxation cutoff (580 eV) to
+  avoid Pulay-stress volume errors; only fixed-volume steps use a lower one.
+- Step 4 uses the BMD relaxation convergence (EDIFF 1e-6, forces below
+  0.01 eV/Å), and step 5 the BMD Static Energy cutoff and EDIFF, so steps
+  4–5 repeat the relax-then-static pattern of Relaxed Energy. USPEX ranks
+  candidates by the energy of the last step.
+- Steps 4 and 5 share one smearing so the geometry and the ranking energy
+  use the same occupations.
+
+Values that need a lab decision (named `*_NEEDS_LAB_DECISION` in the code):
+
+| Value | Placeholder | Notes |
+| --- | --- | --- |
+| ENCUT of steps 1–2 | 430 eV | 580 eV / 1.35, the middle of the manual's 30–40 % increase; must stay above every POTCAR's ENMAX in a search |
+| Smearing of steps 4–5 | Gaussian, `SIGMA = 0.05` | alternative: Methfessel–Paxton with a small SIGMA. The tetrahedron method of PBE Static Energy is not used because candidates with coarse meshes can have too few k-points for it |
+| KPAR | 1 | must divide every relaxation's rank count and be safe for few k-points; Phase 0 (#59) measures whether a larger value helps |
+
+K-points: USPEX builds each mesh from `KresolStart` (one value per step,
+units 2π/Å). BMD's k-point policy (reciprocal density 64, section 4)
+corresponds to a spacing of 64^(−1/3) = 0.25 Å⁻¹, that is 0.0398 × 2π/Å;
+pymatgen's rounded meshes give 0.040–0.042. Steps 4 and 5 must therefore use
+`KresolStart` ≤ 0.04; steps 1–3 may be coarser. How USPEX rounds a
+`KresolStart` value to a mesh has not been compared with pymatgen yet
+(Phase 0).
+
+POTCARs: the same PBE_64 files and symbol choices as every other BMD
+calculation (section 5), read from the pinned atomate2 relaxation generator
+and copied from `<POTCAR repository>/POT_PAW_PBE_64/<symbol>/POTCAR` to
+`Specific/POTCAR_<El>`. Each file's header must name the expected symbol
+before it is copied, and its SHA-256 is recorded.
