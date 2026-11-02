@@ -1,0 +1,309 @@
+"""INCAR ladder for USPEX structure searches (proposal; needs BMD review, #65).
+
+USPEX copies ``Specific/INCAR_1 .. INCAR_N`` unchanged into every candidate's
+calculation, one file per relaxation step. One INCAR set therefore has to work
+for any candidate cell, and nothing in it may depend on a particular
+structure (no MAGMOM, no NBANDS, a fixed KPAR, ``ISPIN = 1``).
+
+Lab direction (docs/structure_search.md section 2): start from looser
+criteria than BMD standards and tighten step by step, so that the last steps
+match BMD standards. The ladder below combines the USPEX 25.0 manual's
+recommendations (section 3.1) with BMD's relaxation and static settings
+(``docs/methodology.md`` section 3):
+
+====  ==========================  ====  ======  =====  ===  ==============  =====  ======  =====================
+step  purpose                     ISIF  IBRION  POTIM  NSW  ENCUT (eV)      EDIFF  EDIFFG  smearing
+====  ==========================  ====  ======  =====  ===  ==============  =====  ======  =====================
+1     shape, far from a minimum   4     2       0.02   99   early (430)     1e-2   1e-1    MP, SIGMA 0.10
+2     shape                       4     1       0.3    99   early (430)     1e-3   1e-2    MP, SIGMA 0.10
+3     volume                      3     1       0.3    99   580             1e-4   1e-3    MP, SIGMA 0.05
+4     volume, BMD relax standard  3     1       0.3    99   580             1e-6   -0.01   final (Gauss 0.05)
+5     single point (ranking)      2     -1      -      0    620             1e-6   -       final (Gauss 0.05)
+====  ==========================  ====  ======  =====  ===  ==============  =====  ======  =====================
+
+Reasons:
+
+- Steps that change the volume (ISIF 3) use the BMD relaxation cutoff
+  (580 eV) to avoid Pulay-stress volume errors; only the fixed-volume steps
+  (ISIF 4) use a lower cutoff.
+- Step 4 uses BMD's relaxation convergence (EDIFF 1e-6, forces below
+  0.01 eV/A), so the geometry the ranking energy is evaluated on meets BMD
+  standards.
+- Step 5 sets the energy USPEX ranks candidates by (the enthalpy is taken
+  from the last step). It uses the BMD Static Energy cutoff and EDIFF, so
+  steps 4 to 5 are the same relax-then-static sequence as the Relaxed
+  Energy workflow.
+- Steps 4 and 5 share the final-step smearing so that the geometry and the
+  ranking energy use the same occupations.
+- Methfessel-Paxton smearing in steps 1 to 3 follows the manual: many
+  sampled structures are metallic.
+- No PSTRESS: pressure is set only by ``ExternalPressure`` in INPUT.txt
+  (manual section 4.1).
+- ``LWAVE`` and ``LCHARG`` are off because a search runs thousands of VASP
+  calculations.
+
+Values still awaiting a lab decision are module constants whose names say so
+(``*_NEEDS_LAB_DECISION`` in :data:`VALUES_NEEDING_LAB_DECISION`). Phase 0
+(#59) should calibrate them.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Mapping
+
+from backend.calculations.registry import CalculationValidationError
+from backend.calculations.resources import DEFAULT_NCORE
+from backend.calculations.vasp_stage_definitions import (
+    ENCUT_RELAX_DEFAULT,
+    ENCUT_STATIC_FINAL_DEFAULT,
+)
+
+
+INCAR_POLICY_ID = "bmd_compute.structure_search_incar"
+INCAR_POLICY_VERSION = 1
+
+
+# ---------------------------------------------------------------------------
+# Values that need a lab decision. Each is a placeholder chosen as described;
+# change it here and update the golden INCAR files and docs/methodology.md.
+# ---------------------------------------------------------------------------
+
+# Plane-wave cutoff of the fixed-volume steps (1 and 2). The manual raises the
+# cutoff by 30-40 % for the ISIF 3 steps; 580 / 1.35 = 430 eV is the midpoint
+# of that range, rounded to 10 eV. Must stay above the largest ENMAX of the
+# POTCARs in a search; not checked here because POTCAR files are not read.
+EARLY_STEP_ENCUT_NEEDS_LAB_DECISION = 430
+
+# Smearing of steps 4 and 5 (the final geometry and the ranking energy).
+# Options under discussion: Methfessel-Paxton (ISMEAR 1) with a small SIGMA,
+# or Gaussian (ISMEAR 0) with SIGMA 0.05. Placeholder: Gaussian, SIGMA 0.05.
+# BMD's tetrahedron method (ISMEAR -5, used by PBE Static Energy) is not an
+# option: candidates with coarse meshes can have fewer k-points than it needs.
+FINAL_SMEARING_NEEDS_LAB_DECISION: Mapping[str, Any] = {"ISMEAR": 0, "SIGMA": 0.05}
+
+# KPAR for every step. It must divide the MPI rank count of every relaxation
+# and be safe for candidates with very few k-points; KPAR = 1 satisfies both
+# for any rank count. Phase 0 measures whether a larger value is worth it.
+FIXED_KPAR_NEEDS_LAB_DECISION = 1
+
+VALUES_NEEDING_LAB_DECISION = {
+    "EARLY_STEP_ENCUT_NEEDS_LAB_DECISION": EARLY_STEP_ENCUT_NEEDS_LAB_DECISION,
+    "FINAL_SMEARING_NEEDS_LAB_DECISION": dict(FINAL_SMEARING_NEEDS_LAB_DECISION),
+    "FIXED_KPAR_NEEDS_LAB_DECISION": FIXED_KPAR_NEEDS_LAB_DECISION,
+}
+
+
+# ---------------------------------------------------------------------------
+# Fixed parts of the policy.
+# ---------------------------------------------------------------------------
+
+# Ionic step limit of every relaxation step: BMD's relaxation value
+# (docs/methodology.md section 3, adopted from atomate2).
+RELAX_STEP_NSW = 99
+
+# Settings shared by every step: BMD's common stage settings
+# (docs/methodology.md section 3) plus what a search must fix for all
+# candidates.
+COMMON_SETTINGS: Mapping[str, Any] = {
+    "PREC": "Accurate",
+    "LREAL": False,
+    "ADDGRID": True,
+    "LASPH": True,
+    "NELM": 200,
+    "ISPIN": 1,
+    "NCORE": DEFAULT_NCORE,
+    "KPAR": FIXED_KPAR_NEEDS_LAB_DECISION,
+    "LWAVE": False,
+    "LCHARG": False,
+}
+
+# Keys that must never appear: pressure belongs in INPUT.txt; MAGMOM and
+# NBANDS depend on the structure and cannot be shared by every candidate; and
+# DFT+U, SOC and dispersion corrections are not part of v1 searches.
+FORBIDDEN_KEYS = frozenset({"PSTRESS", "MAGMOM", "NBANDS", "LDAU", "LSORBIT", "IVDW"})
+
+# BMD k-point policy: Gamma-centred meshes of reciprocal density 64 points per
+# reciprocal volume (pymatgen automatic_density_by_vol, which includes the 2 pi
+# factor). The equivalent spacing is 64**(-1/3) = 0.25 1/A, which in USPEX's
+# KresolStart units (2 pi / A) is 0.0398. Rounded meshes from pymatgen give
+# 0.040-0.042 in practice; the limit below is that value rounded to 0.04.
+# Steps 4 and 5 (BMD-standard steps) must be at least this dense. How USPEX
+# rounds a KresolStart value to a mesh is not documented here; Phase 0 should
+# compare the KPOINTS USPEX writes with pymatgen's mesh for the same cell.
+BMD_RECIPROCAL_DENSITY = 64
+BMD_EQUIVALENT_KRESOL = BMD_RECIPROCAL_DENSITY ** (-1.0 / 3.0) / (2.0 * math.pi)
+BMD_STANDARD_MAX_KRESOL = 0.04
+
+# Steps (1-based) whose KresolStart must meet BMD_STANDARD_MAX_KRESOL.
+BMD_STANDARD_STEPS = (4, 5)
+
+
+@dataclass(frozen=True)
+class LadderStep:
+    """One relaxation step of the ladder: its purpose and its INCAR settings."""
+
+    number: int
+    purpose: str
+    settings: Mapping[str, Any]
+
+
+def _mp(sigma: float) -> dict[str, Any]:
+    return {"ISMEAR": 1, "SIGMA": sigma}
+
+
+def incar_ladder() -> tuple[LadderStep, ...]:
+    """The five-step INCAR ladder (see the module docstring for the reasons)."""
+
+    early = EARLY_STEP_ENCUT_NEEDS_LAB_DECISION
+    final_smearing = dict(FINAL_SMEARING_NEEDS_LAB_DECISION)
+    relax = {"NSW": RELAX_STEP_NSW, "ALGO": "Fast"}
+    rows = (
+        ("fixed-volume relaxation far from a minimum",
+         {"ISIF": 4, "IBRION": 2, "POTIM": 0.02, **relax, "ENCUT": early,
+          "EDIFF": 1e-2, "EDIFFG": 1e-1, **_mp(0.10)}),
+        ("fixed-volume relaxation",
+         {"ISIF": 4, "IBRION": 1, "POTIM": 0.3, **relax, "ENCUT": early,
+          "EDIFF": 1e-3, "EDIFFG": 1e-2, **_mp(0.10)}),
+        ("full relaxation including volume",
+         {"ISIF": 3, "IBRION": 1, "POTIM": 0.3, **relax, "ENCUT": ENCUT_RELAX_DEFAULT,
+          "EDIFF": 1e-4, "EDIFFG": 1e-3, **_mp(0.05)}),
+        ("full relaxation to BMD relaxation standards",
+         {"ISIF": 3, "IBRION": 1, "POTIM": 0.3, **relax, "ENCUT": ENCUT_RELAX_DEFAULT,
+          "EDIFF": 1e-6, "EDIFFG": -0.01, **final_smearing}),
+        ("single point: the energy USPEX ranks candidates by",
+         {"ISIF": 2, "IBRION": -1, "NSW": 0, "ALGO": "Normal",
+          "ENCUT": ENCUT_STATIC_FINAL_DEFAULT, "EDIFF": 1e-6, **final_smearing}),
+    )
+    return tuple(
+        LadderStep(number=index, purpose=purpose, settings={**settings, **COMMON_SETTINGS})
+        for index, (purpose, settings) in enumerate(rows, start=1)
+    )
+
+
+NUM_STEPS = len(incar_ladder())
+
+
+class IncarPolicyError(CalculationValidationError):
+    """A structure search does not fit the INCAR ladder."""
+
+    def __init__(self, message: str, *, code: str, suggestion: str | None = None, **details):
+        super().__init__(
+            message,
+            suggestion=suggestion,
+            diagnostic={
+                "code": code,
+                "policy_id": INCAR_POLICY_ID,
+                "policy_version": INCAR_POLICY_VERSION,
+                **details,
+            },
+        )
+        self.code = code
+
+
+def require_spec_matches_ladder(spec) -> None:
+    """Check a search's KresolStart values against the ladder and BMD k-point policy.
+
+    The spec must have one KresolStart value per ladder step, and the
+    BMD-standard steps must be at least as dense as BMD's k-point policy.
+    """
+
+    kresol = tuple(spec.kresol_start)
+    if len(kresol) != NUM_STEPS:
+        raise IncarPolicyError(
+            f"The search has {len(kresol)} relaxation step(s) (KresolStart values) "
+            f"but the BMD INCAR ladder has {NUM_STEPS}.",
+            code="step_count_mismatch",
+            suggestion=f"Give exactly {NUM_STEPS} KresolStart values, one per step.",
+            steps=len(kresol),
+        )
+    too_coarse = [
+        step for step in BMD_STANDARD_STEPS
+        if kresol[step - 1] > BMD_STANDARD_MAX_KRESOL + 1e-12
+    ]
+    if too_coarse:
+        raise IncarPolicyError(
+            f"KresolStart for step(s) {', '.join(map(str, too_coarse))} is coarser than "
+            f"BMD's k-point policy allows ({BMD_STANDARD_MAX_KRESOL} x 2 pi / A).",
+            code="kresol_coarser_than_bmd_policy",
+            suggestion=f"Use KresolStart of at most {BMD_STANDARD_MAX_KRESOL} for steps "
+                       f"{', '.join(map(str, BMD_STANDARD_STEPS))}.",
+            steps=too_coarse,
+        )
+
+
+def render_incar(settings: Mapping[str, Any]) -> str:
+    """INCAR text with one ``KEY = value`` line per setting, in the given order."""
+
+    forbidden = sorted(FORBIDDEN_KEYS & set(settings))
+    if forbidden:
+        raise ValueError(f"Structure-search INCARs must not set {', '.join(forbidden)}")
+    return "".join(f"{key} = {_incar_value(value)}\n" for key, value in settings.items())
+
+
+def incar_texts() -> dict[str, str]:
+    """``{"INCAR_1": text, ...}`` for every ladder step."""
+
+    return {f"INCAR_{step.number}": render_incar(step.settings) for step in incar_ladder()}
+
+
+def write_incar_files(specific_dir: str | Path) -> list[Path]:
+    """Write ``INCAR_1 .. INCAR_N`` into ``specific_dir`` (which must exist)."""
+
+    paths = []
+    for name, text in incar_texts().items():
+        path = Path(specific_dir) / name
+        path.write_text(text, encoding="utf-8")
+        paths.append(path)
+    return paths
+
+
+def incar_policy_record() -> dict[str, Any]:
+    """JSON-safe record of the ladder, for provenance."""
+
+    return {
+        "policy_id": INCAR_POLICY_ID,
+        "policy_version": INCAR_POLICY_VERSION,
+        "steps": [
+            {"step": step.number, "purpose": step.purpose, "incar": dict(step.settings)}
+            for step in incar_ladder()
+        ],
+        "bmd_standard_steps": list(BMD_STANDARD_STEPS),
+        "bmd_standard_max_kresol": BMD_STANDARD_MAX_KRESOL,
+        "values_needing_lab_decision": dict(VALUES_NEEDING_LAB_DECISION),
+    }
+
+
+def _incar_value(value) -> str:
+    if isinstance(value, bool):
+        return ".TRUE." if value else ".FALSE."
+    if isinstance(value, float):
+        return repr(value)
+    return str(value)
+
+
+__all__ = [
+    "BMD_EQUIVALENT_KRESOL",
+    "BMD_STANDARD_MAX_KRESOL",
+    "BMD_STANDARD_STEPS",
+    "COMMON_SETTINGS",
+    "EARLY_STEP_ENCUT_NEEDS_LAB_DECISION",
+    "FINAL_SMEARING_NEEDS_LAB_DECISION",
+    "FIXED_KPAR_NEEDS_LAB_DECISION",
+    "FORBIDDEN_KEYS",
+    "INCAR_POLICY_ID",
+    "INCAR_POLICY_VERSION",
+    "IncarPolicyError",
+    "LadderStep",
+    "NUM_STEPS",
+    "RELAX_STEP_NSW",
+    "VALUES_NEEDING_LAB_DECISION",
+    "incar_ladder",
+    "incar_policy_record",
+    "incar_texts",
+    "render_incar",
+    "require_spec_matches_ladder",
+    "write_incar_files",
+]
