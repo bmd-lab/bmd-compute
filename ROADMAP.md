@@ -131,6 +131,7 @@ These are possible future directions, not commitments; none is part of bmd-compu
 - [ ] Phonons — Milestone A: executable finite-displacement PBE phonons (`docs/phonon_workflow.md`); live acceptance and results UI (Milestone B) pending
 - [ ] NEB
 - [ ] LOBSTER / bonding analysis
+- [ ] Structure search (USPEX 25.0) — design in `docs/structure_search.md`; tracking issue #58
 
 ## Architectural Debt To Watch
 
