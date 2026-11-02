@@ -638,7 +638,13 @@ def test_monitor_error_view_does_not_show_the_posted_identity(remote):
     spec = _plan_spec(SI_POSCAR, desired_output="energy_only")
     tampered = deepcopy(spec)
     token = tampered["submission"]["identity_token"]
-    tampered["submission"]["identity_token"] = token[:-1] + ("A" if token[-1] != "A" else "B")
+    # Change a character in the middle of the signature. The last base64url
+    # character of a 32-byte signature carries 2 unused bits, so changing it
+    # (for example "A" -> "B") can leave the decoded signature unchanged and
+    # the token valid, which made this test fail about 1 run in 16.
+    middle = token.index(".") + 1 + (len(token) - token.index(".") - 1) // 2
+    replacement = "A" if token[middle] != "A" else "B"
+    tampered["submission"]["identity_token"] = token[:middle] + replacement + token[middle + 1 :]
     remote(BoundaryRunner(_record(spec)))
     response = _monitor(spec, state_spec=tampered)
 
