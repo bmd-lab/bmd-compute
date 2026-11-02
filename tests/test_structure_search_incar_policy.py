@@ -94,6 +94,39 @@ def test_nothing_depends_on_the_structure_and_no_pressure():
 def test_render_refuses_forbidden_keys():
     with pytest.raises(ValueError, match="PSTRESS"):
         render_incar({"ENCUT": 580, "PSTRESS": 100})
+    with pytest.raises(ValueError, match="NPAR"):
+        render_incar({"NCORE": 4, "NPAR": 12})
+
+
+@pytest.mark.parametrize(
+    ("kpar", "ncore", "ranks"),
+    [(1, 4, 48), (4, 4, 48), (2, 4, 48), (1, 4, 24), (1, 4, 96), (4, 4, 96)],
+)
+def test_parallel_tags_valid(kpar, ncore, ranks):
+    incar_policy.validate_parallel_tags(kpar, ncore, ranks)
+
+
+@pytest.mark.parametrize(
+    ("kpar", "ncore", "ranks", "match"),
+    [
+        (5, 4, 48, "KPAR = 5 does not divide"),
+        (8, 4, 48, "NCORE = 4 does not divide the 6"),
+        (1, 4, 6, "NCORE = 4 does not divide the 6"),
+        (0, 4, 48, "KPAR must be"),
+        (1, 4, True, "ranks must be"),
+    ],
+)
+def test_parallel_tags_invalid(kpar, ncore, ranks, match):
+    with pytest.raises(ValueError, match=match):
+        incar_policy.validate_parallel_tags(kpar, ncore, ranks)
+
+
+def test_ladder_checks_parallel_tags_against_the_rank_count():
+    assert incar_policy.DEFAULT_RANKS_PER_RELAXATION == 48
+    assert incar_texts(ranks=24) == incar_texts()  # ranks never appear in the INCARs
+    with pytest.raises(ValueError, match="NCORE"):
+        incar_ladder(ranks=6)
+    assert incar_policy_record(ranks=96)["ranks_per_relaxation"] == 96
 
 
 def test_values_needing_lab_decision_are_listed():

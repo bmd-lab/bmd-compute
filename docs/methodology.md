@@ -340,7 +340,10 @@ steps meet them:
 
 Every step also sets `PREC = Accurate`, `LREAL = False`, `ADDGRID = True`,
 `LASPH = True`, `NELM = 200`, `ISPIN = 1`, `NCORE = 4`, `KPAR = 1` *,
-`LWAVE = False` and `LCHARG = False`. No step sets `PSTRESS` (pressure is set
+`LWAVE = False` and `LCHARG = False`. `NPAR` is never set alongside `NCORE`.
+KPAR and NCORE are checked in code against the rank count of a relaxation
+(48 by default, a parameter). The parallelisation numbers come from the lab's
+VASP notes on a single 3-atom Sc₂C cell, so they are not general results. No step sets `PSTRESS` (pressure is set
 only by `ExternalPressure` in `INPUT.txt`), `MAGMOM`, `NBANDS`, DFT+U, SOC or
 a dispersion correction.
 
@@ -365,7 +368,7 @@ Values that need a lab decision (named `*_NEEDS_LAB_DECISION` in the code):
 | --- | --- | --- |
 | ENCUT of steps 1–2 | 430 eV | 580 eV / 1.35, the middle of the manual's 30–40 % increase; must stay above every POTCAR's ENMAX in a search |
 | Smearing of steps 4–5 | Gaussian, `SIGMA = 0.05` | alternative: Methfessel–Paxton with a small SIGMA. The tetrahedron method of PBE Static Energy is not used because candidates with coarse meshes can have too few k-points for it |
-| KPAR | 1 | must divide every relaxation's rank count and be safe for few k-points; Phase 0 (#59) measures whether a larger value helps |
+| KPAR | 1 | must divide the rank count of a relaxation (48 by default), leave a quotient NCORE divides, and not exceed NKPTS for any candidate. KPAR = 4 meets the first two rules with 48 ranks and was worth up to 9x on one k-point-dense test cell, but exceeds NKPTS for candidates with fewer than 4 k-points; Phase 0 (#59) decides |
 
 K-points: USPEX builds each mesh from `KresolStart` (one value per step,
 units 2π/Å). BMD's k-point policy (reciprocal density 64, section 4)

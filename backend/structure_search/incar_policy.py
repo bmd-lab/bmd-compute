@@ -84,9 +84,16 @@ EARLY_STEP_ENCUT_NEEDS_LAB_DECISION = 430
 # option: candidates with coarse meshes can have fewer k-points than it needs.
 FINAL_SMEARING_NEEDS_LAB_DECISION: Mapping[str, Any] = {"ISMEAR": 0, "SIGMA": 0.05}
 
-# KPAR for every step. It must divide the MPI rank count of every relaxation
-# and be safe for candidates with very few k-points; KPAR = 1 satisfies both
-# for any rank count. Phase 0 measures whether a larger value is worth it.
+# KPAR for every step. Because the INCAR is the same for every candidate, KPAR
+# must work for any k-point count (rules in validate_parallel_tags). KPAR = 1
+# meets every rule for any rank count and any number of k-points.
+# KPAR = 4 also meets the two divisibility rules with 48 ranks. The lab's
+# notes measured KPAR as worth up to 9x on a k-point-dense cell. But
+# KPAR = 4 exceeds NKPTS for candidates with fewer than 4 irreducible
+# k-points, which a search does produce (large cells, coarse early
+# KresolStart). So the placeholder stays at 1 until the Phase 0 pilot (#59)
+# shows the speed-up on real search candidates, and how VASP behaves when
+# KPAR > NKPTS.
 FIXED_KPAR_NEEDS_LAB_DECISION = 1
 
 VALUES_NEEDING_LAB_DECISION = {
@@ -99,6 +106,17 @@ VALUES_NEEDING_LAB_DECISION = {
 # ---------------------------------------------------------------------------
 # Fixed parts of the policy.
 # ---------------------------------------------------------------------------
+
+# MPI ranks of one relaxation (docs/structure_search.md section 4: 4 x 48 on
+# a 192-core node; to be measured in Phase 0). The INCARs do not contain the
+# rank count, but KPAR and NCORE are checked against it.
+DEFAULT_RANKS_PER_RELAXATION = 48
+
+# NCORE = 4 is BMD's fixed value (backend/calculations/resources.py). In the
+# lab's August 2026 leeburton-pool VASP notes it was the best measured value,
+# with moderate confidence. Those notes come from a single small cell
+# (3-atom Sc2C, 65 irreducible k-points), not from search candidates, so
+# they are not general results. NPAR is never set together with NCORE.
 
 # Ionic step limit of every relaxation step: BMD's relaxation value
 # (docs/methodology.md section 3, adopted from atomate2).
@@ -123,7 +141,9 @@ COMMON_SETTINGS: Mapping[str, Any] = {
 # Keys that must never appear: pressure belongs in INPUT.txt; MAGMOM and
 # NBANDS depend on the structure and cannot be shared by every candidate; and
 # DFT+U, SOC and dispersion corrections are not part of v1 searches.
-FORBIDDEN_KEYS = frozenset({"PSTRESS", "MAGMOM", "NBANDS", "LDAU", "LSORBIT", "IVDW"})
+# NPAR is forbidden because NCORE already sets the band parallelisation and
+# the two must not be combined.
+FORBIDDEN_KEYS = frozenset({"PSTRESS", "MAGMOM", "NBANDS", "LDAU", "LSORBIT", "IVDW", "NPAR"})
 
 # BMD k-point policy: Gamma-centred meshes of reciprocal density 64 points per
 # reciprocal volume (pymatgen automatic_density_by_vol, which includes the 2 pi
@@ -154,8 +174,40 @@ def _mp(sigma: float) -> dict[str, Any]:
     return {"ISMEAR": 1, "SIGMA": sigma}
 
 
-def incar_ladder() -> tuple[LadderStep, ...]:
-    """The five-step INCAR ladder (see the module docstring for the reasons)."""
+def validate_parallel_tags(kpar: int, ncore: int, ranks: int) -> None:
+    """Check KPAR and NCORE for a relaxation of ``ranks`` MPI ranks.
+
+    Rules (the INCAR is identical for every candidate, so they must hold
+    whatever the k-point count):
+
+    - ``ranks`` is divisible by ``KPAR``;
+    - ``ranks / KPAR`` is divisible by ``NCORE``.
+
+    The third rule, ``KPAR`` <= NKPTS, depends on each candidate's mesh and
+    cannot be checked here. It is why ``FIXED_KPAR_NEEDS_LAB_DECISION`` is
+    chosen conservatively. Raises ``ValueError``.
+    """
+
+    for label, value in (("KPAR", kpar), ("NCORE", ncore), ("ranks", ranks)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"{label} must be a whole number of at least 1, not {value!r}")
+    if ranks % kpar:
+        raise ValueError(f"KPAR = {kpar} does not divide the {ranks} MPI ranks of a relaxation")
+    if (ranks // kpar) % ncore:
+        raise ValueError(
+            f"NCORE = {ncore} does not divide the {ranks // kpar} ranks per k-point group "
+            f"({ranks} ranks / KPAR {kpar})"
+        )
+
+
+def incar_ladder(ranks: int = DEFAULT_RANKS_PER_RELAXATION) -> tuple[LadderStep, ...]:
+    """The five-step INCAR ladder (see the module docstring for the reasons).
+
+    ``ranks`` is the MPI rank count of one relaxation. It does not change the
+    INCARs; it only checks that KPAR and NCORE are valid for it.
+    """
+
+    validate_parallel_tags(COMMON_SETTINGS["KPAR"], COMMON_SETTINGS["NCORE"], ranks)
 
     early = EARLY_STEP_ENCUT_NEEDS_LAB_DECISION
     final_smearing = dict(FINAL_SMEARING_NEEDS_LAB_DECISION)
@@ -243,32 +295,36 @@ def render_incar(settings: Mapping[str, Any]) -> str:
     return "".join(f"{key} = {_incar_value(value)}\n" for key, value in settings.items())
 
 
-def incar_texts() -> dict[str, str]:
-    """``{"INCAR_1": text, ...}`` for every ladder step."""
+def incar_texts(ranks: int = DEFAULT_RANKS_PER_RELAXATION) -> dict[str, str]:
+    """``{"INCAR_1": text, ...}`` for every ladder step, checked for ``ranks`` MPI ranks."""
 
-    return {f"INCAR_{step.number}": render_incar(step.settings) for step in incar_ladder()}
+    return {f"INCAR_{step.number}": render_incar(step.settings) for step in incar_ladder(ranks)}
 
 
-def write_incar_files(specific_dir: str | Path) -> list[Path]:
+def write_incar_files(
+    specific_dir: str | Path,
+    ranks: int = DEFAULT_RANKS_PER_RELAXATION,
+) -> list[Path]:
     """Write ``INCAR_1 .. INCAR_N`` into ``specific_dir`` (which must exist)."""
 
     paths = []
-    for name, text in incar_texts().items():
+    for name, text in incar_texts(ranks).items():
         path = Path(specific_dir) / name
         path.write_text(text, encoding="utf-8")
         paths.append(path)
     return paths
 
 
-def incar_policy_record() -> dict[str, Any]:
+def incar_policy_record(ranks: int = DEFAULT_RANKS_PER_RELAXATION) -> dict[str, Any]:
     """JSON-safe record of the ladder, for provenance."""
 
     return {
         "policy_id": INCAR_POLICY_ID,
         "policy_version": INCAR_POLICY_VERSION,
+        "ranks_per_relaxation": ranks,
         "steps": [
             {"step": step.number, "purpose": step.purpose, "incar": dict(step.settings)}
-            for step in incar_ladder()
+            for step in incar_ladder(ranks)
         ],
         "bmd_standard_steps": list(BMD_STANDARD_STEPS),
         "bmd_standard_max_kresol": BMD_STANDARD_MAX_KRESOL,
@@ -289,6 +345,7 @@ __all__ = [
     "BMD_STANDARD_MAX_KRESOL",
     "BMD_STANDARD_STEPS",
     "COMMON_SETTINGS",
+    "DEFAULT_RANKS_PER_RELAXATION",
     "EARLY_STEP_ENCUT_NEEDS_LAB_DECISION",
     "FINAL_SMEARING_NEEDS_LAB_DECISION",
     "FIXED_KPAR_NEEDS_LAB_DECISION",
@@ -305,5 +362,6 @@ __all__ = [
     "incar_texts",
     "render_incar",
     "require_spec_matches_ladder",
+    "validate_parallel_tags",
     "write_incar_files",
 ]
