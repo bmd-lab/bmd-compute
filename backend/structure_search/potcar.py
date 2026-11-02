@@ -7,16 +7,26 @@ symbol choices of the pinned atomate2 relaxation generator
 This module reads that table instead of keeping a separate BMD copy, so the
 two can never drift apart.
 
-No POTCAR file is read here: only symbols (for example ``Ti -> Ti_sv``).
+The symbol lookup reads no POTCAR file. :func:`write_specific_potcars`
+copies the chosen files from the shared POTCAR repository into a search's
+``Specific/`` folder as ``POTCAR_<El>``, which is where USPEX looks for one
+POTCAR per element. POTCAR files are licensed and are never committed; the
+tests use placeholder files.
 """
 
 from __future__ import annotations
 
+import hashlib
+import shutil
 from functools import lru_cache
-from typing import Iterable, Mapping
+from pathlib import Path
+from typing import Any, Iterable, Mapping
 
 
 POTCAR_FUNCTIONAL = "PBE_64"
+# Folder of the PBE_64 set inside the POTCAR repository, as pymatgen (and so
+# every BMD stage generator) looks it up: <PMG_VASP_PSP_DIR>/POT_PAW_PBE_64/<symbol>/POTCAR.
+POTCAR_FUNCTIONAL_DIR = "POT_PAW_PBE_64"
 POTCAR_SYMBOL_SOURCE = "atomate2.vasp.sets.core.RelaxSetGenerator.config_dict['POTCAR']"
 
 
@@ -52,8 +62,77 @@ def unmapped_elements(elements: Iterable[str]) -> list[str]:
     return [str(element) for element in elements if bmd_potcar_symbol(element) is None]
 
 
+class SpecificPotcarError(ValueError):
+    """A POTCAR for a search cannot be found or is not the expected one."""
+
+
+def specific_potcar_name(element: str) -> str:
+    """File name USPEX expects in ``Specific/`` for ``element``: ``POTCAR_<El>``."""
+
+    return f"POTCAR_{element}"
+
+
+def potcar_source_path(psp_dir: str | Path, element: str) -> Path:
+    """Path of BMD's POTCAR for ``element`` inside the POTCAR repository ``psp_dir``."""
+
+    symbol = bmd_potcar_symbol(element)
+    if symbol is None:
+        raise SpecificPotcarError(f"bmd-compute has no POTCAR mapping for {element}.")
+    return Path(psp_dir) / POTCAR_FUNCTIONAL_DIR / symbol / "POTCAR"
+
+
+def write_specific_potcars(
+    elements: Iterable[str],
+    psp_dir: str | Path,
+    specific_dir: str | Path,
+) -> list[dict[str, Any]]:
+    """Copy BMD's POTCAR for each element to ``specific_dir/POTCAR_<El>``.
+
+    Before copying, each source file's first line must name the expected
+    POTCAR symbol (a real POTCAR starts with, for example,
+    ``PAW_PBE Ti_sv 26Sep2005``), so a wrong or misplaced file is caught
+    before any VASP run. Returns one record per element with the symbol, the
+    source path and the SHA-256 of the copied file, for provenance. Nothing
+    is written if any element fails.
+    """
+
+    elements = [str(element) for element in elements]
+    sources = []
+    for element in elements:
+        source = potcar_source_path(psp_dir, element)
+        symbol = bmd_potcar_symbol(element)
+        if not source.is_file():
+            raise SpecificPotcarError(f"POTCAR for {element} ({symbol}) not found at {source}.")
+        with source.open("r", encoding="utf-8", errors="replace") as handle:
+            first_line = handle.readline()
+        if symbol not in first_line.split():
+            raise SpecificPotcarError(
+                f"{source} does not start with POTCAR symbol {symbol}: {first_line.strip()!r}."
+            )
+        sources.append((element, symbol, source))
+
+    records = []
+    for element, symbol, source in sources:
+        target = Path(specific_dir) / specific_potcar_name(element)
+        shutil.copyfile(source, target)
+        records.append({
+            "element": element,
+            "potcar_symbol": symbol,
+            "functional": POTCAR_FUNCTIONAL,
+            "source": str(source),
+            "target": target.name,
+            "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+        })
+    return records
+
+
 __all__ = [
     "POTCAR_FUNCTIONAL",
+    "POTCAR_FUNCTIONAL_DIR",
+    "SpecificPotcarError",
+    "potcar_source_path",
+    "specific_potcar_name",
+    "write_specific_potcars",
     "POTCAR_SYMBOL_SOURCE",
     "bmd_potcar_symbol",
     "bmd_potcar_symbols",
