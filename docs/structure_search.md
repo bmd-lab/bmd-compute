@@ -222,6 +222,13 @@ sandbox must be group-readable for `bmdguest`.
 
 ### 5.5 Other cluster facts relevant here
 
+- SLURM 26.05.5 (`srun --exact` supported). Step test on 2026-11-02
+  (`reference/uspex_pilot/steptest_small.sbatch`, #59): four concurrent
+  `srun --exact` steps **without** `--mem` ran one after another; **with** a
+  per-step `--mem` they started together on separate cores, each task bound
+  to one core. Every concurrent step therefore needs an explicit `--mem`.
+  `sbatch` from inside a job is allowed.
+
 - Compute nodes run Rocky Linux 9.7. `backend/config.py` loads
   `intel/rocky8-oneAPI-2023` and `vasp/rocky8-intel-6.4.1`; whether these
   still load on the nodes is **open** (#59).
@@ -292,11 +299,9 @@ replaces these numbers with measurements.
 
 ## 9. Open questions
 
-- Do concurrent `srun --exact` job steps run at the same time on separate
-  cores, and does each need an explicit `--mem`? (`reference/uspex_pilot/`,
-  #59; a small 8-core version avoids waiting for a whole free node.) Which
-  launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks
-  correctly (`I_MPI_DEBUG=4`)?
+- Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks
+  correctly on a full node (`I_MPI_DEBUG=4`)? Does Intel MPI respect SLURM's
+  per-task core binding?
 - Do the `rocky8` modules in `backend/config.py` load on Rocky 9.7 nodes?
 - Does the bridge pilot work end to end, and does `whichCluster = −1` also run
   calculations in parallel?
