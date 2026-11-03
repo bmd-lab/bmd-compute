@@ -328,6 +328,7 @@ def enforce_runtime_environment(
     settings: Any = None,
     record_path: str | Path | None = None,
     environ: Mapping[str, str] | None = None,
+    potcar_loader=None,
 ) -> dict[str, Any]:
     """Record the runtime stack and stop unless it satisfies the prepared contract.
 
@@ -349,6 +350,13 @@ def enforce_runtime_environment(
         settings_snapshot = {}
         problems.append(f"atomate2 settings could not be read: {type(exc).__name__}: {exc}")
     problems.extend(atomate2_settings_problems(settings_snapshot))
+    # The species-dependent plane-wave cutoff was resolved at planning from
+    # recorded POTCAR ENMAX values; the datasets VASP will read must be those.
+    from backend.calculations.geometry_relaxation import runtime_potcar_check
+
+    flow_spec = spec.get("flow_spec") if isinstance(spec, Mapping) else None
+    potcar_check = runtime_potcar_check(flow_spec, potcar_loader=potcar_loader)
+    problems.extend(potcar_check["problems"])
 
     submission = spec.get("submission") if isinstance(spec, Mapping) else None
     record = {
@@ -374,6 +382,7 @@ def enforce_runtime_environment(
         "runtime_packages": critical,
         "supporting_packages": supporting,
         "atomate2_settings": settings_snapshot,
+        "plane_wave_cutoff_potcars": potcar_check,
     }
     path = Path(record_path) if record_path is not None else runtime_environment_record_path(spec)
     write_record_atomically(path, record)

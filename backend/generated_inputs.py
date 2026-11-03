@@ -30,7 +30,7 @@ from backend.workflows import (
     validate_input_set_for_modifiers,
     vasp_executable_for_modifiers,
     apply_stage_artifact_incar_settings,
-    apply_phonon_precursor_incar_settings,
+    apply_geometry_relaxation_incar_settings,
     build_phonon_force_input_set_generator_for_stage,
     dispersion_method_for_stage,
     workflow_stage_artifact_policies,
@@ -71,8 +71,17 @@ def preview_generated_inputs(
             potcar_functional=potcar_functional,
         )
 
+    from backend.calculations.geometry_relaxation import (
+        require_cutoff_functional,
+        stage_cutoff_record,
+    )
+
     calculation_spec = calculation_spec_from_workflow_spec(workflow_spec)
-    if calculation_spec is None:
+    # A stage with a frozen plane-wave cutoff is previewed exactly as the
+    # workflow builder generates it, never through the legacy single-calculation
+    # builders.
+    if calculation_spec is None or stage_cutoff_record(workflow_spec.stages[0]) is not None:
+        require_cutoff_functional(workflow_spec, potcar_functional)
         input_set = _input_set_for_stage(
             structure,
             workflow_spec.stages[0],
@@ -80,6 +89,8 @@ def preview_generated_inputs(
             kpoints=kpoints,
             resources=resources,
             potcar_functional=potcar_functional,
+            workflow=workflow_spec,
+            index=0,
         )
         validate_input_set_for_modifiers(
             input_set,
@@ -127,6 +138,9 @@ def generated_input_stage_previews(
         calculation_spec = validate_calculation_spec(spec)
         workflow_spec = workflow_spec_from_calculation_spec(calculation_spec)
 
+    from backend.calculations.geometry_relaxation import require_cutoff_functional
+
+    require_cutoff_functional(workflow_spec, potcar_functional)
     stage_directories = workflow_stage_directories(workflow_spec)
     stage_artifacts = workflow_stage_artifact_policies(workflow_spec)
     stage_previews = []
@@ -237,7 +251,7 @@ def phonon_stage_plan_payload(structure, workflow: WorkflowSpec, index: int):
             "name": "relax (preceding stage)",
             "description": (
                 f"{stage_display_name(precursor)} ({theory_display_name(precursor.theory)}) "
-                "with phonon-grade convergence"
+                "(final pass of the BMD Standard Geometry Relaxation; the forces use its plane-wave cutoff)"
             )
             if precursor is not None
             else "",
@@ -278,7 +292,7 @@ def _input_set_for_stage(
         artifact_policy=artifact_policy,
     )
     if workflow is not None and index is not None:
-        user_incar = apply_phonon_precursor_incar_settings(
+        user_incar = apply_geometry_relaxation_incar_settings(
             user_incar,
             workflow=workflow,
             index=index,

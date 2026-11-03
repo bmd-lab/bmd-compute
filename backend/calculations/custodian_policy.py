@@ -17,6 +17,11 @@ LARGE_SIGMA_HANDLER = "custodian.vasp.handlers.LargeSigmaHandler"
 # LargeSigmaHandler would lower SIGMA separately in each displacement of a
 # metal, so force constants would mix forces from different smearing widths.
 PHONON_FORCE_HANDLER_EXCLUSIONS = (LARGE_SIGMA_HANDLER,)
+# Geometry Optimisation stages (BMD Standard Geometry Relaxation v1) also keep
+# the planned SIGMA: the relaxed structure must be a minimum of the same
+# smearing as the phonon displacement forces that may consume it, and a
+# run-time SIGMA would make the relaxation methodology depend on Custodian.
+RELAX_HANDLER_EXCLUSIONS = (LARGE_SIGMA_HANDLER,)
 HSE_BAND_STRUCTURE_CUSTODIAN_ERROR_EXCLUSIONS = ("auto_nbands",)
 
 # BMD Compute v1 unsuccessful-stage policy. atomate2 decides, from its task
@@ -87,7 +92,17 @@ def handler_exclusions_for_stage(stage_type) -> tuple[str, ...]:
 
     if _enum_value(stage_type) == "phonon_forces":
         return PHONON_FORCE_HANDLER_EXCLUSIONS
+    if _enum_value(stage_type) == "relax":
+        return RELAX_HANDLER_EXCLUSIONS
     return ()
+
+
+def relax_run_vasp_kwargs(run_vasp_kwargs=None) -> dict:
+    """``run_vasp_kwargs`` for Geometry Optimisation stages (no LargeSigmaHandler)."""
+
+    kwargs = dict(run_vasp_kwargs or {})
+    kwargs["handlers"] = bmd_custodian_handlers(excluded_handlers=RELAX_HANDLER_EXCLUSIONS)
+    return kwargs
 
 
 def phonon_force_run_vasp_kwargs(run_vasp_kwargs=None) -> dict:
@@ -218,6 +233,8 @@ __all__ = [
     "FROZEN_JOB_HANDLER",
     "LARGE_SIGMA_HANDLER",
     "PHONON_FORCE_HANDLER_EXCLUSIONS",
+    "RELAX_HANDLER_EXCLUSIONS",
+    "relax_run_vasp_kwargs",
     "HSE_BAND_STRUCTURE_CUSTODIAN_ERROR_EXCLUSIONS",
     "bmd_custodian_handlers",
     "custodian_handlers_excluding_errors",

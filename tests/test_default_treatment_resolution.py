@@ -222,6 +222,7 @@ def test_si_desired_output_static_has_no_automatic_treatments_and_is_determinist
             "electronic_dos",
             [
                 ("relax", "pbe", ("spin_polarized",)),
+                ("relax", "pbe", ("spin_polarized",)),
                 ("static", "hse06", ("spin_polarized",)),
                 ("dos", "hse06", ("spin_polarized",)),
             ],
@@ -229,6 +230,7 @@ def test_si_desired_output_static_has_no_automatic_treatments_and_is_determinist
         (
             "electronic_band_structure",
             [
+                ("relax", "pbe", ("spin_polarized",)),
                 ("relax", "pbe", ("spin_polarized",)),
                 ("static", "hse06", ("spin_polarized",)),
                 ("band_structure", "hse06", ("spin_polarized",)),
@@ -260,6 +262,7 @@ def test_spin_consideration_applies_to_current_desired_outputs(desired_output, e
             "electronic_dos",
             [
                 ("relax", "pbe", ("dispersion",)),
+                ("relax", "pbe", ("dispersion",)),
                 ("static", "hse06", ()),
                 ("dos", "hse06", ()),
             ],
@@ -267,6 +270,7 @@ def test_spin_consideration_applies_to_current_desired_outputs(desired_output, e
         (
             "electronic_band_structure",
             [
+                ("relax", "pbe", ("dispersion",)),
                 ("relax", "pbe", ("dispersion",)),
                 ("static", "hse06", ()),
                 ("band_structure", "hse06", ()),
@@ -279,6 +283,8 @@ def test_dispersion_consideration_applies_only_to_bmd_pbe_stages(desired_output,
 
     assert signature(workflow) == expected
     for stage, options in zip(workflow.stages, stage_options(workflow)):
+        # The BMD Standard Geometry Relaxation marks its passes; nothing else is added.
+        options = {key: value for key, value in options.items() if key != "geometry_relaxation"}
         if Modifier.DISPERSION in stage.modifiers:
             assert options == {"dispersion": {"method": "dftd3-bj"}}
         else:
@@ -290,21 +296,26 @@ def test_spin_and_dispersion_compose_without_overwriting_stage_modifiers():
 
     assert signature(workflow) == [
         ("relax", "pbe", ("dispersion", "spin_polarized")),
+        ("relax", "pbe", ("dispersion", "spin_polarized")),
         ("static", "hse06", ("spin_polarized",)),
         ("dos", "hse06", ("spin_polarized",)),
     ]
 
+    from backend.calculations.geometry_relaxation import freeze_plane_wave_cutoffs
+
+    structure = parse_structure(FES2_LAYERED_POSCAR)
     preview = preview_generated_inputs(
-        parse_structure(FES2_LAYERED_POSCAR),
-        workflow,
+        structure,
+        freeze_plane_wave_cutoffs(structure, workflow, potcar_functional="PBE_64"),
         resources={"ntasks": 24},
     )
     sections = stage_sections(preview["incar"])
-    assert len(sections) == 3
+    assert len(sections) == 4
     assert all("ISPIN = 2" in section for section in sections)
     assert "IVDW = 12" in sections[0]
-    assert "IVDW" not in sections[1]
+    assert "IVDW = 12" in sections[1]
     assert "IVDW" not in sections[2]
+    assert "IVDW" not in sections[3]
 
 
 def test_automatic_resolution_changes_the_actual_generated_vasp_inputs():
@@ -435,10 +446,17 @@ def test_changing_desired_output_recomputes_stage_applicability_from_base_recipe
             "modifier": "dispersion",
             "display_name": "van der Waals correction",
             "application_state": "applied",
-            "stage_indices": [1],
+            "stage_indices": [1, 2],
             "stage_applications": [
                 {
                     "stage_index": 1,
+                    "stage_type": "relax",
+                    "stage_type_label": "Geometry Optimisation",
+                    "theory": "pbe",
+                    "theory_label": "PBE",
+                },
+                {
+                    "stage_index": 2,
                     "stage_type": "relax",
                     "stage_type_label": "Geometry Optimisation",
                     "theory": "pbe",
@@ -448,7 +466,7 @@ def test_changing_desired_output_recomputes_stage_applicability_from_base_recipe
             "source": "backend.calculations.default_treatments",
         }
     ]
-    assert [treatment.stage_indices for treatment in band.applied_treatments] == [(1,)]
+    assert [treatment.stage_indices for treatment in band.applied_treatments] == [(1, 2)]
 
 
 def dimensionality_failure(_structure):

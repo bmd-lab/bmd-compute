@@ -179,7 +179,10 @@ def test_custom_settings_selected_by_the_user_are_preserved():
 
     _assert_no_client_metadata(response.context["submission_spec"])
     assert workflow["stages"][0]["modifiers"] == ["dispersion", "spin_polarized"]
-    assert workflow["stages"][0]["options"] == dispersion_option_payload("dftd3")
+    # The client's option is kept; BMD adds only the resolved cutoff record.
+    options = dict(workflow["stages"][0]["options"])
+    assert options.pop("plane_wave_cutoff")["rule"]["id"] == "bmd_compute.plane_wave_cutoff"
+    assert options == dispersion_option_payload("dftd3")
     assert workflow["stages"][1]["modifiers"] == ["dispersion", "soc"]
 
 
