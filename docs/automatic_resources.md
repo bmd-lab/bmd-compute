@@ -15,6 +15,10 @@ The objective is a conservative, workload-dependent request that a student
 without HPC experience can rely on. It is not an optimal prediction and it
 carries no statistical guarantee.
 
+Structure searches (USPEX) are outside this policy. They use their own
+exclusive-node preset with a required explicit walltime and no estimate
+(`StructureSearchResources`; see `docs/deployment.md`, "Structure Searches").
+
 ## CPUs and memory
 
 Automatic CPUs are 24, a conservative initial selection rather than a
