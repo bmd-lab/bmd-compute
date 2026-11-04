@@ -147,7 +147,22 @@ def main() -> int:
         spool_dir=spool,
         bridge_timeout_seconds=args.bridge_timeout,
     )
-    (work / "master_command.txt").write_text(master.shell_line() + "\n")
+    # USPEX prints non-ASCII (Russian) messages; with whichCluster -1 it
+    # crashed with UnicodeEncodeError under the ASCII locale that LC_ALL=C and
+    # --cleanenv give the container. Give it a UTF-8 locale (C.UTF-8 is built
+    # into glibc 2.35 in the Ubuntu 22.04 image).
+    master_env = dict(master.env)
+    master_env.update({
+        "LC_ALL": "C.UTF-8",
+        "SINGULARITYENV_LC_ALL": "C.UTF-8",
+        "SINGULARITYENV_LANG": "C.UTF-8",
+        "SINGULARITYENV_PYTHONIOENCODING": "utf-8",
+    })
+    (work / "master_command.txt").write_text(
+        master.shell_line() + "\n# plus, set by the pilot: "
+        + " ".join(f"{k}={v}" for k, v in sorted(master_env.items()) if k not in master.env or master.env[k] != v)
+        + "\n"
+    )
 
     settings = LauncherSettings(
         spool_dir=spool,
@@ -162,7 +177,7 @@ def main() -> int:
     install_stop_signal_handlers(stop)
     status = run_search(
         master.argv,
-        master.env,
+        master_env,
         master.cwd,
         settings,
         master_log=work / "uspex_master.log",
