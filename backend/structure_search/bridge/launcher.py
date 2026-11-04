@@ -213,8 +213,8 @@ def cpu_range(first: int, count: int) -> str:
 class LauncherSettings:
     """Configuration of the launch loop.
 
-    ``launch_mode`` chooses how a step starts VASP; the bridge pilot (#59)
-    decides the default, so it is a single value:
+    ``launch_mode`` chooses how a step starts VASP. It is a single value so
+    the default can change with further cluster tests (#59):
 
     ``"srun_steps"``
         ``srun --exact --mpi=pmi2 -n {ranks} --mem={mem} vasp_std``; SLURM
@@ -227,6 +227,12 @@ class LauncherSettings:
         not given, ``SLURM_MEM_PER_NODE`` from ``environment`` (under
         ``--mem=0`` SLURM reports the node's memory there; not yet checked
         on POWER, so prefer passing ``node_memory_mb``).
+        Confirmed on POWER (#59, 4 Nov 2026): ``srun --exact --mpi=pmi2 -n 4
+        --mem=8G vasp_std`` inside a shared allocation started 4 VASP ranks
+        on separate cores with the same energy as ``mpirun``. That run had
+        ``I_MPI_PMI_LIBRARY=/usr/lib64/libpmi2.so`` in its environment; pass
+        it in ``environment`` (it is a cluster setting, so it is not set
+        here). Placement of 48-rank steps on a full node is not yet tested.
 
     ``"mpirun_pinned"``
         ``mpirun -n {ranks} vasp_std``, the launch path of the lab's VASP
@@ -234,7 +240,9 @@ class LauncherSettings:
         range (``pinned_slot_first_cores``) passed as
         ``I_MPI_PIN_PROCESSOR_LIST``, with ``I_MPI_HYDRA_BOOTSTRAP=fork`` so
         Intel MPI starts its ranks directly rather than through SLURM on a
-        single node. Not yet tested on the cluster. Steps given fewer ranks
+        single node. ``mpirun -n 4 vasp_std`` ran correctly inside a shared
+        allocation on POWER (#59), but the pinned core lists and
+        ``I_MPI_HYDRA_BOOTSTRAP=fork`` are not yet tested. Steps given fewer ranks
         by ``ranks_per_step`` use the first cores of their slot; more ranks
         than ``ranks`` are rejected.
 

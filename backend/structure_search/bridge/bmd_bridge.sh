@@ -9,7 +9,10 @@
 #     sh bmd_bridge.sh <step>
 #
 # with the CalcFold as the working directory, once per relaxation step, and
-# waits for it to exit. Several copies run at the same time. The script asks
+# waits for it to exit. Several copies run at the same time. This needs
+# whichCluster = -1 in INPUT.txt: on POWER (#59, 4 Nov 2026) USPEX then ran
+# the command through "sh run_local.sh" inside each CalcFold,
+# numParallelCalcs at a time; with whichCluster = 0 it never ran it. The script asks
 # the host-side launcher (backend/structure_search/bridge/launcher.py) to run
 # VASP in this CalcFold, waits for the answer and exits with VASP's exit
 # status. It uses only POSIX sh and coreutils (date, od, tr, ln, mv, rm, cat,
