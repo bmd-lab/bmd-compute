@@ -27,12 +27,13 @@ container gets ``LC_ALL=C.UTF-8``, ``LANG=C.UTF-8`` and
 is the setting that fixed the pilot. ``C.UTF-8`` is built into the image's
 glibc 2.35, so no locale files are needed.
 
-Image. The supported image is an unpacked sandbox directory, on POWER
-``/bmd/shared/uspex25_sandbox`` (docs/structure_search.md §5.4). Singularity
-3.8.6 converts a ``.sif`` file to a temporary sandbox on every start and needs
-``unsquashfs`` on ``PATH`` for that; on POWER ``unsquashfs`` is only in the
-``uspex-25`` module's mamba environment, not on the explicit host ``PATH``.
-``build_master_command`` therefore rejects ``.sif`` paths.
+Image. Only an unpacked sandbox directory is supported, on POWER
+``/bmd/shared/uspex25_sandbox`` (docs/structure_search.md §5.4); ``.sif``
+paths are rejected. This is simpler, and avoids the conversion of a SIF to a
+temporary sandbox that Singularity 3.8.6 does on every start. A SIF would
+also need ``unsquashfs`` on the host ``PATH``: on POWER it sits next to the
+``singularity`` executable (``.../mamba-1.5.8/envs/singularity-3.8.6/bin/``),
+which is not on the default ``host_path``.
 
 Every path is a parameter. Paths that the container must see (the search
 directory, the spool, the cache and the bridge script) must lie under the
@@ -158,8 +159,9 @@ def build_master_command(
         _under_bind(name, paths[name], bind_path)
     if paths["image"].suffix.lower() == ".sif":
         raise ValueError(
-            f"image {paths['image']} is a SIF file; use the unpacked sandbox directory "
-            "(Singularity 3.8.6 needs unsquashfs to convert a SIF, which is not on the host PATH)"
+            f"image {paths['image']} is a SIF file; only an unpacked sandbox directory is "
+            "supported (it avoids converting the SIF on every start, which would also need "
+            "unsquashfs on the host PATH)"
         )
     if not PurePosixPath(uspex_path).is_absolute():
         raise ValueError("uspex_path must be an absolute path inside the image")
