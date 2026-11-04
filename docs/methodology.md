@@ -332,18 +332,19 @@ steps meet them:
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | cell shape, far from a minimum | 4 | 2 / 0.02 | 99 | 430 * | 1e-2 | 0.1 | MP (`ISMEAR = 1`), `SIGMA = 0.10` |
 | 2 | cell shape | 4 | 1 / 0.3 | 99 | 430 * | 1e-3 | 0.01 | MP, `SIGMA = 0.10` |
-| 3 | cell shape and volume | 3 | 1 / 0.3 | 99 | 580 | 1e-4 | 0.001 | MP, `SIGMA = 0.05` |
-| 4 | BMD relaxation standard | 3 | 1 / 0.3 | 99 | 580 | 1e-6 | -0.01 | final * |
+| 3 | cell shape and volume | 3 | 1 / 0.3 | 99 | 580 * | 1e-4 | 0.001 | MP, `SIGMA = 0.05` |
+| 4 | BMD relaxation standard | 3 | 1 / 0.3 | 99 | 580 * | 1e-6 * | -0.01 * | final * |
 | 5 | single point: ranking energy | 2 | -1 | 0 | 620 | 1e-6 | — | final * |
 
 \* needs a lab decision (below).
 
-Every step also sets `PREC = Accurate`, `LREAL = False`, `ADDGRID = True`,
+Every step also sets `PREC = Accurate` (* on steps 1–2), `LREAL = False`, `ADDGRID = True`,
 `LASPH = True`, `NELM = 200`, `ISPIN = 1`, `NCORE = 4`, `KPAR = 1` *,
 `LWAVE = False` and `LCHARG = False`. `NPAR` is never set alongside `NCORE`.
 KPAR and NCORE are checked in code against the rank count of a relaxation
 (48 by default, a parameter). The parallelisation numbers come from the lab's
-VASP notes on a single 3-atom Sc₂C cell, so they are not general results. No step sets `PSTRESS` (pressure is set
+VASP notes on a single 3-atom Sc₂C cell, so they are not general results.
+No step sets `PSTRESS` (pressure is set
 only by `ExternalPressure` in `INPUT.txt`), `MAGMOM`, `NBANDS`, DFT+U, SOC or
 a dispersion correction.
 
@@ -353,8 +354,17 @@ Reasons:
   loose-to-tight EDIFF/EDIFFG of steps 1–3, IBRION 2 with POTIM 0.02 far from
   a minimum and IBRION 1 with POTIM 0.3 after it, and Methfessel–Paxton
   smearing for the early steps follow the USPEX 25.0 manual (section 3.1).
-- Steps that change the volume use the BMD relaxation cutoff (580 eV) to
-  avoid Pulay-stress volume errors; only fixed-volume steps use a lower one.
+- Steps that change the volume use BMD's fixed relaxation cutoff of 580 eV
+  to avoid Pulay-stress volume errors; only fixed-volume steps use a lower
+  one. BMD's own relaxations now use the species-dependent cutoff of
+  section 3 (`bmd_compute.plane_wave_cutoff/1`, without `ADDGRID`), and
+  580 eV is the value for records made before that protocol. Whether the
+  search ladder follows the new rule is a lab decision (below).
+- Every step's ENCUT must be at least the largest ENMAX of the search's
+  POTCARs. A search that fails this is refused (code
+  `encut_below_potcar_enmax`), never adjusted. For example, a search
+  containing Li (`Li_sv`, ENMAX 499.034 eV) is refused, because steps 1–2
+  use 430 eV.
 - Step 4 uses the BMD relaxation convergence (EDIFF 1e-6, forces below
   0.01 eV/Å), and step 5 the BMD Static Energy cutoff and EDIFF, so steps
   4–5 repeat the relax-then-static pattern of Relaxed Energy. USPEX ranks
@@ -366,7 +376,12 @@ Values that need a lab decision (named `*_NEEDS_LAB_DECISION` in the code):
 
 | Value | Placeholder | Notes |
 | --- | --- | --- |
-| ENCUT of steps 1–2 | 430 eV | 580 eV / 1.35, the middle of the manual's 30–40 % increase; must stay above every POTCAR's ENMAX in a search |
+| ENCUT of steps 1–2 | 430 eV | 580 eV / 1.35, the middle of the manual's 30–40 % increase |
+| ENCUT below a POTCAR's ENMAX | refuse the search | alternative: raise the early cutoff for that search. The composition, and so the POTCARs, are fixed per search, so every candidate would still get the same INCAR |
+| ENCUT of steps 3–4 | 580 eV | alternative: BMD's species-dependent relaxation cutoff of section 3, computed per search |
+| `PREC` of steps 1–2 | `Accurate` | the manual starts with `Low`, then `Normal`; `Accurate` also sets denser FFT grids |
+| Convergence of step 4 | `EDIFF = 1e-6`, `EDIFFG = -0.01` | relaxes every candidate to BMD standards, probably the largest cost of a search; alternative: the manual's final tolerances (`1e-4` / `1e-3`) or a value in between |
+| Number of steps | 5 | the manual suggests 4–5; the spec's `KresolStart` must have one value per step (checked before `INPUT.txt` is written, #67) |
 | Smearing of steps 4–5 | Gaussian, `SIGMA = 0.05` | alternative: Methfessel–Paxton with a small SIGMA. The tetrahedron method of PBE Static Energy is not used because candidates with coarse meshes can have too few k-points for it |
 | KPAR | 1 | must divide the rank count of a relaxation (48 by default), leave a quotient NCORE divides, and not exceed NKPTS for any candidate. KPAR = 4 meets the first two rules with 48 ranks and was worth up to 9x on one k-point-dense test cell, but exceeds NKPTS for candidates with fewer than 4 k-points; Phase 0 (#59) decides |
 
@@ -382,4 +397,5 @@ POTCARs: the same PBE_64 files and symbol choices as every other BMD
 calculation (section 5), read from the pinned atomate2 relaxation generator
 and copied from `<POTCAR repository>/POT_PAW_PBE_64/<symbol>/POTCAR` to
 `Specific/POTCAR_<El>`. Each file's header must name the expected symbol
-before it is copied, and its SHA-256 is recorded.
+before it is copied; its ENMAX (read from the PSCTR parameter block, as
+pymatgen reads it) and SHA-256 are recorded.
