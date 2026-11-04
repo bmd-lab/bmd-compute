@@ -40,6 +40,7 @@ from backend.calculations.structure_constraints import reject_unsupported_struct
 from backend.calculations.custodian_policy import (
     bmd_custodian_handlers,
     hse_band_structure_run_vasp_kwargs,
+    relax_run_vasp_kwargs,
     unsuccessful_stage_stop_children_kwargs,
 )
 from backend.calculations.vasp_stage_definitions import (
@@ -319,6 +320,47 @@ def apply_phonon_precursor_incar_settings(
 
         settings.update(PHONON_PRECURSOR_RELAX_INCAR)
     return settings
+
+
+def apply_geometry_relaxation_incar_settings(
+    user_incar,
+    *,
+    workflow: WorkflowSpec,
+    index: int,
+) -> dict:
+    """Relaxation settings of stage ``index`` (0-based), for builds and previews.
+
+    A Geometry Optimisation stage with a frozen plane-wave cutoff record uses
+    the BMD Standard Geometry Relaxation settings
+    (``backend.calculations.geometry_relaxation``); a Static Energy stage after
+    it (and a PBE DOS/Band Structure reading that static's charge density)
+    never uses a lower ENCUT. Stages recorded before that protocol keep the
+    former phonon-precursor rule.
+    """
+
+    from backend.calculations.geometry_relaxation import (
+        downstream_cutoff_floor,
+        relaxation_incar_settings,
+        stage_cutoff_record,
+    )
+
+    stage = workflow.stages[index]
+    if stage.stage_type is StageType.RELAX and stage_cutoff_record(stage) is not None:
+        settings = dict(user_incar or {})
+        settings.update(relaxation_incar_settings(workflow, index))
+        return settings
+    floor = downstream_cutoff_floor(workflow, index)
+    if floor is not None:
+        # The stage's own ENCUT floor still applies on top (620 eV for Static
+        # Energy and the PBE restart stages), giving max(own, relaxation).
+        settings = dict(user_incar or {})
+        try:
+            current = int(float(settings.get("ENCUT", 0)))
+        except (TypeError, ValueError):
+            current = 0
+        settings["ENCUT"] = max(current, floor)
+        return settings
+    return apply_phonon_precursor_incar_settings(user_incar, workflow=workflow, index=index)
 
 
 def apply_stage_artifact_incar_settings(user_incar, *, artifact_policy=None) -> dict:
@@ -1683,7 +1725,11 @@ def _single_stage_job_name(stage: StageSpec, user_incar: dict | None = None) -> 
 
 
 def _workflow_flow_suffix(workflow: WorkflowSpec) -> str:
-    compatible_spec = calculation_spec_from_workflow_spec(workflow)
+    # Naming only: the relaxation protocol marks and frozen cutoff records do
+    # not change which legacy flow name a stage sequence has always had.
+    from backend.calculations.geometry_relaxation import without_relaxation_options
+
+    compatible_spec = calculation_spec_from_workflow_spec(without_relaxation_options(workflow))
     if compatible_spec is not None:
         if (
             compatible_spec.purpose is Purpose.RELAX
@@ -1759,10 +1805,20 @@ def build_atomate2_flow_for_workflow_spec(
 
     reject_unsupported_structure_constraints(structure)
     workflow = validate_workflow_spec(workflow_spec)
+    from backend.calculations.geometry_relaxation import require_cutoff_functional
+
+    require_cutoff_functional(workflow, potcar_functional)
     stage_directories = workflow_stage_directories(workflow)
     stage_artifacts = workflow_stage_artifact_policies(workflow)
     jobs = []
     previous_job = None
+    # Runner layout: the workflow stages plus the adaptive geometry-convergence
+    # controller directly after the final protocol pass (its own directory; the
+    # workflow's stage numbering and directories are unchanged).
+    runner_directories: list[str] = []
+    runner_artifacts: list[dict] = []
+    controller = None
+    controller_position = None
 
     for index, stage in enumerate(workflow.stages):
         user_incar = _stage_incar(stage, incar)
@@ -1770,7 +1826,7 @@ def build_atomate2_flow_for_workflow_spec(
             user_incar,
             artifact_policy=stage_artifacts[index],
         )
-        user_incar = apply_phonon_precursor_incar_settings(
+        user_incar = apply_geometry_relaxation_incar_settings(
             user_incar,
             workflow=workflow,
             index=index,
@@ -1808,12 +1864,14 @@ def build_atomate2_flow_for_workflow_spec(
                 dispersion_method=stage_dispersion_method,
                 frozen_dft_u=frozen_dft_u,
             )
-            job = RelaxMaker(
+            relax_maker = RelaxMaker(
                 stop_children_kwargs=unsuccessful_stage_stop_children_kwargs(),
                 input_set_generator=generator,
                 name=stage_name,
-                run_vasp_kwargs=run_vasp_kwargs,
-            ).make(stage_structure)
+                # One SIGMA for every relaxation: no LargeSigmaHandler.
+                run_vasp_kwargs=relax_run_vasp_kwargs(run_vasp_kwargs),
+            )
+            job = relax_maker.make(stage_structure)
 
         elif stage.stage_type is StageType.STATIC:
             generator = build_static_input_set_generator(
@@ -1947,15 +2005,80 @@ def build_atomate2_flow_for_workflow_spec(
 
         jobs.append(job)
         previous_job = job
+        if stage_directories:
+            runner_directories.append(stage_directories[index])
+            runner_artifacts.append(stage_artifacts[index])
+
+        from backend.calculations.geometry_convergence import STAGE_DIRECTORY, stage_convergence_record
+
+        convergence = stage_convergence_record(stage)
+        if convergence is not None and stage.stage_type is StageType.RELAX:
+            from backend.calculations.geometry_convergence_jobs import controller_job
+
+            if controller is not None:
+                # Defensive (validation already refuses it): every controller
+                # would share one directory and one record.
+                raise CalculationValidationError(
+                    "BMD Compute v1 supports one BMD Geometry Relaxation (with its adaptive "
+                    "geometry convergence) per workflow.",
+                    suggestion="Keep one BMD Geometry Relaxation pair, then rebuild the calculation.",
+                    diagnostic={"code": "geometry_relaxation_multiple_pairs"},
+                )
+
+            # Downstream stages receive the controller's output: the accepted
+            # geometry and the accepted relaxation's directory.
+            controller = controller_job(job, convergence, maker=relax_maker, theory=stage.theory.value)
+            controller_position = len(jobs)
+            jobs.append(controller)
+            previous_job = controller
+            if stage_directories:
+                runner_directories.append(STAGE_DIRECTORY)
+                runner_artifacts.append({"write_wavecar": False, "copy_from_previous": ()})
+
+    if controller is not None:
+        controller.function_kwargs["downstream_cutoffs"] = _downstream_cutoffs(
+            jobs[controller_position + 1 :],
+            workflow.stages[len(jobs[: controller_position]) :],
+        )
 
     suffix = _workflow_flow_suffix(workflow)
     flow_name = label if not suffix else f"{label}_{suffix}"
     return _flow_with_stage_metadata(
         jobs,
         name=flow_name,
-        stage_directories=stage_directories,
-        stage_artifacts=stage_artifacts,
+        stage_directories=tuple(runner_directories) if stage_directories else stage_directories,
+        stage_artifacts=tuple(runner_artifacts) if stage_directories else stage_artifacts,
     )
+
+
+def _downstream_cutoffs(jobs, stages) -> list[dict]:
+    """ENCUT of every stage after the geometry-convergence controller (record)."""
+
+    cutoffs = []
+    for job, stage in zip(jobs, stages):
+        makers = []
+        maker = getattr(job, "maker", None)
+        if maker is not None:
+            makers.append(maker)
+        for sub in getattr(job, "jobs", None) or ():
+            nested = (getattr(sub, "function_kwargs", None) or {}).get("phonon_maker")
+            if nested is not None:
+                makers.append(nested)
+        encuts = sorted(
+            {
+                (getattr(getattr(m, "input_set_generator", None), "user_incar_settings", None) or {}).get("ENCUT")
+                for m in makers
+            }
+            - {None}
+        )
+        cutoffs.append(
+            {
+                "stage_type": stage.stage_type.value,
+                "theory": stage.theory.value,
+                "encut": encuts[0] if len(encuts) == 1 else (encuts or None),
+            }
+        )
+    return cutoffs
 
 
 def build_phonon_force_input_set_generator_for_stage(
@@ -1965,9 +2088,26 @@ def build_phonon_force_input_set_generator_for_stage(
 ):
     """atomate2's phonon-grade force-calculation generator for ``stage``."""
 
+    from backend.calculations.geometry_relaxation import stage_cutoff_record
     from backend.phonons.workflow import build_phonon_force_input_set_generator
 
+    from backend.calculations.geometry_convergence import stage_convergence_record
+
+    # The species-dependent cutoff of the relaxation that produced the
+    # structure (frozen on this stage at planning); with the adaptive
+    # geometry convergence, the probe cutoff at which the accepted geometry
+    # was verified. Stages recorded before the BMD Standard Geometry
+    # Relaxation keep atomate2's phonon ENCUT.
+    record = stage_cutoff_record(stage)
+    convergence = stage_convergence_record(stage)
+    if convergence is not None:
+        force_encut = int(convergence["probe_encut"])
+    elif record is not None:
+        force_encut = int(record["ENCUT"])
+    else:
+        force_encut = None
     return build_phonon_force_input_set_generator(
+        incar={"ENCUT": force_encut} if force_encut is not None else None,
         potcar_functional=potcar_functional,
         dispersion_vdw=_dispersion_vdw_for_modifiers(
             stage.modifiers,

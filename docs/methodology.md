@@ -23,11 +23,14 @@ Related pages: `calculation_architecture.md` (objects and validation rules),
 
 | UI choice | Key | Stages |
 | --- | --- | --- |
-| Relaxed Energy | `relaxed_energy` | PBE Geometry Optimisation -> PBE Geometry Optimisation -> PBE Static Energy |
-| Relaxed structure | `relaxed_structure` | PBE Geometry Optimisation -> PBE Geometry Optimisation |
-| Electronic density of states | `electronic_dos` | PBE Geometry Optimisation -> HSE06 Static Energy -> HSE06 Density of States |
-| Electronic band structure | `electronic_band_structure` | PBE Geometry Optimisation -> HSE06 Static Energy -> HSE06 Band Structure |
-| Phonons | `phonons` | PBE Geometry Optimisation (phonon-grade) -> PBE Phonon Force Calculations (`phonon_workflow.md`) |
+| Relaxed Energy | `relaxed_energy` | BMD Standard Geometry Relaxation -> PBE Static Energy |
+| Relaxed structure | `relaxed_structure` | BMD Standard Geometry Relaxation |
+| Electronic density of states | `electronic_dos` | BMD Standard Geometry Relaxation -> HSE06 Static Energy -> HSE06 Density of States |
+| Electronic band structure | `electronic_band_structure` | BMD Standard Geometry Relaxation -> HSE06 Static Energy -> HSE06 Band Structure |
+| Phonons | `phonons` | BMD Standard Geometry Relaxation -> PBE Phonon Force Calculations (`phonon_workflow.md`) |
+
+The BMD Standard Geometry Relaxation (`bmd_compute.geometry_relaxation/1`,
+section 3) is two PBE Geometry Optimisation stages (pass 1, pass 2).
 | Energy only (legacy; not in the browser menu) | `energy_only` | PBE Static Energy |
 
 Desired Outputs are resolved on the server from the structure: the automatic
@@ -146,21 +149,121 @@ methodology all the same: a dependency change must reproduce them
 deliberately.
 
 Common to every stage: PBE_64 POTCARs (section 5), `EDIFF = 1e-6`,
-`PREC = Accurate`, `LREAL = False`, `ADDGRID = True`, `LASPH = True` (adopted)
-and at most `NELM = 200` electronic steps (adopted). On Geometry Optimisation
+`PREC = Accurate`, `LREAL = False`, `ADDGRID = True` (not on Geometry
+Optimisation, see below), `LASPH = True` (adopted) and at most `NELM = 200`
+electronic steps (adopted). On Geometry Optimisation
 stages `PREC` and `LREAL` are also adopted values. Stages without spin
 polarisation or SOC set `ISPIN = 1` explicitly.
 
-### PBE Geometry Optimisation
+### PBE Geometry Optimisation: BMD Standard Geometry Relaxation v1
 
-| Setting | Value |
-| --- | --- |
-| Plane-wave cutoff | `ENCUT = 580` eV |
-| Ionic relaxation | conjugate gradient (`IBRION = 2`, adopted), ions and cell (`ISIF = 3`, adopted; BMD sets `ISIF = 2` for the Custom ions-only option) |
-| Force convergence | `EDIFFG = -0.01` eV/A |
-| Ionic step limit | `NSW = 99` (adopted) |
-| Electronic algorithm | `ALGO = Fast` |
-| Smearing | Gaussian, `ISMEAR = 0`, `SIGMA = 0.2` eV (adopted) |
+Protocol `bmd_compute.geometry_relaxation/1`
+(`backend/calculations/geometry_relaxation.py`). Every Desired Output that
+relaxes a structure runs two Geometry Optimisation stages with the same
+Hamiltonian (theory and modifiers), POTCARs and cutoff; pass 2 starts from
+pass 1's structure and magnetic moments with a newly constructed plane-wave
+basis (no WAVECAR or CHGCAR is carried over).
+
+| Setting | Pass 1 | Pass 2 |
+| --- | --- | --- |
+| Plane-wave cutoff | species-dependent (below) | the same value |
+| Electronic convergence | `EDIFF = 1e-6` | `EDIFF = 1e-7` |
+| Force convergence | `EDIFFG = -0.01` eV/A | `EDIFFG = -0.001` eV/A |
+| Ionic relaxation | `IBRION = 2`, `ISIF = 3` (`ISIF = 2` for the Custom ions-only option) | same |
+| Ionic step limit | `NSW = 99` (adopted) | same |
+| Electronic algorithm | `ALGO = Fast` | same |
+| Smearing | Gaussian, `ISMEAR = 0`, `SIGMA = 0.2` eV | same |
+| Precision | `PREC = Accurate`, `LREAL = False`, `LASPH = True`, no `ADDGRID` | same |
+| Custodian | BMD handlers without LargeSigmaHandler | same |
+
+Plane-wave cutoff (`bmd_compute.plane_wave_cutoff/1`):
+`ENCUT = ceil(1.3 x max ENMAX / 50 eV) x 50 eV` over the POTCAR datasets the
+executable input generator selects for the structure. ENMAX is read from the
+versioned metadata `backend/calculations/potcar_enmax_PBE_64.json`, generated
+from the POWER PBE_64 library by `backend/calculations/potcar_enmax_metadata.py`
+(header values and dataset SHA-256 only, never POTCAR contents). The resolved
+record (POTCAR symbols, TITEL, ENMAX, SHA-256, rule version and ENCUT) is
+frozen into each Geometry Optimisation and phonon force stage at planning, so
+previews, the plan digest, preparation and the POWER run use the same value;
+before any stage runs, the run checks the recorded values against the POTCAR
+files VASP reads (`runtime_environment.json`, `plane_wave_cutoff_potcars`).
+Missing or inconsistent metadata fails planning; no cutoff is guessed.
+
+No LargeSigmaHandler and no `ADDGRID`, so the relaxed structure is a minimum
+of the same smearing and Hamiltonian as the phonon displacement forces that
+may consume it.
+
+Cell convergence: VASP's ionic convergence (the `EDIFFG` force criterion) is
+reported as VASP records it. The final stage's stress tensor, hydrostatic
+pressure, largest stress component, volume and lattice-parameter changes and
+ionic step count are recorded as an independent diagnostic
+(`geometry_relaxation` in the results), classified against indicative levels
+(|P| <= 1 kbar and every component <= 2 kbar; review up to 5 kbar; final-pass
+volume change above 0.5 %). In v1 they never fail a calculation.
+
+Adaptive geometry convergence (`bmd_compute.geometry_convergence/1`,
+`backend/calculations/geometry_convergence.py`; run-time jobs in
+`geometry_convergence_jobs.py`). After pass 2, inside the same SLURM
+allocation, a single point of the relaxed geometry at the probe cutoff
+`Ep = max(700 eV, E0 + 300 eV)` (pass-2 settings, `NSW = 0`, `IBRION = -1`) is
+evaluated: the relaxation converged electronically and ionically, the probe
+converged electronically, maximum residual force <= 0.001 eV/A,
+|P| <= 1 kbar, largest |stress component| <= 2 kbar, and (spin-polarised) total
+magnetisation, and site moments when written, within 0.1 mu_B of the
+relaxation's. Spin-polarised final passes and every adaptive stage set
+`LORBIT = 11` (output only) so VASP writes the site moments; without them, or
+with only the total moment, the evidence is invalid and never accepted. Every
+probe and the refinement use the actual `KPOINTS` file of the relaxation they
+follow (frozen, never regenerated from the changed cell); the record keeps its
+identity, and a stage on another mesh is invalid evidence. One BMD Geometry
+Relaxation per workflow. Accepted: the geometry is released. Rejected: one refinement
+relaxation at `E1 = E0 + 150 eV` (pass-2 settings, from the rejected geometry)
+and one final probe at `Ep`; a second rejection is *unresolved*. A magnetic
+state change is unresolved without refinement; missing, malformed or
+inconsistent evidence is invalid evidence; unconverged VASP or a crashed stage
+is an execution failure; a stage whose planning estimate exceeds the
+remaining walltime is not started (resource budget exhausted). Any stop raises
+in the run, so no downstream stage starts; every VASP directory is kept. The
+cutoffs, tolerances and refinement limit are frozen into the final pass (and
+the phonon force stage) at planning, covered by the plan digest, and the
+walltime and memory request covers the worst-case path (probe, refinement,
+probe); the run may finish earlier. The record
+`geometry_convergence/geometry_convergence.json` holds every cutoff, probe
+result, check, decision, stage directory and remaining-walltime check, and
+`geometry_convergence/accepted/` copies the accepted relaxation's outputs
+(reported as the relaxation result, labelled as the refinement when it
+came from the refinement). The record names each dynamic operation before it
+runs; for a FAILED job, authenticated monitoring shows a bounded summary of
+it (cutoffs, forces, stress, decisions and the reason; no file paths). k-points, smearing, magnetism, DFT+U,
+dispersion and POTCARs are those of the relaxation. These are engineering
+acceptance criteria (the geometry is stationary, to these tolerances, for the
+probe-cutoff Hamiltonian), not a proof of complete basis-set convergence.
+Plans recorded with the protocol but without this record build without it.
+
+Downstream cutoff (plan-fixed): a Static Energy stage runs at
+`max(620 eV, E1)`, the highest relaxation cutoff the controller may accept
+(`max(620 eV, resolved relaxation cutoff)` for a relaxation without the
+adaptive record); a PBE DOS or Band Structure that restarts from that static's
+charge density (`ICHARG = 11`) keeps the static's cutoff. HSE06 DOS and Band
+Structure (self-consistent; they take only the structure and `NBANDS` from the
+static) keep their own 620 eV. Phonon displacement forces use `Ep`. The record
+lists the cutoff each downstream stage uses.
+
+Custom workflows keep their explicit stages. A Custom Geometry Optimisation
+uses the species-dependent cutoff, no `ADDGRID` and no LargeSigmaHandler, with
+pass-1 convergence, or pass-2 convergence when it directly feeds a phonon
+force stage. The canonical pair can be requested by marking two consecutive,
+identical Geometry Optimisation stages with the stage option
+`{"geometry_relaxation": {"protocol": "bmd_compute.geometry_relaxation", "version": 1, "pass": 1}}`
+(then `"pass": 2`); recipe `geometry_relaxation` lists it, and the browser's
+Custom builder adds the pair with **Add BMD Geometry Relaxation (two passes)**
+(the two passes keep identical theory and Advanced Options; removing either
+removes both). **Add Stage** still adds a single, unmarked stage.
+
+Workflows recorded before this protocol carry no cutoff record and are
+rebuilt exactly as recorded (`ENCUT = 580` eV, `EDIFF = 1e-6`,
+`EDIFFG = -0.01`, `ADDGRID = True`; 700 eV / `1e-7` / `-0.001` for the
+relaxation feeding phonons).
 
 The smearing is the pymatgen choice for a system whose band gap is not yet
 known; BMD adopts it for all relaxations and sets it explicitly, so it never

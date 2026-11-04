@@ -387,14 +387,13 @@ def test_non_heavy_hse06_desired_outputs_are_unchanged_and_carry_no_warning(desi
     stages = response.context["selected_workflow"]["stages"]
     assert [(stage["stage_type"], stage["theory"], stage["modifiers"]) for stage in stages] == [
         ("relax", "pbe", []),
+        ("relax", "pbe", []),
         ("static", "hse06", []),
         (desired_output.replace("electronic_", ""), "hse06", []),
     ]
     assert [item["executable"] for item in response.context["generated_inputs"]["vasp_executables"]] == [
         "vasp_std",
-        "vasp_std",
-        "vasp_std",
-    ]
+    ] * 4
     assert HSE06_SOC_OMITTED_TITLE not in response.template.render(response.context)
 
 
@@ -416,10 +415,10 @@ def test_heavy_element_hse06_desired_output_prepares_with_the_warning_visible(de
     assert response.status_code == 200
     assert len(prepared) == 1
     workflow = prepared[0]["flow_spec"]["workflow_spec"]
-    assert [stage["theory"] for stage in workflow["stages"]] == ["pbe", "hse06", "hse06"]
+    assert [stage["theory"] for stage in workflow["stages"]] == ["pbe", "pbe", "hse06", "hse06"]
     assert all("soc" not in stage["modifiers"] for stage in workflow["stages"])
     omitted = prepared[0]["flow_spec"]["automatic_treatments"]["omitted_treatments"]
-    assert [item["stage_indices"] for item in omitted] == [[2, 3]]
+    assert [item["stage_indices"] for item in omitted] == [[3, 4]]
     rendered = response.template.render(response.context)
     assert HSE06_SOC_OMITTED_TITLE in rendered
     assert HSE06_SOC_OMITTED_MESSAGE in rendered

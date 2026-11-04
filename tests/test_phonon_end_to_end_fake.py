@@ -118,6 +118,30 @@ def fake_vasp(monkeypatch):
     monkeypatch.setattr(vasp_base, "run_vasp", fake.run_vasp)
     monkeypatch.setattr(vasp_base, "get_vasp_task_document", fake.task_document)
     monkeypatch.setattr(vasp_base, "write_vasp_input_set", write_without_potcar_files)
+
+    # The adaptive geometry convergence reads its probe evidence from VASP's
+    # vasprun.xml; the fake run supplies the spring model's (zero stress, the
+    # spring forces of the probed structure).
+    from pymatgen.core import Structure
+
+    from backend.calculations import geometry_convergence_jobs as gcj
+
+    def fake_evidence(dir_name):
+        directory = gcj.local_directory(dir_name)
+        poscar = next(path for path in (directory / "POSCAR", directory / "POSCAR.gz") if path.exists())
+        structure = Structure.from_file(poscar)
+        forces = spring_forces(structure)
+        return {
+            "converged_electronic": True,
+            "converged_ionic": True,
+            "max_force_ev_a": float(np.linalg.norm(forces, axis=1).max()),
+            "pressure_kbar": 0.0,
+            "max_stress_kbar": 0.0,
+            "spin_polarized": False,
+            "magnetisation": None,
+        }
+
+    monkeypatch.setattr(gcj, "read_stage_evidence", fake_evidence)
     return fake
 
 
@@ -140,8 +164,9 @@ def test_simulated_si_phonon_run_produces_force_constants_and_frequencies(tmp_pa
         execution.run_submission(spec)
 
     root = tmp_path.resolve()
-    relax_dir = root / "stage_01"
-    phonon_dir = root / "stage_02"
+    first_pass_dir = root / "stage_01"
+    relax_dir = root / "stage_02"
+    phonon_dir = root / "stage_03"
     displacement_root = phonon_dir / "run_phonon_displacements"
     analysis_dir = phonon_dir / "generate_frequencies_eigenvectors"
 
@@ -151,29 +176,47 @@ def test_simulated_si_phonon_run_produces_force_constants_and_frequencies(tmp_pa
     assert len(displacement_dirs) == displacement_count
     assert [path.relative_to(root).as_posix() for path in fake_vasp.directories] == [
         "stage_01",
+        "stage_02",
+        # The adaptive geometry convergence's probe; accepted, so no refinement.
+        "geometry_convergence/probe_initial",
         *[path.relative_to(root).as_posix() for path in displacement_dirs],
     ]
+    import json
+
+    record = json.loads((root / "geometry_convergence" / "geometry_convergence.json").read_text())
+    assert (record["status"], record["outcome"], record["accepted_encut"]) == ("accepted", "accepted_without_refinement", 550)
+    assert record["downstream_cutoffs"] == [{"stage_type": "phonon_forces", "theory": "pbe", "encut": 850}]
+    probe_incar = incar(root / "geometry_convergence" / "probe_initial")
+    assert (probe_incar["ENCUT"], probe_incar["NSW"], probe_incar["IBRION"], probe_incar["EDIFF"]) == (850, 0, -1, 1e-7)
     assert not (root / "INCAR").exists()
 
     # Phonon-grade relax feeds the phonons; force calculations use atomate2's
     # phonon settings, PBE, non-spin, and no automatic NCORE.
+    # BMD Standard Geometry Relaxation: both passes and the forces share the
+    # species-dependent cutoff (550 eV with the SYNTHETIC test metadata).
+    first_pass_incar = incar(first_pass_dir)
+    assert first_pass_incar["ENCUT"] == 550
+    assert (first_pass_incar["EDIFF"], first_pass_incar["EDIFFG"]) == (1e-6, -0.01)
     relax_incar = incar(relax_dir)
-    assert relax_incar["ENCUT"] == 700
+    assert relax_incar["ENCUT"] == 550
     assert relax_incar["EDIFF"] == 1e-7
     assert relax_incar["EDIFFG"] == -1e-3
+    assert "ADDGRID" not in first_pass_incar and "ADDGRID" not in relax_incar
     # The INCAR VASP receives is exactly the one the plan previewed (the fake
     # relax returns the submitted structure, so the displaced supercell is
     # identical).
     from pymatgen.io.vasp.inputs import Incar
 
-    planned_section = plan.generated_inputs["incar"].split("# Stage 2")[1]
+    planned_section = plan.generated_inputs["incar"].split("# Stage 3")[1]
     planned = Incar.from_str(
         "\n".join(line for line in planned_section.splitlines()[1:] if not line.startswith("#"))
     )
     for directory in displacement_dirs:
         settings = incar(directory)
         assert Incar(settings) == planned
-        assert settings["ENCUT"] == 700
+        assert settings["ENCUT"] == 850  # the probe cutoff of the adaptive geometry convergence
+        assert "ADDGRID" not in settings
+        assert "LDAU" not in settings
         assert settings["EDIFF"] == 1e-7
         assert settings["NSW"] == 0
         assert settings["IBRION"] == -1

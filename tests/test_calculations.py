@@ -173,6 +173,7 @@ assert [
     for stage in desired_outputs["electronic_dos"]["workflow_spec"]["stages"]
 ] == [
     ("relax", "pbe"),
+    ("relax", "pbe"),
     ("static", "hse06"),
     ("dos", "hse06"),
 ]
@@ -181,6 +182,7 @@ assert [
     for stage in desired_outputs["electronic_band_structure"]["workflow_spec"]["stages"]
 ] == [
     ("relax", "pbe"),
+    ("relax", "pbe"),
     ("static", "hse06"),
     ("band_structure", "hse06"),
 ]
@@ -188,6 +190,7 @@ assert [
     (stage["stage_type"], stage["theory"])
     for stage in desired_outputs["phonons"]["workflow_spec"]["stages"]
 ] == [
+    ("relax", "pbe"),
     ("relax", "pbe"),
     ("phonon_forces", "pbe"),
 ]

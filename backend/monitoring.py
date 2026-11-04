@@ -345,6 +345,10 @@ def monitor_submitted_job(
                 authenticated_attempt_id,
             )
             status = runner.query_job(stripped_job_id)
+            result = _success_result(status)
+            convergence = geometry_convergence_diagnostic(runner, authoritative_record, result)
+            if convergence is not None:
+                result["geometry_convergence"] = convergence
     except Exception as exc:
         stage = "SSH Connection" if _looks_like_connection_failure(exc) else "Monitoring"
         LOGGER.exception("Authenticated remote monitoring failed at %s.", stage)
@@ -361,7 +365,71 @@ def monitor_submitted_job(
             result["exception_debug"] = _exception_debug(exc)
         return result, authoritative_record
 
-    return _success_result(status), authoritative_record
+    return result, authoritative_record
+
+
+GEOMETRY_CONVERGENCE_RECORD_MAX_BYTES = 1024 * 1024
+
+
+def _has_adaptive_geometry_convergence(submission_spec) -> bool:
+    workflow = ((submission_spec or {}).get("flow_spec") or {}).get("workflow_spec") or {}
+    return any(
+        isinstance(stage, dict)
+        and str(stage.get("stage_type") or "").lower() == "relax"
+        and isinstance((stage.get("options") or {}).get("geometry_convergence"), dict)
+        for stage in workflow.get("stages") or ()
+    )
+
+
+def geometry_convergence_diagnostic(runner: RemoteRunner, authoritative_record: dict | None, result: dict) -> dict | None:
+    """The adaptive geometry-convergence record of a FAILED, authenticated job.
+
+    Read only for a job whose authoritative record was authenticated above and
+    whose recorded workflow has the adaptive controller, and only the one
+    fixed file ``geometry_convergence/geometry_convergence.json`` under the
+    recorded run directory, through the contained read helper: no component
+    may be a symbolic link, the file must be regular and at most 1 MiB, and
+    it is read from the descriptor that was checked. Any failed check or a
+    malformed record gives no diagnostic. The job stays FAILED; successful
+    jobs show the record with their results.
+    """
+
+    if result.get("summary") != "FAILURE" or not isinstance(authoritative_record, dict):
+        return None
+    submission_spec = authoritative_record.get("submission_spec")
+    if not _has_adaptive_geometry_convergence(submission_spec):
+        return None
+    from backend.calculations.geometry_convergence import RECORD_FILENAME, STAGE_DIRECTORY
+    from backend.remote_result_parser import geometry_convergence_summary
+    from backend.secure_remote_read import ContainedReadError
+
+    run_dir = authoritative_record.get("run_dir")
+    if not isinstance(run_dir, str) or not run_dir.startswith("/") or "/../" in f"{run_dir}/":
+        return None
+    try:
+        data = runner.read_contained_file(
+            run_dir.rstrip("/") or "/",
+            (STAGE_DIRECTORY, RECORD_FILENAME),
+            max_bytes=GEOMETRY_CONVERGENCE_RECORD_MAX_BYTES,
+        )
+    except ContainedReadError as exc:
+        if exc.code == "missing":
+            return {
+                "status": "unavailable",
+                "category": "execution_failure",
+                "reason": "No geometry-convergence record: the run stopped before the adaptive controller started.",
+            }
+        LOGGER.info("Geometry-convergence record refused (%s) for %s.", exc.code, authoritative_record.get("job_id"))
+        return None
+    except Exception:  # noqa: BLE001 - a diagnostic never changes the job state
+        LOGGER.info("Geometry-convergence record unreadable for %s.", authoritative_record.get("job_id"))
+        return None
+    try:
+        record = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    summary = geometry_convergence_summary(record)
+    return None if summary.get("status") == "unavailable" else summary
 
 
 def _resumed_submission_spec(runner: RemoteRunner, job_id: str) -> dict | None:
