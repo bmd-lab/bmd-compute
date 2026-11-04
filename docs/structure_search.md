@@ -52,6 +52,8 @@ Later, not in Phases 0–2:
 | 2026-11-01 | Launch VASP through a file-based bridge from the container to host `srun` steps (§4). | Design; Phase 0 pilot pending (#59) |
 | 2026-11-02 | Test system for pilots and the acceptance run: Si, 8 atoms, 0 GPa (expected answer: diamond Si, space group 227). It is the lab's usual quick test. | BMD Lab |
 | 2026-11-02 | USPEX's unpacked copy and the sandbox live in `/bmd/shared` (§5.4), group `enginer_leeburton`. | BMD Lab |
+| 2026-11-04 | Run USPEX with `whichCluster = -1`. In mode 0 USPEX 25 never runs `commandExecutable` (probe job, §5.6). | Design, from cluster checks (#59) |
+| 2026-11-04 | Give the container a UTF-8 locale (`LC_ALL`/`LANG=C.UTF-8`, `PYTHONIOENCODING=utf-8`). With the ASCII locale USPEX crashed with `UnicodeEncodeError` (§5.6). | Design, from cluster checks (#59) |
 | 2026-11-02 | `KPAR = 1` in every search INCAR until Phase 0 measures the alternative. One INCAR serves every candidate, and `KPAR` must not exceed the number of irreducible k-points, which can be below 4 for large cells or coarse early meshes. | Design (#75); lab decision pending |
 
 ## 3. How USPEX fits bmd-compute
@@ -80,7 +82,7 @@ One exclusive-node SLURM job per search attempt:
 sbatch (-N 1 --exclusive --mem=0, owner100d, explicit walltime)
   run_job.py (host)
     ├─ singularity exec -B /bmd <sandbox> /opt/uspex/uspex      USPEX master
-    │    whichCluster = 0, numParallelCalcs = 4, coresPerJob = 1
+    │    whichCluster = -1, numParallelCalcs = 4, UTF-8 locale
     │    commandExecutable (one line per step) = sh bmd_bridge.sh <step>
     │       bridge script: write request file → wait for done file
     └─ launch loop (host): request → srun --exact --mpi=pmi2 -n 48 --mem=<M> vasp_std
@@ -97,13 +99,14 @@ Why this works with USPEX (checked in the manual):
 - `whichCluster`: −1 = local run without job submission; 0 = local run with
   strict CPU core control (each relaxation on its own cores, `coresPerJob`);
   0 is the default (§2.8, §4.8). `numParallelCalcs` "now works for
-  whichCluster = 0 as well" (§2.8).
+  whichCluster = 0 as well" (§2.8). **On POWER only −1 works** (§5.6): in
+  mode 0 USPEX 25 never runs the command.
 - `commandExecutable` takes one shell command per relaxation step, run in the
   calculation folder; USPEX waits for it and then reads the VASP output (§4.8).
 - `whichCluster = 1` (local submission) is not usable in the container: it
   needs an ssh server on the local machine and Python job scripts (§6.8.1).
-- `coresPerJob = 1` makes USPEX's own core control pin only the waiting bridge
-  script; SLURM places the VASP ranks.
+- USPEX's own core control is not used (mode −1); SLURM places the VASP
+  ranks.
 - `numParallelCalcs` must always be set explicitly: §4.8 gives its default as
   1, §2.8 says it auto-detects available cores, which on a 192-core node could
   mean 192 concurrent relaxations.
@@ -274,6 +277,30 @@ environment. The launch code therefore uses the sandbox (see the review on
   `coresPerJob` take one value per relaxation step (error text: "number of
   commandExecutable entries is not equal to the number of steps").
 
+### 5.6 Launch checks (4 Nov 2026, #59)
+
+A 4-core probe job (`reference/uspex_pilot/probe/probe.sbatch`) ran USPEX
+with a dummy relaxation command that only records how it is called, then
+4-rank VASP without USPEX:
+
+- `whichCluster = -1`: USPEX runs `commandExecutable` as `sh run_local.sh`
+  from inside each CalcFold (`Calculation/Calcfold_<system>_<step>`),
+  `numParallelCalcs` at a time, with the full container environment.
+- `whichCluster = 0`: USPEX never runs the command, also when a host loop
+  makes `run_local.sh` executable (USPEX writes it without an execute bit,
+  but that is not the cause).
+- With the container's default ASCII locale (`LC_ALL=C`, `--cleanenv`),
+  mode −1 crashed during set-up with `UnicodeEncodeError`; a UTF-8 locale
+  fixes it.
+- `SINGULARITYENV_*` variables reach the container under `--cleanenv`.
+- `srun --exact --mpi=pmi2 -n 4 --mem=8G vasp_std` and `mpirun -n 4
+  vasp_std` both start 4 real ranks on separate cores and give the same
+  energy (Si8, F = −42.483167 eV).
+
+The Si8 pilot through the bridge (`reference/uspex_pilot/si_bridge/`, mode
+−1, `srun_steps`, 2 relaxations × 4 ranks in an 8-core job) then completed
+its first 23 relaxations, all with status 0, about 10–60 s each.
+
 ## 6. VASP policy for searches (to be reviewed, #65)
 
 USPEX 25.0 manual recommendations (§3.1): 4–5 relaxation steps; ISIF 4 in
@@ -338,11 +365,8 @@ replaces these numbers with measurements.
 - Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks
   correctly on a full node (`I_MPI_DEBUG=4`)? Does Intel MPI respect SLURM's
   per-task core binding?
-- Does the Si8 bridge pilot (`reference/uspex_pilot/si_bridge/`, #76) work
-  end to end? In particular: does `srun --mpi=pmi2` start Intel MPI VASP
-  with the requested number of ranks, does `whichCluster = 0` core control
-  work inside the container (or is −1 needed), and do `SINGULARITYENV_*`
-  variables reach the container under `--cleanenv`?
+- Does the full Si8 pilot finish and find diamond Si (space group 227)?
+  (Launching is settled, §5.6.)
 - What does USPEX 25 write: the `Individuals` columns and units, the
   individual IDs in `*POSCARS` files, which file holds the enthalpies for
   `goodStructures_POSCARS`, whether survivors are recalculated, and whether
