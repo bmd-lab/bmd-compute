@@ -92,4 +92,3 @@ def test_uploaded_bridge_script_is_verified_on_power(package_tree, tmp_path):
 
     (uploaded / BRIDGE).unlink()
     assert bmd_runtime_package_problems(str(uploaded), manifest) == [f"missing file: {BRIDGE}"]
-
