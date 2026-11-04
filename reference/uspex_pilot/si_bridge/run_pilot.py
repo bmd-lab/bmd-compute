@@ -35,7 +35,7 @@ from backend.structure_search.bridge.master import (  # noqa: E402
 STEPS = 3
 
 
-def write_input(search_dir: Path, bridge: Path, num_parallel: int) -> None:
+def write_input(search_dir: Path, bridge: Path, num_parallel: int, which_cluster: int = 0) -> None:
     executable = "\n".join(uspex_command_executable(bridge, STEPS))
     text = f"""PARAMETERS EVOLUTIONARY ALGORITHM
 USPEX : calculationMethod
@@ -67,7 +67,7 @@ Si
 {executable}
 % EndExecutable
 
-0 : whichCluster
+{which_cluster} : whichCluster
 {num_parallel} : numParallelCalcs
 1 : coresPerJob
 """
@@ -120,6 +120,8 @@ def main() -> int:
     parser.add_argument("--mem", default="12G", help="memory per srun step")
     parser.add_argument("--launch-mode", default="srun_steps")
     parser.add_argument("--bridge-timeout", type=int, default=3600)
+    parser.add_argument("--which-cluster", type=int, choices=(-1, 0), default=0,
+                        help="USPEX whichCluster: 0 = local with core control, -1 = local without")
     args = parser.parse_args()
 
     work = args.work.resolve()
@@ -135,7 +137,7 @@ def main() -> int:
         # USPEX runs the bridge inside the container, which only sees /bmd.
         raise SystemExit(f"the bmd-compute checkout must be under /bmd (bridge is {bridge})")
     wrapper = write_bridge_wrapper(search_dir, bridge, spool, args.bridge_timeout)
-    write_input(search_dir, wrapper, args.parallel)
+    write_input(search_dir, wrapper, args.parallel, args.which_cluster)
 
     master = build_master_command(
         singularity=args.singularity,

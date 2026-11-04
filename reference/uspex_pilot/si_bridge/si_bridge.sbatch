@@ -27,7 +27,8 @@ say "job ${SLURM_JOB_ID:-?} on $(hostname)"
 PYTHON=${PYTHON:-/usr/bin/python3}
 IMAGE=${IMAGE:-/bmd/shared/uspex25_sandbox}
 CACHE=${CACHE:-/bmd/shared/uspex_cache}
-say "REPO=$REPO WORK=$WORK POTCAR_SI=$POTCAR_SI"
+WHICH_CLUSTER=${WHICH_CLUSTER:-0}
+say "REPO=$REPO WORK=$WORK POTCAR_SI=$POTCAR_SI WHICH_CLUSTER=$WHICH_CLUSTER"
 say "python: $("$PYTHON" --version 2>&1)" ; "$PYTHON" --version >/dev/null 2>&1 || die "PYTHON=$PYTHON does not run"
 
 say "making the module command available"
@@ -63,7 +64,7 @@ say "SLURM $(srun --version)  I_MPI_PMI_LIBRARY=${I_MPI_PMI_LIBRARY:-unset}  sru
 say "starting the pilot"
 "$PYTHON" "$REPO/reference/uspex_pilot/si_bridge/run_pilot.py" \
   --work "$WORK" --singularity "$SINGULARITY" --image "$IMAGE" --cache "$CACHE" \
-  --potcar "$POTCAR_SI" --parallel 4 --ranks 12 --mem 12G --launch-mode srun_steps
+  --potcar "$POTCAR_SI" --parallel 4 --ranks 12 --mem 12G --launch-mode srun_steps --which-cluster "$WHICH_CLUSTER"
 status=$?
 say "pilot finished with status $status"
 exit "$status"
