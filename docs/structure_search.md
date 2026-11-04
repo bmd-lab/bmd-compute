@@ -271,8 +271,15 @@ environment. The launch code therefore uses the sandbox (see the review on
   `backend/config.py` loads, still load on Rocky 9 nodes:
   `vasp_std` is `/powerapps/sources/rocky8/vasp.6.4.1/bin/vasp_std` with no
   missing libraries (checked 2026-11-02, #59).
-- `compute-0-332` and `compute-0-333` have a different NUMA layout and were
-  not part of the lab's VASP benchmarks; pilots exclude them.
+- Node types (lab hardware inventory, 30 Jul 2026, and `lscpu` on 4 Nov):
+  compute-0-269, 270, 370 and 371 (and probably 271 and 369) are AMD EPYC
+  9654 (Zen 4), NPS1: two NUMA domains, one per socket, **socket 0 = CPUs
+  0–95, socket 1 = CPUs 96–191** (checked with `lscpu`), about 1 TB. The
+  `mpirun_pinned` core lists (0-47, 96-143, 48-95, 144-191) assume this
+  numbering. `compute-0-332` and `compute-0-333` are EPYC 9655 (Zen 5),
+  NPS4 with 8 domains of 24 cores; they were not part of the lab's VASP
+  benchmarks, and searches exclude them (`--exclude=compute-0-[332-333]`).
+  SLURM feature tags do not distinguish the two types.
 - Strings inside the USPEX 25 program show that `commandExecutable` and
   `coresPerJob` take one value per relaxation step (error text: "number of
   commandExecutable entries is not equal to the number of steps").
@@ -324,6 +331,13 @@ Proposal to review against BMD standards (`docs/methodology.md`):
 - `LWAVE = .FALSE.`, `LCHARG = .FALSE.`
 - POTCARs from the shared `PBE_64` repository, same choice as the rest of
   bmd-compute, written as `Specific/POTCAR_<El>`.
+
+ENMAX of BMD's POTCARs (PBE_64 on POWER, checked 4 Nov against the atomate2
+`RelaxSetGenerator` symbol table): only `Li_sv` (499.034 eV) and `He`
+(478.896 eV) exceed the proposed 430 eV early-step cutoff; every other
+symbol BMD uses (including `Na_pv`, `Mg`, and the standard B, C, N, O, F,
+H) is at or below it. A search containing Li or He must use a higher early
+cutoff or be refused.
 
 Gap: the Relaxed Energy workflow has no pressure setting, so hand-off of
 candidates from searches at non-zero pressure is not yet consistent.
