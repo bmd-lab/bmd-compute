@@ -4,7 +4,7 @@ Design: docs/structure_search.md, sections 4 and 5; issue #66.
 
 The USPEX 25 master runs inside the cluster's Singularity image::
 
-    singularity exec --cleanenv -B /bmd --pwd <search dir> <image or sandbox> /opt/uspex/uspex
+    singularity exec --cleanenv -B /bmd --pwd <search dir> <sandbox> /opt/uspex/uspex
 
 ``build_master_command`` returns that command with its complete environment,
 so nothing depends on the submitter's environment or ``.bashrc``:
@@ -19,15 +19,32 @@ so nothing depends on the submitter's environment or ``.bashrc``:
 * The host side gets only ``PATH`` and ``LC_ALL``, plus anything passed in
   ``host_environment`` (for example ``SINGULARITY_TMPDIR``).
 
+UTF-8 locale. USPEX 25 prints non-ASCII text. Under ``--cleanenv`` with an
+ASCII locale (``LC_ALL=C``) it crashed while setting up its launcher with
+``UnicodeEncodeError: 'ascii' codec`` (POWER, job 23355060, #59). So the
+container gets ``LC_ALL=C.UTF-8``, ``LANG=C.UTF-8`` and
+``PYTHONIOENCODING=utf-8``, and the host side gets ``LC_ALL=C.UTF-8``; this
+is the setting that fixed the pilot. ``C.UTF-8`` is built into the image's
+glibc 2.35, so no locale files are needed.
+
+Image. The supported image is an unpacked sandbox directory, on POWER
+``/bmd/shared/uspex25_sandbox`` (docs/structure_search.md §5.4). Singularity
+3.8.6 converts a ``.sif`` file to a temporary sandbox on every start and needs
+``unsquashfs`` on ``PATH`` for that; on POWER ``unsquashfs`` is only in the
+``uspex-25`` module's mamba environment, not on the explicit host ``PATH``.
+``build_master_command`` therefore rejects ``.sif`` paths.
+
 Every path is a parameter. Paths that the container must see (the search
 directory, the spool, the cache and the bridge script) must lie under the
 bind path, which is mounted at the same location inside the container, so
 the same absolute path works on both sides.
 
-Not yet checked on POWER (bridge pilot, #59): that ``SINGULARITYENV_``
-variables reach the container under ``--cleanenv`` with Singularity 3.8.6,
-and that ``/opt/uspex/uspex`` needs no arguments. Both are standard
-Singularity and USPEX behaviour according to their documentation.
+Confirmed on POWER (#59, 4 Nov 2026): ``SINGULARITYENV_*`` variables reach
+the container under ``--cleanenv`` with Singularity 3.8.6, and with
+``whichCluster = -1`` USPEX runs each ``commandExecutable`` from inside its
+CalcFold (``Calculation/Calcfold_<n>_<step>``, through ``sh run_local.sh``),
+``numParallelCalcs`` at a time, with the full container environment. With
+``whichCluster = 0`` USPEX never runs the command, so searches must use -1.
 """
 
 from __future__ import annotations
@@ -42,6 +59,13 @@ BRIDGE_SCRIPT_NAME = "bmd_bridge.sh"
 DEFAULT_BIND = "/bmd"
 DEFAULT_USPEX_PATH = "/opt/uspex/uspex"
 DEFAULT_HOST_PATH = "/usr/bin:/bin"
+UTF8_LOCALE = "C.UTF-8"
+CONTAINER_LOCALE_ENVIRONMENT = {
+    "LC_ALL": UTF8_LOCALE,
+    "LANG": UTF8_LOCALE,
+    "PYTHONIOENCODING": "utf-8",
+}
+HOST_LOCALE_ENVIRONMENT = {"LC_ALL": UTF8_LOCALE}
 DEFAULT_BRIDGE_POLL_SECONDS = 2
 DEFAULT_BRIDGE_HEARTBEAT_SECONDS = 300
 
@@ -114,7 +138,8 @@ def build_master_command(
     """Build the USPEX master command. See the module docstring.
 
     ``singularity`` is the full path of the Singularity executable and
-    ``image`` the SIF file or unpacked sandbox directory. ``search_dir`` is
+    ``image`` the unpacked sandbox directory (``.sif`` files are rejected;
+    see the module docstring). ``search_dir`` is
     the USPEX run directory (it holds ``INPUT.txt`` and the CalcFolds).
     ``bridge_timeout_seconds`` is how long one relaxation step may wait in
     total, queueing included; 0 means no limit. ``bridge_heartbeat_seconds``
@@ -131,6 +156,11 @@ def build_master_command(
     }
     for name in ("search_dir", "xdg_cache_home", "spool_dir"):
         _under_bind(name, paths[name], bind_path)
+    if paths["image"].suffix.lower() == ".sif":
+        raise ValueError(
+            f"image {paths['image']} is a SIF file; use the unpacked sandbox directory "
+            "(Singularity 3.8.6 needs unsquashfs to convert a SIF, which is not on the host PATH)"
+        )
     if not PurePosixPath(uspex_path).is_absolute():
         raise ValueError("uspex_path must be an absolute path inside the image")
     if not isinstance(bridge_timeout_seconds, int) or bridge_timeout_seconds < 0:
@@ -141,13 +171,14 @@ def build_master_command(
         raise ValueError("bridge_poll_seconds must be positive")
 
     container_environment = {
+        **CONTAINER_LOCALE_ENVIRONMENT,
         "XDG_CACHE_HOME": str(paths["xdg_cache_home"]),
         "BMD_BRIDGE_SPOOL": str(paths["spool_dir"]),
         "BMD_BRIDGE_TIMEOUT_SECONDS": str(bridge_timeout_seconds),
         "BMD_BRIDGE_POLL_SECONDS": str(bridge_poll_seconds),
         "BMD_BRIDGE_HEARTBEAT_SECONDS": str(bridge_heartbeat_seconds),
     }
-    env = {"PATH": host_path, "LC_ALL": "C"}
+    env = {"PATH": host_path, **HOST_LOCALE_ENVIRONMENT}
     for key, value in (host_environment or {}).items():
         if key.startswith("SINGULARITYENV_") or key in env:
             raise ValueError(f"host_environment must not set {key}")
@@ -171,6 +202,9 @@ def build_master_command(
 
 __all__ = [
     "BRIDGE_SCRIPT_NAME",
+    "CONTAINER_LOCALE_ENVIRONMENT",
+    "HOST_LOCALE_ENVIRONMENT",
+    "UTF8_LOCALE",
     "DEFAULT_BIND",
     "DEFAULT_BRIDGE_HEARTBEAT_SECONDS",
     "DEFAULT_BRIDGE_POLL_SECONDS",

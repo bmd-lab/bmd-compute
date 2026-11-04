@@ -26,8 +26,11 @@ def test_master_command_line_and_explicit_environment():
     )
     assert dict(command.env) == {
         "PATH": "/usr/bin:/bin",
-        "LC_ALL": "C",
+        "LC_ALL": "C.UTF-8",
         "SINGULARITY_TMPDIR": "/scratch/tmp",
+        "SINGULARITYENV_LC_ALL": "C.UTF-8",
+        "SINGULARITYENV_LANG": "C.UTF-8",
+        "SINGULARITYENV_PYTHONIOENCODING": "utf-8",
         "SINGULARITYENV_XDG_CACHE_HOME": "/bmd/shared/uspex_cache",
         "SINGULARITYENV_BMD_BRIDGE_SPOOL": "/bmd/user/search1/.bmd_bridge",
         "SINGULARITYENV_BMD_BRIDGE_TIMEOUT_SECONDS": "86400",
@@ -43,7 +46,7 @@ def test_master_command_line_and_explicit_environment():
 def test_master_command_rejects_unsafe_paths():
     base = dict(
         singularity="/usr/bin/singularity",
-        image="/bmd/shared/uspex_25.sif",
+        image="/bmd/shared/uspex25_sandbox",
         search_dir="/bmd/user/search1",
         xdg_cache_home="/bmd/shared/cache",
         spool_dir="/bmd/user/search1/spool",
@@ -58,6 +61,9 @@ def test_master_command_rejects_unsafe_paths():
         dict(bridge_timeout_seconds=-1),
         dict(bridge_heartbeat_seconds=0),
         dict(uspex_path="uspex"),
+        dict(image="/bmd/shared/uspex_25.sif"),
+        dict(image="/powerapps/share/rocky9/uspex-25/uspex_25.SIF"),
+        dict(host_environment={"LC_ALL": "C"}),
         dict(host_environment={"SINGULARITYENV_X": "1"}),
         dict(host_environment={"PATH": "/x"}),
     ]
@@ -75,3 +81,37 @@ def test_uspex_command_executable_lines():
     assert uspex_command_executable("/bmd/a b/bmd_bridge.sh", 1) == ["sh '/bmd/a b/bmd_bridge.sh' 1"]
     with pytest.raises(ValueError):
         uspex_command_executable("/x", 0)
+
+
+def test_master_command_gives_the_container_a_utf8_locale():
+    """USPEX 25 crashed with UnicodeEncodeError under LC_ALL=C and --cleanenv (#59).
+
+    The pilot fixed it with these values, so they are fixed defaults and a
+    caller cannot switch the host locale back to ASCII.
+    """
+
+    command = build_master_command(
+        singularity="/usr/bin/singularity",
+        image="/bmd/shared/uspex25_sandbox",
+        search_dir="/bmd/user/search1",
+        xdg_cache_home="/bmd/shared/cache",
+        spool_dir="/bmd/user/search1/spool",
+        bridge_timeout_seconds=0,
+    )
+    assert command.env["LC_ALL"] == "C.UTF-8"
+    assert command.env["SINGULARITYENV_LC_ALL"] == "C.UTF-8"
+    assert command.env["SINGULARITYENV_LANG"] == "C.UTF-8"
+    assert command.env["SINGULARITYENV_PYTHONIOENCODING"] == "utf-8"
+    assert not any(value in {"C", "POSIX"} for value in command.env.values())
+
+
+def test_master_command_rejects_a_sif_image_with_the_reason():
+    with pytest.raises(ValueError, match="sandbox"):
+        build_master_command(
+            singularity="/usr/bin/singularity",
+            image="/powerapps/share/rocky9/uspex-25/uspex_25.sif",
+            search_dir="/bmd/user/search1",
+            xdg_cache_home="/bmd/shared/cache",
+            spool_dir="/bmd/user/search1/spool",
+            bridge_timeout_seconds=0,
+        )
