@@ -1,15 +1,19 @@
 #!/bin/bash
-# USPEX bridge pilot (Phase 0, #59): Si8 at 0 GPa, 4 parallel relaxations of
-# 12 ranks each, in a 48-core non-exclusive job. See README.md here.
+# USPEX bridge pilot (Phase 0, #59): Si8 at 0 GPa through the launch bridge.
+# Default: 2 relaxations at a time of 4 ranks each, in an 8-core job, so it
+# starts quickly on a busy partition. For a bigger run, override both the
+# allocation and the layout, for example
+#   PARALLEL=4 RANKS=12 STEP_MEM=12G sbatch -n 48 --mem=64G ... si_bridge.sbatch
+# See README.md here.
 #
 # Every setup step prints a line before it runs and stops with a message if
 # it fails, so the job log always says how far the job got.
 #SBATCH -p leeburton-pool
 #SBATCH --qos=owner100d
 #SBATCH -N 1
-#SBATCH -n 48
-#SBATCH --mem=64G
-#SBATCH -t 03:00:00
+#SBATCH -n 8
+#SBATCH --mem=24G
+#SBATCH -t 04:00:00
 #SBATCH --exclude=compute-0-332,compute-0-333
 #SBATCH -J uspex-si-pilot
 #SBATCH -o si_pilot-%j.out
@@ -27,8 +31,16 @@ say "job ${SLURM_JOB_ID:-?} on $(hostname)"
 PYTHON=${PYTHON:-/usr/bin/python3}
 IMAGE=${IMAGE:-/bmd/shared/uspex25_sandbox}
 CACHE=${CACHE:-/bmd/shared/uspex_cache}
-WHICH_CLUSTER=${WHICH_CLUSTER:-0}
-say "REPO=$REPO WORK=$WORK POTCAR_SI=$POTCAR_SI WHICH_CLUSTER=$WHICH_CLUSTER"
+# whichCluster -1: the probe job (#59, 4 Nov) showed USPEX 25 runs the
+# command as "sh run_local.sh" in each CalcFold in this mode; in mode 0 it
+# never ran the command at all.
+WHICH_CLUSTER=${WHICH_CLUSTER:--1}
+PARALLEL=${PARALLEL:-2}
+RANKS=${RANKS:-4}
+STEP_MEM=${STEP_MEM:-8G}
+need=$((PARALLEL * RANKS))
+[ "${SLURM_NTASKS:-$need}" -ge "$need" ] || die "PARALLEL x RANKS = $need is more than the job's ${SLURM_NTASKS} tasks"
+say "REPO=$REPO WORK=$WORK POTCAR_SI=$POTCAR_SI WHICH_CLUSTER=$WHICH_CLUSTER PARALLEL=$PARALLEL RANKS=$RANKS STEP_MEM=$STEP_MEM"
 say "python: $("$PYTHON" --version 2>&1)" ; "$PYTHON" --version >/dev/null 2>&1 || die "PYTHON=$PYTHON does not run"
 
 say "making the module command available"
@@ -64,7 +76,7 @@ say "SLURM $(srun --version)  I_MPI_PMI_LIBRARY=${I_MPI_PMI_LIBRARY:-unset}  sru
 say "starting the pilot"
 "$PYTHON" "$REPO/reference/uspex_pilot/si_bridge/run_pilot.py" \
   --work "$WORK" --singularity "$SINGULARITY" --image "$IMAGE" --cache "$CACHE" \
-  --potcar "$POTCAR_SI" --parallel 4 --ranks 12 --mem 12G --launch-mode srun_steps --which-cluster "$WHICH_CLUSTER"
+  --potcar "$POTCAR_SI" --parallel "$PARALLEL" --ranks "$RANKS" --mem "$STEP_MEM" --launch-mode srun_steps --which-cluster "$WHICH_CLUSTER"
 status=$?
 say "pilot finished with status $status"
 exit "$status"

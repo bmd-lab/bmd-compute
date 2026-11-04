@@ -6,8 +6,8 @@ space group 227) run through the launch bridge described in
 
 What it tests: USPEX in the shared sandbox, the bridge script as
 `commandExecutable`, VASP started by the host launcher as `srun --exact`
-steps (4 at once, 12 ranks each, in a 48-core job that does not need a whole
-free node), and USPEX reading the results. It does **not** test BMD
+steps (by default 2 at once, 4 ranks each, in an 8-core job that starts
+quickly; `PARALLEL`, `RANKS`, `STEP_MEM` and `sbatch -n` change the layout), and USPEX reading the results. It does **not** test BMD
 methodology: the INCARs in `Specific/` are pilot settings (Si ENMAX is
 about 245 eV; steps follow the shape recommended in the USPEX manual §3.1).
 It also does not test 4 × 48-rank placement on a full node.
@@ -43,6 +43,11 @@ REPO=/bmd/<user>/bmd-compute-pilot WORK=/bmd/<user>/uspex_si_pilot_1 POTCAR_SI=<
 ```
 
 ## What to check afterwards
+
+USPEX runs with `whichCluster = -1` by default: the probe job
+(`../probe/probe.sbatch`, #59) showed that USPEX 25 runs the command as
+`sh run_local.sh` in each CalcFold in that mode, and never runs it in mode 0.
+
 
 USPEX runs each relaxation command through its own `run_local.sh` in the
 CalcFold and does not keep the command's output. The pilot therefore points

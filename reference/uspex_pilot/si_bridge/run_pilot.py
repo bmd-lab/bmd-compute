@@ -120,7 +120,7 @@ def main() -> int:
     parser.add_argument("--mem", default="12G", help="memory per srun step")
     parser.add_argument("--launch-mode", default="srun_steps")
     parser.add_argument("--bridge-timeout", type=int, default=3600)
-    parser.add_argument("--which-cluster", type=int, choices=(-1, 0), default=0,
+    parser.add_argument("--which-cluster", type=int, choices=(-1, 0), default=-1,
                         help="USPEX whichCluster: 0 = local with core control, -1 = local without")
     args = parser.parse_args()
 
