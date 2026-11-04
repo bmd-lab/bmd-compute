@@ -31,8 +31,11 @@ Find the Si POTCAR in the shared PBE_64 set:
 find /bmd-db/potcars -path '*64*' -path '*/Si/POTCAR' 2>/dev/null | head
 ```
 
-Submit (`WORK` must not exist yet; `PYTHON` defaults to `python3`, and the
-bridge code was tested on Python 3.9 and 3.12):
+Submit (`WORK` must not exist yet; `PYTHON` defaults to `/usr/bin/python3`,
+the system Python, because a personal `PATH` may put another `python3` first;
+the bridge code was tested on Python 3.9 and 3.12). If the job log says
+Singularity was not found, add `SINGULARITY=<full path>` (from
+`module load uspex-25; command -v singularity`):
 
 ```bash
 REPO=/bmd/<user>/bmd-compute-pilot WORK=/bmd/<user>/uspex_si_pilot_1 POTCAR_SI=<path from find> \
