@@ -428,28 +428,53 @@ golden files in `tests/fixtures/structure_search/`.
 
 USPEX copies the same `INCAR_1 .. INCAR_5` into every candidate's
 calculation, so nothing in them can depend on a particular structure. The
-ladder starts looser than BMD standards and tightens so that the last two
-steps meet them:
+composition is fixed for a whole search, so the plane-wave cutoffs, which
+depend only on the search's POTCARs, are set once per search. The ladder
+starts looser than BMD standards and tightens so that the last two steps
+meet them:
 
-| Step | Purpose | ISIF | IBRION / POTIM | NSW | ENCUT (eV) | EDIFF | EDIFFG | Smearing |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | cell shape, far from a minimum | 4 | 2 / 0.02 | 99 | 430 * | 1e-2 | 0.1 | MP (`ISMEAR = 1`), `SIGMA = 0.10` |
-| 2 | cell shape | 4 | 1 / 0.3 | 99 | 430 * | 1e-3 | 0.01 | MP, `SIGMA = 0.10` |
-| 3 | cell shape and volume | 3 | 1 / 0.3 | 99 | 580 * | 1e-4 | 0.001 | MP, `SIGMA = 0.05` |
-| 4 | BMD relaxation standard | 3 | 1 / 0.3 | 99 | 580 * | 1e-6 * | -0.01 * | final * |
-| 5 | single point: ranking energy | 2 | -1 | 0 | 620 | 1e-6 | — | final * |
+| Step | Purpose | ISIF | IBRION / POTIM | NSW | ENCUT | EDIFF | EDIFFG | Smearing | ADDGRID |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | cell shape, far from a minimum | 4 | 2 / 0.02 | 99 | early * | 1e-2 | 0.1 | MP (`ISMEAR = 1`), `SIGMA = 0.10` | yes |
+| 2 | cell shape | 4 | 1 / 0.3 | 99 | early * | 1e-3 | 0.01 | MP, `SIGMA = 0.10` | yes |
+| 3 | cell shape and volume | 3 | 1 / 0.3 | 99 | relaxation | 1e-4 | 0.001 | MP, `SIGMA = 0.05` | no |
+| 4 | BMD relaxation standard | 3 | 1 / 0.3 | 99 | relaxation | 1e-6 * | -0.01 * | final * | no |
+| 5 | single point: ranking energy | 2 | -1 | 0 | ranking | 1e-6 | — | final * | yes |
 
 \* needs a lab decision (below).
 
-Every step also sets `PREC = Accurate` (* on steps 1–2), `LREAL = False`, `ADDGRID = True`,
+Cutoffs (`ladder_cutoffs`):
+
+- **relaxation**: BMD's species-dependent relaxation cutoff,
+  `bmd_compute.plane_wave_cutoff/1` (section 3),
+  `ENCUT = ceil(1.3 × max ENMAX / 50 eV) × 50 eV`. It is resolved by the
+  same function and the same versioned ENMAX metadata as every BMD Geometry
+  Optimisation (`geometry_relaxation.resolve_cutoff_record`), from the
+  POTCARs BMD selects for the search's elements. The resolved record is part
+  of the search's INCAR provenance record. Like the relaxation protocol,
+  steps 3–4 set no `ADDGRID`.
+- **ranking**: `max(620 eV, relaxation cutoff)`, the cutoff of a BMD Static
+  Energy after a relaxation, with that stage's `ADDGRID`.
+- **early**: `ceil(m × max ENMAX / 50 eV) × 50 eV`, with the multiplier
+  *m* = 1.0 a placeholder, so steps 1–2 are never below a POTCAR's ENMAX.
+
+| Search | Largest ENMAX | early / relaxation / ranking |
+| --- | --- | --- |
+| Si | 245.345 eV (`Si`) | 250 / 350 / 620 eV |
+| Li₂O | 499.034 eV (`Li_sv`) | 500 / 650 / 650 eV |
+
+Before the ladder followed BMD's cutoff rule, every search used 430 / 580 /
+620 eV, and searches containing Li or He (the only BMD POTCARs with ENMAX
+above 430 eV) were refused.
+
+Every step also sets `PREC = Accurate` (* on steps 1–2), `LREAL = False`,
 `LASPH = True`, `NELM = 200`, `ISPIN = 1`, `NCORE = 4`, `KPAR = 1` *,
 `LWAVE = False` and `LCHARG = False`. `NPAR` is never set alongside `NCORE`.
 KPAR and NCORE are checked in code against the rank count of a relaxation
 (48 by default, a parameter). The parallelisation numbers come from the lab's
 VASP notes on a single 3-atom Sc₂C cell, so they are not general results.
-No step sets `PSTRESS` (pressure is set
-only by `ExternalPressure` in `INPUT.txt`), `MAGMOM`, `NBANDS`, DFT+U, SOC or
-a dispersion correction.
+No step sets `PSTRESS` (pressure is set only by `ExternalPressure` in
+`INPUT.txt`), `MAGMOM`, `NBANDS`, DFT+U, SOC or a dispersion correction.
 
 Reasons:
 
@@ -457,36 +482,35 @@ Reasons:
   loose-to-tight EDIFF/EDIFFG of steps 1–3, IBRION 2 with POTIM 0.02 far from
   a minimum and IBRION 1 with POTIM 0.3 after it, and Methfessel–Paxton
   smearing for the early steps follow the USPEX 25.0 manual (section 3.1).
-- Steps that change the volume use BMD's fixed relaxation cutoff of 580 eV
-  to avoid Pulay-stress volume errors; only fixed-volume steps use a lower
-  one. BMD's own relaxations now use the species-dependent cutoff of
-  section 3 (`bmd_compute.plane_wave_cutoff/1`, without `ADDGRID`), and
-  580 eV is the value for records made before that protocol. Whether the
-  search ladder follows the new rule is a lab decision (below).
-- Every step's ENCUT must be at least the largest ENMAX of the search's
-  POTCARs. A search that fails this is refused (code
-  `encut_below_potcar_enmax`), never adjusted. For example, a search
-  containing Li (`Li_sv`, ENMAX 499.034 eV) is refused, because steps 1–2
-  use 430 eV.
-- Step 4 uses the BMD relaxation convergence (EDIFF 1e-6, forces below
-  0.01 eV/Å), and step 5 the BMD Static Energy cutoff and EDIFF, so steps
-  4–5 repeat the relax-then-static pattern of Relaxed Energy. USPEX ranks
-  candidates by the energy of the last step.
+- The last steps must match BMD standards (lab decision, `structure_search.md`
+  section 2), so the volume-changing steps use BMD's relaxation cutoff rule;
+  this also avoids Pulay-stress volume errors. Only fixed-volume steps use a
+  lower cutoff.
+- Safety nets: every step's ENCUT must be at least the largest ENMAX of the
+  search's POTCARs (refused with code `encut_below_potcar_enmax`, never
+  adjusted), and the ENMAX read from the copied POTCAR files must match the
+  metadata the cutoffs were resolved from (code
+  `potcar_enmax_differs_from_cutoff_record`). With the current rules the
+  first check always passes.
+- Step 4 uses BMD's pass-1 relaxation convergence (EDIFF 1e-6, forces below
+  0.01 eV/Å), and step 5 the BMD Static Energy cutoff rule and EDIFF, so
+  steps 4–5 repeat the relax-then-static pattern of Relaxed Energy. USPEX
+  ranks candidates by the energy of the last step. The search does not run
+  the relaxation protocol's tighter pass 2.
 - Steps 4 and 5 share one smearing so the geometry and the ranking energy
-  use the same occupations.
+  use the same occupations. For comparison, BMD's relaxation standard uses
+  Gaussian smearing with `SIGMA = 0.2` eV.
 
 Values that need a lab decision (named `*_NEEDS_LAB_DECISION` in the code):
 
 | Value | Placeholder | Notes |
 | --- | --- | --- |
-| ENCUT of steps 1–2 | 430 eV | 580 eV / 1.35, the middle of the manual's 30–40 % increase |
-| ENCUT below a POTCAR's ENMAX | refuse the search | alternative: raise the early cutoff for that search. The composition, and so the POTCARs, are fixed per search, so every candidate would still get the same INCAR |
-| ENCUT of steps 3–4 | 580 eV | alternative: BMD's species-dependent relaxation cutoff of section 3, computed per search |
+| Early-step cutoff multiplier *m* (steps 1–2) | 1.0 | `ceil(m × max ENMAX / 50) × 50`; Si gives 250 eV |
 | `PREC` of steps 1–2 | `Accurate` | the manual starts with `Low`, then `Normal`; `Accurate` also sets denser FFT grids |
 | Convergence of step 4 | `EDIFF = 1e-6`, `EDIFFG = -0.01` | relaxes every candidate to BMD standards, probably the largest cost of a search; alternative: the manual's final tolerances (`1e-4` / `1e-3`) or a value in between |
-| Number of steps | 5 | the manual suggests 4–5; the spec's `KresolStart` must have one value per step (checked before `INPUT.txt` is written, #67) |
 | Smearing of steps 4–5 | Gaussian, `SIGMA = 0.05` | alternative: Methfessel–Paxton with a small SIGMA. The tetrahedron method of PBE Static Energy is not used because candidates with coarse meshes can have too few k-points for it |
 | KPAR | 1 | must divide the rank count of a relaxation (48 by default), leave a quotient NCORE divides, and not exceed NKPTS for any candidate. KPAR = 4 meets the first two rules with 48 ranks and was worth up to 9x on one k-point-dense test cell, but exceeds NKPTS for candidates with fewer than 4 k-points; Phase 0 (#59) decides |
+| Number of steps | 5 | the manual suggests 4–5; the spec's `KresolStart` must have one value per step (checked before `INPUT.txt` is written, #67) |
 
 K-points: USPEX builds each mesh from `KresolStart` (one value per step,
 units 2π/Å). BMD's k-point policy (reciprocal density 64, section 4)
