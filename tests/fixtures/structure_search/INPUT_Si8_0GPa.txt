@@ -32,7 +32,7 @@ sh /bmd/placeholder/bmd_bridge.sh 3
 sh /bmd/placeholder/bmd_bridge.sh 4
 % EndExecutable
 
-0 : whichCluster
+-1 : whichCluster
 4 : numParallelCalcs
 1 : coresPerJob
 30 : sleepSeconds

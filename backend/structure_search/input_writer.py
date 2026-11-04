@@ -44,11 +44,18 @@ from backend.structure_search.spec import StructureSearchSpec
 INPUT_FILENAME = "INPUT.txt"
 
 # Fixed execution settings (docs/structure_search.md section 4).
-# whichCluster 0: local run with strict CPU core control; the USPEX master
-# runs inside the SLURM allocation and starts each relaxation itself.
-WHICH_CLUSTER = 0
-# coresPerJob 1: USPEX's own core control pins only the waiting bridge
-# script; SLURM places the VASP ranks.
+# whichCluster -1: local run without job submission. The USPEX master runs
+# inside the SLURM allocation and starts each relaxation itself, as
+# ``sh run_local.sh`` in the CalcFold, numParallelCalcs at a time, with the
+# full container environment. USPEX's own CPU core control is not used;
+# SLURM places the VASP ranks (via the launch bridge).
+# Checked on POWER (probe job 23367013, 4 Nov 2026, issue #59): with
+# whichCluster 0, USPEX 25 never ran commandExecutable, even when
+# run_local.sh was made executable; with -1 it did.
+WHICH_CLUSTER = -1
+# coresPerJob 1: in mode 0 it would make USPEX's core control pin only the
+# waiting bridge script. Whether mode -1 reads coresPerJob at all is
+# untested; it is kept so the file is unchanged if it does.
 CORES_PER_JOB = 1
 # abinitioCode 1 = VASP, for every relaxation step.
 ABINITIO_CODE_VASP = 1
@@ -78,7 +85,10 @@ class SearchExecutionSettings:
       two different defaults (1, and auto-detect available cores, which on a
       192-core node could mean 192 concurrent relaxations).
     - ``sleep_seconds``: ``sleepSeconds``, how often the USPEX master
-      checks for finished relaxations.
+      checks for finished relaxations. The manual shows this keyword only in
+      prose (``sleepSeconds = 5``, section 2.8), and the Si8 pilot did not
+      set it, so the ``value : sleepSeconds`` line form is not yet confirmed
+      on a real run (Phase 0, #59).
 
     None of these has a default here; the execution policy (#67) chooses them.
     """
