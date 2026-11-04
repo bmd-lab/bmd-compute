@@ -53,20 +53,26 @@ class StructureSearchSpecError(CalculationValidationError):
         self.code = code
 
 
+# Upper limit of the default populationSize (manual section 4.2).
+POPULATION_SIZE_DEFAULT_MAX = 60
+
+
 def default_population_size(atoms_per_cell: int) -> int:
     """USPEX's documented default ``populationSize`` for a cell of ``atoms_per_cell`` atoms.
 
-    The manual gives the default as "2 x atoms per cell, rounded to 10". This
-    function reads that as: round ``2 * atoms_per_cell`` to the nearest
-    multiple of 10 (halves round up), and never return less than 10. bmd-compute
-    always writes ``populationSize`` explicitly, so this value is a
-    bmd-compute default and does not depend on how USPEX itself rounds.
+    The manual (section 4.2) gives the default as "2 x N rounded to the
+    closest 10 ... The upper limit is 60". This function rounds
+    ``2 * atoms_per_cell`` to the nearest multiple of 10 (halves round up)
+    and keeps the result between 10 and 60. The lower limit of 10 is a
+    bmd-compute choice (it only matters below 3 atoms). bmd-compute always
+    writes ``populationSize`` explicitly, so this value does not depend on
+    how USPEX itself rounds.
     """
 
     if atoms_per_cell < 1:
         raise ValueError("atoms_per_cell must be at least 1")
     rounded = int(math.floor(2 * atoms_per_cell / 10 + 0.5)) * 10
-    return max(10, rounded)
+    return min(POPULATION_SIZE_DEFAULT_MAX, max(10, rounded))
 
 
 @dataclass(frozen=True)
@@ -101,9 +107,11 @@ class StructureSearchSpec:
     for malformed values. The resolved population sizes are available as
     :attr:`resolved_population_size` and :attr:`resolved_initial_population_size`.
 
-    ``num_generations`` and ``stop_criterion`` have no default here: their
-    USPEX defaults are not recorded in the design document, so the caller has
-    to choose them.
+    ``num_generations`` and ``stop_criterion`` have no default here, so the
+    caller must choose them. For reference, the manual's defaults (section
+    4.2) are ``numGenerations`` = 100 and, for fixed composition,
+    ``stopCrit`` = the total number of atoms; they are not applied
+    automatically because both decide how long a search runs.
     """
 
     elements: tuple[str, ...]
@@ -377,6 +385,7 @@ def _float_tuple(value, label: str) -> tuple[float, ...]:
 
 __all__ = [
     "FIXED_COMPOSITION_BULK",
+    "POPULATION_SIZE_DEFAULT_MAX",
     "SPEC_SCHEMA",
     "SPEC_SCHEMA_VERSION",
     "THEORY_PBE",
