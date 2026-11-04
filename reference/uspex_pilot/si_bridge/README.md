@@ -44,6 +44,13 @@ REPO=/bmd/<user>/bmd-compute-pilot WORK=/bmd/<user>/uspex_si_pilot_1 POTCAR_SI=<
 
 ## What to check afterwards
 
+USPEX runs each relaxation command through its own `run_local.sh` in the
+CalcFold and does not keep the command's output. The pilot therefore points
+`commandExecutable` at `search/bmd_bridge_pilot.sh`, a wrapper that sets the
+bridge settings explicitly and appends its arguments, environment and the
+bridge's error output to `bmd_bridge_debug.log` in each CalcFold. Read that
+file first if relaxations fail.
+
 ```bash
 W=/bmd/<user>/uspex_si_pilot_1
 cat si_pilot-<jobid>.out

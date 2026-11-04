@@ -74,6 +74,40 @@ Si
     (search_dir / "INPUT.txt").write_text(text)
 
 
+def write_bridge_wrapper(search_dir: Path, bridge: Path, spool: Path, timeout: int) -> Path:
+    """Pilot-only wrapper that USPEX runs instead of the bridge itself.
+
+    The first pilot run showed every relaxation command failing within a
+    second, before the bridge wrote a request, and USPEX keeps the command's
+    output to itself. The wrapper sets the bridge settings explicitly (in case
+    USPEX starts commands with a reduced environment) and records its
+    arguments, environment and the bridge's error output in
+    bmd_bridge_debug.log in each CalcFold.
+    """
+
+    wrapper = search_dir / "bmd_bridge_pilot.sh"
+    wrapper.write_text(
+        f"""#!/bin/sh
+log="$(pwd)/bmd_bridge_debug.log"
+{{
+  echo "== start $(date +%T) pid $$ args: $*"
+  echo "pwd: $(pwd)  id: $(id)"
+  env | sort
+}} >> "$log" 2>&1
+export BMD_BRIDGE_SPOOL={spool}
+export BMD_BRIDGE_TIMEOUT_SECONDS={timeout}
+export BMD_BRIDGE_POLL_SECONDS=2
+export BMD_BRIDGE_HEARTBEAT_SECONDS=300
+sh {bridge} "$@" 2>> "$log"
+status=$?
+echo "== exit $status $(date +%T)" >> "$log"
+exit "$status"
+"""
+    )
+    wrapper.chmod(0o755)
+    return wrapper
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work", required=True, type=Path, help="pilot work directory under /bmd")
@@ -100,7 +134,8 @@ def main() -> int:
     if not str(bridge).startswith("/bmd/"):
         # USPEX runs the bridge inside the container, which only sees /bmd.
         raise SystemExit(f"the bmd-compute checkout must be under /bmd (bridge is {bridge})")
-    write_input(search_dir, bridge, args.parallel)
+    wrapper = write_bridge_wrapper(search_dir, bridge, spool, args.bridge_timeout)
+    write_input(search_dir, wrapper, args.parallel)
 
     master = build_master_command(
         singularity=args.singularity,
