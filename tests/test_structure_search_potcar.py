@@ -94,19 +94,27 @@ def test_potcar_without_enmax_writes_nothing(tmp_path):
     assert list(specific.iterdir()) == []
 
 
-def test_search_with_a_hard_potcar_is_refused_by_the_ladder(tmp_path):
-    """Li_sv (ENMAX 499.034 eV in BMD's PBE_64 metadata) is above the early-step cutoff."""
+# The only POTCARs BMD selects whose ENMAX is above the 430 eV early-step
+# cutoff, read on POWER from /bmd-db/potcars/POT_PAW_PBE_64 (4 Nov 2026) and
+# matching backend/calculations/potcar_enmax_PBE_64.json on main.
+HARD_BMD_POTCARS = [("Li", "Li_sv", 499.034), ("He", "He", 478.896)]
 
+
+@pytest.mark.parametrize(("element", "symbol", "enmax"), HARD_BMD_POTCARS)
+def test_search_with_a_hard_potcar_is_refused_by_the_ladder(tmp_path, element, symbol, enmax):
     psp = tmp_path / "psp"
     specific = tmp_path / "Specific"
     specific.mkdir()
-    assert bmd_potcar_symbol("Li") == "Li_sv"
-    _placeholder_repository(psp, ["Li_sv", "O"], enmax={"Li_sv": 499.034})
-    records = write_specific_potcars(["Li", "O"], psp, specific)
-    assert max_enmax(records) == 499.034
+    assert bmd_potcar_symbol(element) == symbol
+    _placeholder_repository(psp, [symbol, "O"], enmax={symbol: enmax})
+    text = (psp / POTCAR_FUNCTIONAL_DIR / symbol / "POTCAR").read_text(encoding="utf-8")
+    assert f"   ENMAX  =  {enmax:.3f}; ENMIN  =" in text  # the standard header layout
+    records = write_specific_potcars([element, "O"], psp, specific)
+    assert max_enmax(records) == enmax
     with pytest.raises(IncarPolicyError) as excinfo:
         require_encut_covers_enmax(max_enmax(records))
     assert excinfo.value.code == "encut_below_potcar_enmax"
+    assert excinfo.value.diagnostic["steps"] == [1, 2]
 
 
 def test_missing_potcar_writes_nothing(tmp_path):
