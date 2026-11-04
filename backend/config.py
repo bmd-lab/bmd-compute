@@ -50,6 +50,30 @@ def _positive_float_env(name: str, *, default: float) -> float:
     return parsed
 
 
+def _text_env(name: str, *, default: str, allow_empty: bool = False) -> str:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    value = value.strip()
+    if not value and not allow_empty:
+        return default
+    return value
+
+
+def _absolute_path_env(name: str, *, default: str) -> str:
+    value = _text_env(name, default=default)
+    if not value.startswith("/"):
+        raise RuntimeError(f"{name} must be an absolute path, got {value!r}.")
+    return value
+
+
+def _choice_env(name: str, *, default: str, choices: tuple[str, ...]) -> str:
+    value = _text_env(name, default=default)
+    if value not in choices:
+        raise RuntimeError(f"{name} must be one of: {', '.join(choices)}; got {value!r}.")
+    return value
+
+
 DEFAULT_SSH_CONFIG_HOST = "powerslurm-bmdguest"
 DEFAULT_REMOTE_HOST = DEFAULT_SSH_CONFIG_HOST
 DEFAULT_USERNAME = "bmdguest"
@@ -105,6 +129,83 @@ MAX_CONCURRENT_REMOTE_OPERATIONS = _positive_int_env(
 REMOTE_OPERATION_SLOT_TIMEOUT_S = _positive_float_env(
     REMOTE_OPERATION_SLOT_TIMEOUT_ENV,
     default=5.0,
+)
+
+# --- USPEX structure searches (docs/structure_search.md, docs/deployment.md) ---
+#
+# These apply only to structure-search submissions. Each can be overridden
+# with the environment variable named next to it, on the machine that prepares
+# submissions. Preparation records the values in submission.json, and the job
+# on POWER checks against the recorded values, not against its own environment.
+# The defaults are the POWER setup of 2026-11-02 (docs/structure_search.md §5).
+
+STRUCTURE_SEARCH_LAUNCH_MODES = ("srun_steps", "mpirun_pinned")
+
+# Unpacked Singularity sandbox of the USPEX 25.0 image (not the .sif file).
+USPEX_SANDBOX_DIR_ENV = "BMD_USPEX_SANDBOX_DIR"
+USPEX_SANDBOX_DIR = _absolute_path_env(
+    USPEX_SANDBOX_DIR_ENV, default="/bmd/shared/uspex25_sandbox"
+)
+# Used as XDG_CACHE_HOME for the USPEX command only. The self-extracting
+# program unpacks itself once into <this>/uspex_sfx/<payload sha256>/.
+USPEX_CACHE_DIR_ENV = "BMD_USPEX_CACHE_DIR"
+USPEX_CACHE_DIR = _absolute_path_env(USPEX_CACHE_DIR_ENV, default="/bmd/shared/uspex_cache")
+# The PAYLOAD_SHA256= value in the header of /opt/uspex/uspex (USPEX 25.0,
+# 11 November 2025). It identifies the program that searches run.
+USPEX_PAYLOAD_SHA256_ENV = "BMD_USPEX_PAYLOAD_SHA256"
+USPEX_PAYLOAD_SHA256 = _text_env(
+    USPEX_PAYLOAD_SHA256_ENV,
+    default="fc4a08e65ffc5f4fc3b45cb058de2cd54731ab2c191123aac8a3c69e87e95c8c",
+).lower()
+# Called by full path; loading the uspex-25 module is not needed.
+SINGULARITY_EXECUTABLE_ENV = "BMD_SINGULARITY_EXECUTABLE"
+SINGULARITY_EXECUTABLE = _absolute_path_env(
+    SINGULARITY_EXECUTABLE_ENV,
+    default="/powerapps/share/rocky9/mamba/mamba-1.5.8/envs/singularity-3.8.6/bin/singularity",
+)
+# I_MPI_PMI_LIBRARY for VASP steps started with `srun --mpi=pmi2`.
+STRUCTURE_SEARCH_PMI_LIBRARY_ENV = "BMD_SEARCH_I_MPI_PMI_LIBRARY"
+STRUCTURE_SEARCH_PMI_LIBRARY = _absolute_path_env(
+    STRUCTURE_SEARCH_PMI_LIBRARY_ENV, default="/usr/lib64/libpmi2.so"
+)
+STRUCTURE_SEARCH_LAUNCH_MODE_ENV = "BMD_SEARCH_LAUNCH_MODE"
+STRUCTURE_SEARCH_LAUNCH_MODE = _choice_env(
+    STRUCTURE_SEARCH_LAUNCH_MODE_ENV,
+    default="srun_steps",
+    choices=STRUCTURE_SEARCH_LAUNCH_MODES,
+)
+# Relaxations run at the same time (USPEX numParallelCalcs) and MPI ranks per
+# relaxation. 4 x 48 fills one 192-core node; Phase 0 (#59) may change it.
+STRUCTURE_SEARCH_PARALLEL_RELAXATIONS_ENV = "BMD_SEARCH_PARALLEL_RELAXATIONS"
+STRUCTURE_SEARCH_PARALLEL_RELAXATIONS = _positive_int_env(
+    STRUCTURE_SEARCH_PARALLEL_RELAXATIONS_ENV, default=4
+)
+STRUCTURE_SEARCH_RANKS_PER_RELAXATION_ENV = "BMD_SEARCH_RANKS_PER_RELAXATION"
+STRUCTURE_SEARCH_RANKS_PER_RELAXATION = _positive_int_env(
+    STRUCTURE_SEARCH_RANKS_PER_RELAXATION_ENV, default=48
+)
+# How long one relaxation step may wait for its VASP run, queueing included,
+# before the bridge gives up (exit 124) and USPEX discards that candidate.
+# Provisional: about twice the slowest whole relaxation chain estimated in
+# docs/structure_search.md §7 (2 h). Phase 0 should replace it with a measured
+# value.
+STRUCTURE_SEARCH_BRIDGE_TIMEOUT_S_ENV = "BMD_SEARCH_BRIDGE_TIMEOUT_S"
+STRUCTURE_SEARCH_BRIDGE_TIMEOUT_S = _positive_int_env(
+    STRUCTURE_SEARCH_BRIDGE_TIMEOUT_S_ENV, default=4 * 3600
+)
+# Normal leeburton-pool nodes: socket 0 holds CPUs 0-95, socket 1 CPUs 96-191.
+STRUCTURE_SEARCH_NODE_SOCKETS_ENV = "BMD_SEARCH_NODE_SOCKETS"
+STRUCTURE_SEARCH_NODE_SOCKETS = _positive_int_env(STRUCTURE_SEARCH_NODE_SOCKETS_ENV, default=2)
+STRUCTURE_SEARCH_CORES_PER_SOCKET_ENV = "BMD_SEARCH_CORES_PER_SOCKET"
+STRUCTURE_SEARCH_CORES_PER_SOCKET = _positive_int_env(
+    STRUCTURE_SEARCH_CORES_PER_SOCKET_ENV, default=96
+)
+# SLURM --exclude for searches. compute-0-332 and compute-0-333 use NPS4
+# (8 NUMA domains of 24 cores), so the 2 x 96 layout above does not hold there.
+# Set to an empty string to exclude no nodes.
+STRUCTURE_SEARCH_EXCLUDED_NODES_ENV = "BMD_SEARCH_EXCLUDED_NODES"
+STRUCTURE_SEARCH_EXCLUDED_NODES = _text_env(
+    STRUCTURE_SEARCH_EXCLUDED_NODES_ENV, default="compute-0-[332-333]", allow_empty=True
 )
 
 DEFAULT_POTCAR_FUNCTIONAL = "PBE_64"
@@ -180,6 +281,31 @@ __all__ = [
     "REMOTE_OPERATION_LIMIT_ENV",
     "REMOTE_OPERATION_SLOT_TIMEOUT_ENV",
     "REMOTE_OPERATION_SLOT_TIMEOUT_S",
+    "SINGULARITY_EXECUTABLE",
+    "SINGULARITY_EXECUTABLE_ENV",
+    "STRUCTURE_SEARCH_BRIDGE_TIMEOUT_S",
+    "STRUCTURE_SEARCH_BRIDGE_TIMEOUT_S_ENV",
+    "STRUCTURE_SEARCH_CORES_PER_SOCKET",
+    "STRUCTURE_SEARCH_CORES_PER_SOCKET_ENV",
+    "STRUCTURE_SEARCH_EXCLUDED_NODES",
+    "STRUCTURE_SEARCH_EXCLUDED_NODES_ENV",
+    "STRUCTURE_SEARCH_LAUNCH_MODE",
+    "STRUCTURE_SEARCH_LAUNCH_MODES",
+    "STRUCTURE_SEARCH_LAUNCH_MODE_ENV",
+    "STRUCTURE_SEARCH_NODE_SOCKETS",
+    "STRUCTURE_SEARCH_NODE_SOCKETS_ENV",
+    "STRUCTURE_SEARCH_PARALLEL_RELAXATIONS",
+    "STRUCTURE_SEARCH_PARALLEL_RELAXATIONS_ENV",
+    "STRUCTURE_SEARCH_PMI_LIBRARY",
+    "STRUCTURE_SEARCH_PMI_LIBRARY_ENV",
+    "STRUCTURE_SEARCH_RANKS_PER_RELAXATION",
+    "STRUCTURE_SEARCH_RANKS_PER_RELAXATION_ENV",
     "SUBMISSION_ENV_KEYS",
+    "USPEX_CACHE_DIR",
+    "USPEX_CACHE_DIR_ENV",
+    "USPEX_PAYLOAD_SHA256",
+    "USPEX_PAYLOAD_SHA256_ENV",
+    "USPEX_SANDBOX_DIR",
+    "USPEX_SANDBOX_DIR_ENV",
     "bmd_debug_enabled",
 ]
