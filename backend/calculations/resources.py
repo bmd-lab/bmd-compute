@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from backend.calculations.registry import CalculationValidationError
 from backend.calculations.resource_policy import (
     AUTOMATIC_NCORE_STAGE_TYPES,
     stage_allows_automatic_ncore,
 )
-from backend.config import DEFAULT_ACCOUNT, DEFAULT_PARTITION, DEFAULT_RESOURCES
+from backend.config import (
+    DEFAULT_ACCOUNT,
+    DEFAULT_PARTITION,
+    DEFAULT_QOS,
+    DEFAULT_RESOURCES,
+    STRUCTURE_SEARCH_CORES_PER_SOCKET,
+    STRUCTURE_SEARCH_EXCLUDED_NODES,
+    STRUCTURE_SEARCH_NODE_SOCKETS,
+    STRUCTURE_SEARCH_PARALLEL_RELAXATIONS,
+    STRUCTURE_SEARCH_RANKS_PER_RELAXATION,
+)
 
 
 ALLOWED_CPU_COUNTS = (24, 48, 72, 96, 120, 144, 168, 192)
@@ -82,6 +92,118 @@ class ExecutionResources:
             queue=values.get("queue", values.get("partition", DEFAULT_PARTITION)),
             account=values.get("account", DEFAULT_ACCOUNT),
         )
+
+
+# SLURM hostlist expression for --exclude, e.g. "compute-0-[332-333],compute-0-7".
+# Restricted to characters that are safe on an #SBATCH line.
+_HOSTLIST_PATTERN = re.compile(r"^[A-Za-z0-9._\-]+(\[[0-9,\-]+\])?(,[A-Za-z0-9._\-]+(\[[0-9,\-]+\])?)*$")
+STRUCTURE_SEARCH_RESOURCE_PRESET = "structure_search_exclusive_node"
+
+
+@dataclass(frozen=True)
+class StructureSearchResources:
+    """SLURM request for one USPEX structure search: one whole node.
+
+    Used **only** for structure searches (docs/structure_search.md §4). Ordinary
+    workflows keep using ``ExecutionResources`` and the automatic estimator,
+    and this class is deliberately not accepted where ``ExecutionResources`` is.
+
+    The request is ``-N 1 --exclusive --mem=0`` under the ``owner100d`` QOS:
+
+    * ``--exclusive``: the USPEX master runs several VASP relaxations side by
+      side on the node, so no other job may share it.
+    * ``--mem=0``: all of the node's memory. The partition's default is 1 GB
+      per job, far too little.
+    * ``ntasks``: relaxations in parallel x ranks per relaxation (4 x 48 = 192
+      by default), so that the job's ``srun`` steps can start that many ranks.
+    * ``exclude``: nodes whose core layout differs from the configured
+      sockets x cores per socket (compute-0-332/333 by default).
+
+    The walltime must be given explicitly (H:MM:SS, at most 100 days, the
+    owner100d limit). There is no automatic estimate: the estimator is
+    calibrated on single PBE stages, and a search's length depends on how many
+    generations it runs before it stops.
+    """
+
+    walltime: str
+    ntasks: int = STRUCTURE_SEARCH_PARALLEL_RELAXATIONS * STRUCTURE_SEARCH_RANKS_PER_RELAXATION
+    exclude: str = STRUCTURE_SEARCH_EXCLUDED_NODES
+    queue: str = DEFAULT_PARTITION
+    node_cores: int = field(
+        default=STRUCTURE_SEARCH_NODE_SOCKETS * STRUCTURE_SEARCH_CORES_PER_SOCKET,
+        repr=False,
+    )
+
+    nodes = 1
+    exclusive = True
+    memory = "0"
+    account = DEFAULT_ACCOUNT
+    qos = DEFAULT_QOS
+
+    def __post_init__(self) -> None:
+        if self.walltime is None or str(self.walltime).strip().lower() in {"", "auto", "automatic"}:
+            raise CalculationValidationError(
+                "A structure search needs an explicit walltime.",
+                suggestion=(
+                    "Enter the walltime as H:MM:SS, at most 2400:00:00 (100 days). "
+                    "Structure searches have no automatic walltime estimate."
+                ),
+            )
+        object.__setattr__(self, "walltime", validate_walltime(self.walltime))
+        node_cores = _positive_int(self.node_cores, "node cores")
+        ntasks = _positive_int(self.ntasks, "tasks")
+        if ntasks > node_cores:
+            raise CalculationValidationError(
+                f"A structure search asks for {ntasks} tasks, but a node has {node_cores} cores.",
+                suggestion="Lower the relaxations in parallel or the ranks per relaxation.",
+            )
+        object.__setattr__(self, "node_cores", node_cores)
+        object.__setattr__(self, "ntasks", ntasks)
+        exclude = str(self.exclude or "").strip()
+        if exclude and not _HOSTLIST_PATTERN.fullmatch(exclude):
+            raise CalculationValidationError(
+                f"Excluded nodes {exclude!r} is not a SLURM host list.",
+                suggestion="Use a form such as compute-0-[332-333],compute-0-7, or leave it empty.",
+            )
+        object.__setattr__(self, "exclude", exclude)
+        object.__setattr__(self, "queue", validate_queue(self.queue))
+
+    def to_dict(self) -> dict:
+        return {
+            "preset": STRUCTURE_SEARCH_RESOURCE_PRESET,
+            "nodes": self.nodes,
+            "ntasks": self.ntasks,
+            "exclusive": self.exclusive,
+            "mem": self.memory,
+            "walltime": self.walltime,
+            "partition": self.queue,
+            "account": self.account,
+            "qos": self.qos,
+            "exclude": self.exclude,
+        }
+
+    def sbatch_directives(self) -> list[str]:
+        """The ``#SBATCH`` lines for this request, in a fixed order."""
+
+        lines = [
+            f"#SBATCH -p {self.queue}",
+            f"#SBATCH --account={self.account}",
+            f"#SBATCH --qos={self.qos}",
+            f"#SBATCH --time={self.walltime}",
+            f"#SBATCH --nodes={self.nodes}",
+            f"#SBATCH --ntasks={self.ntasks}",
+            "#SBATCH --exclusive",
+            f"#SBATCH --mem={self.memory}",
+        ]
+        if self.exclude:
+            lines.append(f"#SBATCH --exclude={self.exclude}")
+        return lines
+
+
+def structure_search_resources(walltime) -> StructureSearchResources:
+    """The exclusive-node request for a structure search with ``walltime``."""
+
+    return StructureSearchResources(walltime=walltime)
 
 
 def default_execution_resources() -> ExecutionResources:
@@ -216,10 +338,13 @@ __all__ = [
     "MAX_WALLTIME_SECONDS",
     "WALLTIME_PATTERN",
     "ExecutionResources",
+    "STRUCTURE_SEARCH_RESOURCE_PRESET",
+    "StructureSearchResources",
     "default_execution_resources",
     "ncore_for_execution_resources",
     "normalize_execution_resources",
     "stage_allows_automatic_ncore",
+    "structure_search_resources",
     "format_walltime",
     "validate_queue",
     "validate_walltime",
