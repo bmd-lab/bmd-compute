@@ -126,9 +126,10 @@ def write_specific_potcars(
     source, so the ENMAX read from the source is the copy's. Nothing is
     written if any element fails.
 
-    Use :func:`max_enmax` on the records and
-    ``incar_policy.require_encut_covers_enmax`` to check the ladder's cutoffs
-    against these POTCARs.
+    Then check the records against the search's cutoffs with
+    ``incar_policy.require_potcars_match_cutoff_record`` (the ENMAX values
+    must be those the cutoffs were resolved from) and
+    ``incar_policy.require_encut_covers_enmax(max_enmax(records), ...)``.
     """
 
     elements = [str(element) for element in elements]

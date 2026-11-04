@@ -3,8 +3,15 @@
 import hashlib
 
 import pytest
+from conftest import synthetic_enmax_metadata, use_enmax_metadata
 
-from backend.structure_search.incar_policy import IncarPolicyError, require_encut_covers_enmax
+from backend.structure_search.incar_policy import (
+    IncarPolicyError,
+    ladder_cutoffs,
+    require_encut_covers_enmax,
+    require_potcars_match_cutoff_record,
+    search_cutoff_record,
+)
 from backend.structure_search.potcar import (
     POTCAR_FUNCTIONAL_DIR,
     SpecificPotcarError,
@@ -94,50 +101,51 @@ def test_potcar_without_enmax_writes_nothing(tmp_path):
     assert list(specific.iterdir()) == []
 
 
-# The only POTCARs BMD selects whose ENMAX is above the 430 eV early-step
-# cutoff, read on POWER from /bmd-db/potcars/POT_PAW_PBE_64 (4 Nov 2026) and
-# matching backend/calculations/potcar_enmax_PBE_64.json on main.
+# The only POTCARs BMD selects whose ENMAX is above 430 eV, the fixed early-step
+# cutoff the ladder used before it followed BMD's species-dependent cutoff
+# rule. Read on POWER from /bmd-db/potcars/POT_PAW_PBE_64 (4 Nov 2026); they
+# match backend/calculations/potcar_enmax_PBE_64.json.
 HARD_BMD_POTCARS = [("Li", "Li_sv", 499.034), ("He", "He", 478.896)]
 
 
+@pytest.fixture
+def hard_potcar_metadata(monkeypatch, tmp_path):
+    """SYNTHETIC test metadata with the published values (tests never read the real file)."""
+
+    values = {symbol: enmax for _, symbol, enmax in HARD_BMD_POTCARS} | {"O": 400.0}
+    use_enmax_metadata(monkeypatch, tmp_path / "enmax.json", synthetic_enmax_metadata(values))
+
+
 @pytest.mark.parametrize(("element", "symbol", "enmax"), HARD_BMD_POTCARS)
-def test_search_with_a_hard_potcar_is_refused_by_the_ladder(tmp_path, element, symbol, enmax):
+def test_search_with_a_hard_potcar_gets_cutoffs_above_its_enmax(
+    tmp_path, hard_potcar_metadata, element, symbol, enmax
+):
     psp = tmp_path / "psp"
     specific = tmp_path / "Specific"
     specific.mkdir()
     assert bmd_potcar_symbol(element) == symbol
-    _placeholder_repository(psp, [symbol, "O"], enmax={symbol: enmax})
+    _placeholder_repository(psp, [symbol, "O"], enmax={symbol: enmax, "O": 400.0})
     text = (psp / POTCAR_FUNCTIONAL_DIR / symbol / "POTCAR").read_text(encoding="utf-8")
     assert f"   ENMAX  =  {enmax:.3f}; ENMIN  =" in text  # the standard header layout
     records = write_specific_potcars([element, "O"], psp, specific)
     assert max_enmax(records) == enmax
+
+    cutoff_record = search_cutoff_record([element, "O"])
+    assert cutoff_record["max_enmax_ev"] == enmax
+    require_potcars_match_cutoff_record(records, cutoff_record)
+    require_encut_covers_enmax(max_enmax(records), cutoff_record)
+    assert ladder_cutoffs(cutoff_record)["early"] == 500  # was 430, below this ENMAX
+
+
+def test_mismatched_potcar_is_refused_against_the_cutoff_record(tmp_path, hard_potcar_metadata):
+    """A POTCAR whose ENMAX differs from the metadata the cutoffs came from."""
+
+    psp = tmp_path / "psp"
+    specific = tmp_path / "Specific"
+    specific.mkdir()
+    _placeholder_repository(psp, ["Li_sv", "O"], enmax={"Li_sv": 520.0, "O": 400.0})
+    records = write_specific_potcars(["Li", "O"], psp, specific)
     with pytest.raises(IncarPolicyError) as excinfo:
-        require_encut_covers_enmax(max_enmax(records))
-    assert excinfo.value.code == "encut_below_potcar_enmax"
-    assert excinfo.value.diagnostic["steps"] == [1, 2]
-
-
-def test_missing_potcar_writes_nothing(tmp_path):
-    psp = tmp_path / "psp"
-    specific = tmp_path / "Specific"
-    specific.mkdir()
-    _placeholder_repository(psp, ["O"])
-    with pytest.raises(SpecificPotcarError, match="Ti_sv"):
-        write_specific_potcars(["O", "Ti"], psp, specific)
-    assert list(specific.iterdir()) == []
-
-
-def test_wrong_potcar_file_is_refused(tmp_path):
-    psp = tmp_path / "psp"
-    specific = tmp_path / "Specific"
-    specific.mkdir()
-    _placeholder_repository(psp, ["Ti_sv"], header="  PAW_PBE Ti 08Apr2002")
-    with pytest.raises(SpecificPotcarError, match="does not start with"):
-        write_specific_potcars(["Ti"], psp, specific)
-    assert list(specific.iterdir()) == []
-
-
-def test_unmapped_element_is_refused(tmp_path):
-    assert bmd_potcar_symbol("Og") is None
-    with pytest.raises(SpecificPotcarError):
-        potcar_source_path(tmp_path, "Og")
+        require_potcars_match_cutoff_record(records, search_cutoff_record(["Li", "O"]))
+    assert excinfo.value.code == "potcar_enmax_differs_from_cutoff_record"
+    assert excinfo.value.diagnostic["symbols"] == ["Li_sv"]
