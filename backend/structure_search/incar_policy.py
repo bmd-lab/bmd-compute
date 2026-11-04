@@ -16,19 +16,29 @@ step  purpose                     ISIF  IBRION  POTIM  NSW  ENCUT (eV)      EDIF
 ====  ==========================  ====  ======  =====  ===  ==============  =====  ======  =====================
 1     shape, far from a minimum   4     2       0.02   99   early (430)     1e-2   1e-1    MP, SIGMA 0.10
 2     shape                       4     1       0.3    99   early (430)     1e-3   1e-2    MP, SIGMA 0.10
-3     volume                      3     1       0.3    99   580             1e-4   1e-3    MP, SIGMA 0.05
-4     volume, BMD relax standard  3     1       0.3    99   580             1e-6   -0.01   final (Gauss 0.05)
+3     volume                      3     1       0.3    99   volume (580)    1e-4   1e-3    MP, SIGMA 0.05
+4     volume, BMD relax standard  3     1       0.3    99   volume (580)    1e-6   -0.01   final (Gauss 0.05)
 5     single point (ranking)      2     -1      -      0    620             1e-6   -       final (Gauss 0.05)
 ====  ==========================  ====  ======  =====  ===  ==============  =====  ======  =====================
 
 Reasons:
 
-- Steps that change the volume (ISIF 3) use the BMD relaxation cutoff
-  (580 eV) to avoid Pulay-stress volume errors; only the fixed-volume steps
-  (ISIF 4) use a lower cutoff.
+- Steps that change the volume (ISIF 3) use BMD's fixed relaxation cutoff
+  of 580 eV (``ENCUT_RELAX_DEFAULT``), to avoid Pulay-stress volume errors;
+  only the fixed-volume steps (ISIF 4) use a lower cutoff. Since this ladder
+  was written, BMD's own relaxations moved to a species-dependent cutoff
+  (``bmd_compute.plane_wave_cutoff/1``: ceil(1.3 x max ENMAX / 50 eV) x 50 eV,
+  no ADDGRID; ``docs/methodology.md`` section 3 on ``main``). 580 eV is now
+  the value for records made before that protocol. Whether the search ladder
+  should follow the new rule is listed as a lab decision below.
+- Every step's ENCUT must be at least the largest ENMAX of the search's
+  POTCARs (:func:`require_encut_covers_enmax`); a search that fails this is
+  refused, not adjusted.
 - Step 4 uses BMD's relaxation convergence (EDIFF 1e-6, forces below
-  0.01 eV/A), so the geometry the ranking energy is evaluated on meets BMD
-  standards.
+  0.01 eV/A; BMD's pass-1 values), so the geometry the ranking energy is
+  evaluated on meets BMD standards. This relaxes every candidate, including
+  poor ones, to that standard and is probably the largest cost of a search;
+  it is listed as a lab decision.
 - Step 5 sets the energy USPEX ranks candidates by (the enthalpy is taken
   from the last step). It uses the BMD Static Energy cutoff and EDIFF, so
   steps 4 to 5 are the same relax-then-static sequence as the Relaxed
@@ -73,9 +83,36 @@ INCAR_POLICY_VERSION = 1
 
 # Plane-wave cutoff of the fixed-volume steps (1 and 2). The manual raises the
 # cutoff by 30-40 % for the ISIF 3 steps; 580 / 1.35 = 430 eV is the midpoint
-# of that range, rounded to 10 eV. Must stay above the largest ENMAX of the
-# POTCARs in a search; not checked here because POTCAR files are not read.
+# of that range, rounded to 10 eV. It can be below a POTCAR's ENMAX (for
+# example Li_sv, ENMAX 499.034 eV in BMD's PBE_64 metadata on main), so
+# require_encut_covers_enmax refuses such searches.
 EARLY_STEP_ENCUT_NEEDS_LAB_DECISION = 430
+
+# What to do when a step's ENCUT is below the largest ENMAX of a search's
+# POTCARs. Implemented: refuse the search (IncarPolicyError,
+# ENCUT_BELOW_ENMAX_CODE). The alternative, raising the early cutoff
+# automatically for that search (the composition, and so the POTCARs, are
+# fixed per search, so every candidate would still get the same INCAR), is a
+# lab decision and is not implemented.
+ENCUT_BELOW_ENMAX_ACTION_NEEDS_LAB_DECISION = "refuse"
+
+# Plane-wave cutoff of the volume-changing steps 3 and 4: BMD's fixed
+# relaxation value 580 eV. BMD's relaxations now use a species-dependent
+# cutoff (see the module docstring); whether the ladder should do the same,
+# per search, is a lab decision. The value is unchanged until then.
+VOLUME_STEP_ENCUT_NEEDS_LAB_DECISION = ENCUT_RELAX_DEFAULT
+
+# PREC of the loose steps 1 and 2. The manual's ladder starts with Low, then
+# Normal; Accurate also sets denser FFT grids, so these steps cost more than
+# they need to. Kept at BMD's Accurate until the lab decides.
+EARLY_STEP_PREC_NEEDS_LAB_DECISION = "Accurate"
+
+# Convergence of step 4. BMD's relaxation standard relaxes every candidate,
+# including poor ones that will never be shortlisted (the shortlist is
+# re-relaxed by Relaxed Energy anyway), and is probably the main cost of a
+# search. The alternative is the manual's final tolerances (EDIFF 1e-4,
+# EDIFFG 1e-3) or a value in between; Phase 0 can measure the cost.
+STEP_4_CONVERGENCE_NEEDS_LAB_DECISION: Mapping[str, Any] = {"EDIFF": 1e-6, "EDIFFG": -0.01}
 
 # Smearing of steps 4 and 5 (the final geometry and the ranking energy).
 # Options under discussion: Methfessel-Paxton (ISMEAR 1) with a small SIGMA,
@@ -96,11 +133,6 @@ FINAL_SMEARING_NEEDS_LAB_DECISION: Mapping[str, Any] = {"ISMEAR": 0, "SIGMA": 0.
 # KPAR > NKPTS.
 FIXED_KPAR_NEEDS_LAB_DECISION = 1
 
-VALUES_NEEDING_LAB_DECISION = {
-    "EARLY_STEP_ENCUT_NEEDS_LAB_DECISION": EARLY_STEP_ENCUT_NEEDS_LAB_DECISION,
-    "FINAL_SMEARING_NEEDS_LAB_DECISION": dict(FINAL_SMEARING_NEEDS_LAB_DECISION),
-    "FIXED_KPAR_NEEDS_LAB_DECISION": FIXED_KPAR_NEEDS_LAB_DECISION,
-}
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +192,8 @@ BMD_STANDARD_MAX_KRESOL = 0.04
 # Steps (1-based) whose KresolStart must meet BMD_STANDARD_MAX_KRESOL.
 BMD_STANDARD_STEPS = (4, 5)
 
+ENCUT_BELOW_ENMAX_CODE = "encut_below_potcar_enmax"
+
 
 @dataclass(frozen=True)
 class LadderStep:
@@ -210,7 +244,9 @@ def incar_ladder(ranks: int = DEFAULT_RANKS_PER_RELAXATION) -> tuple[LadderStep,
     validate_parallel_tags(COMMON_SETTINGS["KPAR"], COMMON_SETTINGS["NCORE"], ranks)
 
     early = EARLY_STEP_ENCUT_NEEDS_LAB_DECISION
+    volume = VOLUME_STEP_ENCUT_NEEDS_LAB_DECISION
     final_smearing = dict(FINAL_SMEARING_NEEDS_LAB_DECISION)
+    step_4_convergence = dict(STEP_4_CONVERGENCE_NEEDS_LAB_DECISION)
     relax = {"NSW": RELAX_STEP_NSW, "ALGO": "Fast"}
     rows = (
         ("fixed-volume relaxation far from a minimum",
@@ -220,22 +256,45 @@ def incar_ladder(ranks: int = DEFAULT_RANKS_PER_RELAXATION) -> tuple[LadderStep,
          {"ISIF": 4, "IBRION": 1, "POTIM": 0.3, **relax, "ENCUT": early,
           "EDIFF": 1e-3, "EDIFFG": 1e-2, **_mp(0.10)}),
         ("full relaxation including volume",
-         {"ISIF": 3, "IBRION": 1, "POTIM": 0.3, **relax, "ENCUT": ENCUT_RELAX_DEFAULT,
+         {"ISIF": 3, "IBRION": 1, "POTIM": 0.3, **relax, "ENCUT": volume,
           "EDIFF": 1e-4, "EDIFFG": 1e-3, **_mp(0.05)}),
         ("full relaxation to BMD relaxation standards",
-         {"ISIF": 3, "IBRION": 1, "POTIM": 0.3, **relax, "ENCUT": ENCUT_RELAX_DEFAULT,
-          "EDIFF": 1e-6, "EDIFFG": -0.01, **final_smearing}),
+         {"ISIF": 3, "IBRION": 1, "POTIM": 0.3, **relax, "ENCUT": volume,
+          **step_4_convergence, **final_smearing}),
         ("single point: the energy USPEX ranks candidates by",
          {"ISIF": 2, "IBRION": -1, "NSW": 0, "ALGO": "Normal",
           "ENCUT": ENCUT_STATIC_FINAL_DEFAULT, "EDIFF": 1e-6, **final_smearing}),
     )
+    # Steps 1-2 override PREC; a dict update keeps the key in COMMON_SETTINGS'
+    # position, so the INCAR line order is the same for every step.
+    early_overrides = {"PREC": EARLY_STEP_PREC_NEEDS_LAB_DECISION}
     return tuple(
-        LadderStep(number=index, purpose=purpose, settings={**settings, **COMMON_SETTINGS})
+        LadderStep(
+            number=index,
+            purpose=purpose,
+            settings={**settings, **COMMON_SETTINGS, **(early_overrides if index <= 2 else {})},
+        )
         for index, (purpose, settings) in enumerate(rows, start=1)
     )
 
 
 NUM_STEPS = len(incar_ladder())
+
+# Every value a lab decision is still needed for. NUM_STEPS is listed because
+# the step count is a choice too: the manual suggests 4-5 steps, and the
+# spec's KresolStart must have exactly NUM_STEPS values
+# (require_spec_matches_ladder). Calling that check before INPUT.txt is
+# written belongs to the search entry point (#67).
+VALUES_NEEDING_LAB_DECISION = {
+    "EARLY_STEP_ENCUT_NEEDS_LAB_DECISION": EARLY_STEP_ENCUT_NEEDS_LAB_DECISION,
+    "ENCUT_BELOW_ENMAX_ACTION_NEEDS_LAB_DECISION": ENCUT_BELOW_ENMAX_ACTION_NEEDS_LAB_DECISION,
+    "VOLUME_STEP_ENCUT_NEEDS_LAB_DECISION": VOLUME_STEP_ENCUT_NEEDS_LAB_DECISION,
+    "EARLY_STEP_PREC_NEEDS_LAB_DECISION": EARLY_STEP_PREC_NEEDS_LAB_DECISION,
+    "STEP_4_CONVERGENCE_NEEDS_LAB_DECISION": dict(STEP_4_CONVERGENCE_NEEDS_LAB_DECISION),
+    "FINAL_SMEARING_NEEDS_LAB_DECISION": dict(FINAL_SMEARING_NEEDS_LAB_DECISION),
+    "FIXED_KPAR_NEEDS_LAB_DECISION": FIXED_KPAR_NEEDS_LAB_DECISION,
+    "NUM_STEPS": NUM_STEPS,
+}
 
 
 class IncarPolicyError(CalculationValidationError):
@@ -283,6 +342,42 @@ def require_spec_matches_ladder(spec) -> None:
             suggestion=f"Use KresolStart of at most {BMD_STANDARD_MAX_KRESOL} for steps "
                        f"{', '.join(map(str, BMD_STANDARD_STEPS))}.",
             steps=too_coarse,
+        )
+
+
+def require_encut_covers_enmax(
+    largest_enmax_ev: float,
+    ranks: int = DEFAULT_RANKS_PER_RELAXATION,
+) -> None:
+    """Refuse a search whose POTCARs need a higher cutoff than some step uses.
+
+    ``largest_enmax_ev`` is the largest ENMAX (eV) of the search's POTCARs,
+    for example ``potcar.max_enmax(write_specific_potcars(...))``. Every
+    step's ENCUT must be at least that value. A failing search is refused
+    with code ``ENCUT_BELOW_ENMAX_CODE``; the cutoff is never raised
+    automatically (``ENCUT_BELOW_ENMAX_ACTION_NEEDS_LAB_DECISION``).
+    """
+
+    enmax = float(largest_enmax_ev)
+    if not math.isfinite(enmax) or enmax <= 0:
+        raise ValueError(f"largest_enmax_ev must be a positive number, not {largest_enmax_ev!r}")
+    below = [
+        {"step": step.number, "encut": step.settings["ENCUT"]}
+        for step in incar_ladder(ranks)
+        if float(step.settings["ENCUT"]) < enmax
+    ]
+    if below:
+        steps = ", ".join(str(row["step"]) for row in below)
+        cutoffs = ", ".join(f"{row['encut']} eV" for row in below)
+        raise IncarPolicyError(
+            f"The plane-wave cutoff of step(s) {steps} ({cutoffs}) is below the largest "
+            f"ENMAX of this search's POTCARs ({enmax:g} eV). Searches whose POTCARs need a "
+            "higher cutoff than the ladder uses are not supported yet.",
+            code=ENCUT_BELOW_ENMAX_CODE,
+            suggestion="Whether the early-step cutoff should be raised for such searches "
+                       "is still a lab decision.",
+            largest_enmax_ev=enmax,
+            steps=[row["step"] for row in below],
         )
 
 
@@ -346,6 +441,12 @@ __all__ = [
     "BMD_STANDARD_STEPS",
     "COMMON_SETTINGS",
     "DEFAULT_RANKS_PER_RELAXATION",
+    "EARLY_STEP_PREC_NEEDS_LAB_DECISION",
+    "ENCUT_BELOW_ENMAX_ACTION_NEEDS_LAB_DECISION",
+    "ENCUT_BELOW_ENMAX_CODE",
+    "STEP_4_CONVERGENCE_NEEDS_LAB_DECISION",
+    "VOLUME_STEP_ENCUT_NEEDS_LAB_DECISION",
+    "require_encut_covers_enmax",
     "EARLY_STEP_ENCUT_NEEDS_LAB_DECISION",
     "FINAL_SMEARING_NEEDS_LAB_DECISION",
     "FIXED_KPAR_NEEDS_LAB_DECISION",
