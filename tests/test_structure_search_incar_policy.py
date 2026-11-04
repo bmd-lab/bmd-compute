@@ -132,9 +132,21 @@ def test_ladder_checks_parallel_tags_against_the_rank_count():
 def test_values_needing_lab_decision_are_listed():
     assert set(incar_policy.VALUES_NEEDING_LAB_DECISION) == {
         "EARLY_STEP_ENCUT_NEEDS_LAB_DECISION",
+        "ENCUT_BELOW_ENMAX_ACTION_NEEDS_LAB_DECISION",
+        "VOLUME_STEP_ENCUT_NEEDS_LAB_DECISION",
+        "EARLY_STEP_PREC_NEEDS_LAB_DECISION",
+        "STEP_4_CONVERGENCE_NEEDS_LAB_DECISION",
         "FINAL_SMEARING_NEEDS_LAB_DECISION",
         "FIXED_KPAR_NEEDS_LAB_DECISION",
+        "NUM_STEPS",
     }
+    # Listing a value as undecided does not change it.
+    assert incar_policy.ENCUT_BELOW_ENMAX_ACTION_NEEDS_LAB_DECISION == "refuse"
+    assert incar_policy.VOLUME_STEP_ENCUT_NEEDS_LAB_DECISION == ENCUT_RELAX_DEFAULT == 580
+    assert all(_settings(n)["PREC"] == "Accurate" for n in range(1, 6))
+    assert {key: _settings(4)[key] for key in ("EDIFF", "EDIFFG")} == dict(
+        incar_policy.STEP_4_CONVERGENCE_NEEDS_LAB_DECISION
+    )
     record = incar_policy_record()
     assert record["values_needing_lab_decision"] == incar_policy.VALUES_NEEDING_LAB_DECISION
     assert [row["step"] for row in record["steps"]] == [1, 2, 3, 4, 5]
@@ -175,6 +187,34 @@ def test_spec_must_match_the_ladder():
         require_spec_matches_ladder(_spec((0.12, 0.10, 0.08, 0.06, 0.04)))
     assert excinfo.value.code == "kresol_coarser_than_bmd_policy"
     assert excinfo.value.diagnostic["steps"] == [4]
+
+
+@pytest.mark.parametrize("enmax", [250.0, 400.0, 429.999, 430.0])
+def test_encut_covering_enmax_is_accepted(enmax):
+    incar_policy.require_encut_covers_enmax(enmax)
+
+
+def test_early_steps_below_enmax_are_refused():
+    # Li_sv: ENMAX 499.034 eV in BMD's PBE_64 metadata.
+    with pytest.raises(IncarPolicyError) as excinfo:
+        incar_policy.require_encut_covers_enmax(499.034)
+    error = excinfo.value
+    assert error.code == incar_policy.ENCUT_BELOW_ENMAX_CODE == "encut_below_potcar_enmax"
+    assert error.diagnostic["steps"] == [1, 2]
+    assert error.diagnostic["largest_enmax_ev"] == 499.034
+    assert "499.034" in error.message
+
+
+def test_every_step_below_a_very_hard_potcar_is_listed():
+    with pytest.raises(IncarPolicyError) as excinfo:
+        incar_policy.require_encut_covers_enmax(700.0)
+    assert excinfo.value.diagnostic["steps"] == [1, 2, 3, 4, 5]
+
+
+@pytest.mark.parametrize("enmax", [0, -1, float("nan"), float("inf")])
+def test_enmax_must_be_positive_and_finite(enmax):
+    with pytest.raises(ValueError):
+        incar_policy.require_encut_covers_enmax(enmax)
 
 
 def test_write_incar_files(tmp_path):
