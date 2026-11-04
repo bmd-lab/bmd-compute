@@ -61,7 +61,7 @@ def test_input_is_complete_and_uses_fixed_execution_settings():
     keywords = read_input_keywords(render_input_text(spec, SETTINGS))
     assert set(keywords) == REQUIRED_KEYWORDS
     assert keywords["calculationType"] == ["300"]
-    assert keywords["whichCluster"] == ["0"]
+    assert keywords["whichCluster"] == ["-1"]
     assert keywords["coresPerJob"] == ["1"]
     assert keywords["numParallelCalcs"] == ["4"]
     assert keywords["abinitioCode"] == ["1 1 1 1 1"]

@@ -28,7 +28,8 @@ def _spec(**overrides):
 
 @pytest.mark.parametrize(
     ("atoms", "expected"),
-    [(1, 10), (2, 10), (4, 10), (7, 10), (8, 20), (12, 20), (14, 30), (20, 40), (22, 40), (23, 50)],
+    [(1, 10), (2, 10), (4, 10), (7, 10), (8, 20), (12, 20), (14, 30), (20, 40), (22, 40),
+     (23, 50), (27, 50), (28, 60), (30, 60), (40, 60), (200, 60)],
 )
 def test_default_population_size_is_twice_atoms_rounded_to_ten(atoms, expected):
     assert default_population_size(atoms) == expected
