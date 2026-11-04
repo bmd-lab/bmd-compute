@@ -319,10 +319,19 @@ because many sampled structures are metallic. Pressure is set only by
 `ExternalPressure` in `INPUT.txt`; do not put `PSTRESS` in the INCARs (§4.1).
 The enthalpy is taken from the last step (§4.8, `abinitioCode`).
 
-Proposal to review against BMD standards (`docs/methodology.md`):
+Proposal to review against BMD standards (`docs/methodology.md`; the ladder
+itself is in #74, which also carries #65):
 
-- Steps that change volume (ISIF 3) use the BMD relaxation ENCUT (580 eV);
-  only fixed-volume steps may use a lower cutoff.
+- Since #78 (BMD Standard Geometry Relaxation v1), BMD's relaxation cutoff
+  is species-dependent: `ENCUT = ceil(1.3 × max ENMAX / 50) × 50`, from the
+  versioned `backend/calculations/potcar_enmax_PBE_64.json`, without
+  `ADDGRID`; a static after a relaxation uses `max(620 eV, that cutoff)`.
+  Following the lab's direction that the last steps match BMD standards,
+  the volume-changing steps (ISIF 3) use that rule and the ranking single
+  point `max(620, rule)`; the composition is fixed per search, so this is
+  still one INCAR set for every candidate. Fixed-volume early steps may use
+  a lower cutoff, never below max ENMAX (for Si8: 250 / 350 / 620 eV
+  instead of 430 / 580 / 620).
 - The last step sets the ranking energy and must match BMD standards. Its
   smearing is a lab decision: MP with small SIGMA, or Gaussian SIGMA 0.05.
   (BMD relaxations currently use Gaussian SIGMA 0.2.)
@@ -334,10 +343,11 @@ Proposal to review against BMD standards (`docs/methodology.md`):
 
 ENMAX of BMD's POTCARs (PBE_64 on POWER, checked 4 Nov against the atomate2
 `RelaxSetGenerator` symbol table): only `Li_sv` (499.034 eV) and `He`
-(478.896 eV) exceed the proposed 430 eV early-step cutoff; every other
-symbol BMD uses (including `Na_pv`, `Mg`, and the standard B, C, N, O, F,
-H) is at or below it. A search containing Li or He must use a higher early
-cutoff or be refused.
+(478.896 eV) exceed 430 eV, the fixed early-step cutoff first proposed in
+#75; every other symbol BMD uses (including `Na_pv`, `Mg`, and the standard
+B, C, N, O, F, H) is at or below it. An ENMAX-based early cutoff removes
+the problem; #74 also refuses any step whose ENCUT is below a search's
+largest ENMAX.
 
 Gap: the Relaxed Energy workflow has no pressure setting, so hand-off of
 candidates from searches at non-zero pressure is not yet consistent.
