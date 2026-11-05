@@ -50,6 +50,11 @@ Later, not in Phases 0–2:
 | 2026-11-01 | Use USPEX 25.0 (Singularity image), not the 10.5 MATLAB-runtime build. | Design, from cluster checks (§5) |
 | 2026-11-01 | Run the USPEX master inside a SLURM allocation, never on a login node (the HPC department kills long-running login-node processes). | Design |
 | 2026-11-01 | Launch VASP through a file-based bridge from the container to host `srun` steps (§4). | Design; Phase 0 pilot pending (#59) |
+| 2026-11-02 | Test system for pilots and the acceptance run: Si, 8 atoms, 0 GPa (expected answer: diamond Si, space group 227). It is the lab's usual quick test. | BMD Lab |
+| 2026-11-02 | USPEX's unpacked copy and the sandbox live in `/bmd/shared` (§5.4), group `enginer_leeburton`. | BMD Lab |
+| 2026-11-04 | Run USPEX with `whichCluster = -1`. In mode 0 USPEX 25 never runs `commandExecutable` (probe job, §5.6). | Design, from cluster checks (#59) |
+| 2026-11-04 | Give the container a UTF-8 locale (`LC_ALL`/`LANG=C.UTF-8`, `PYTHONIOENCODING=utf-8`). With the ASCII locale USPEX crashed with `UnicodeEncodeError` (§5.6). | Design, from cluster checks (#59) |
+| 2026-11-02 | `KPAR = 1` in every search INCAR until Phase 0 measures the alternative. One INCAR serves every candidate, and `KPAR` must not exceed the number of irreducible k-points, which can be below 4 for large cells or coarse early meshes. | Design (#75); lab decision pending |
 
 ## 3. How USPEX fits bmd-compute
 
@@ -77,7 +82,7 @@ One exclusive-node SLURM job per search attempt:
 sbatch (-N 1 --exclusive --mem=0, owner100d, explicit walltime)
   run_job.py (host)
     ├─ singularity exec -B /bmd <sandbox> /opt/uspex/uspex      USPEX master
-    │    whichCluster = 0, numParallelCalcs = 4, coresPerJob = 1
+    │    whichCluster = -1, numParallelCalcs = 4, UTF-8 locale
     │    commandExecutable (one line per step) = sh bmd_bridge.sh <step>
     │       bridge script: write request file → wait for done file
     └─ launch loop (host): request → srun --exact --mpi=pmi2 -n 48 --mem=<M> vasp_std
@@ -94,13 +99,14 @@ Why this works with USPEX (checked in the manual):
 - `whichCluster`: −1 = local run without job submission; 0 = local run with
   strict CPU core control (each relaxation on its own cores, `coresPerJob`);
   0 is the default (§2.8, §4.8). `numParallelCalcs` "now works for
-  whichCluster = 0 as well" (§2.8).
+  whichCluster = 0 as well" (§2.8). **On POWER only −1 works** (§5.6): in
+  mode 0 USPEX 25 never runs the command.
 - `commandExecutable` takes one shell command per relaxation step, run in the
   calculation folder; USPEX waits for it and then reads the VASP output (§4.8).
 - `whichCluster = 1` (local submission) is not usable in the container: it
   needs an ssh server on the local machine and Python job scripts (§6.8.1).
-- `coresPerJob = 1` makes USPEX's own core control pin only the waiting bridge
-  script; SLURM places the VASP ranks.
+- USPEX's own core control is not used (mode −1); SLURM places the VASP
+  ranks.
 - `numParallelCalcs` must always be set explicitly: §4.8 gives its default as
   1, §2.8 says it auto-detects available cores, which on a 192-core node could
   mean 192 concurrent relaxations.
@@ -217,8 +223,37 @@ environment). A sandbox built by hand works:
 srun -p leeburton-pool -N 1 -n 1 -t 00:30:00 bash -lc 'module load uspex-25 >/dev/null 2>&1; cd /bmd/shared && singularity sif dump 4 "$USPEX_SIF" > uspex25.sqfs && unsquashfs -d uspex25_sandbox uspex25.sqfs && rm uspex25.sqfs'
 ```
 
-(Partition 4 is the squashfs partition listed by `singularity sif list`.) The
-sandbox must be group-readable for `bmdguest`.
+(Partition 4 is the squashfs partition listed by `singularity sif list`.)
+
+Shared layout (set up 2026-11-02, group `enginer_leeburton`):
+
+- `/bmd/shared/uspex25_sandbox`: the sandbox, group-readable.
+- `/bmd/shared/uspex_cache/uspex_sfx/<payload sha>/`: the unpacked
+  program, group-readable. Run USPEX with
+  `XDG_CACHE_HOME=/bmd/shared/uspex_cache`.
+- `uspex_cache/` and `uspex_cache/uspex_sfx/` are **group-writable with
+  the setgid bit** (`chmod g+ws`). On every start, before it checks whether
+  it is already unpacked, the start-up script creates and removes a lock
+  file in `uspex_sfx/`. It also checks that `uspex_cache/` is writable; if it
+  is not, it falls back to `/tmp/uspex_sfx_$USER` and unpacks the 2 GB
+  again. (From reading the script; not yet tested as another user.)
+
+Checked from the shared location: USPEX starts in about 19 s (no unpack),
+and no `/tmp/uspex_sfx_*` is created. The same command run as `bmdguest`
+is still to do:
+
+```bash
+srun -p leeburton-pool -N 1 -n 1 -t 00:05:00 bash -lc 'module load uspex-25 >/dev/null 2>&1; cd "$(mktemp -d)"; time SINGULARITYENV_XDG_CACHE_HOME=/bmd/shared/uspex_cache singularity exec -B /bmd /bmd/shared/uspex25_sandbox /opt/uspex/uspex 2>&1 | grep -E "Loading|Error|error" | head; ls /tmp | grep uspex_sfx'
+```
+
+(An `IndexError` is expected there: the folder has no `INPUT.txt`. A
+`dateutil/zoneinfo` "No such file" warning also appears; it looks harmless,
+but log timestamps should be checked in the pilot.)
+
+Using the SIF directly needs `unsquashfs` on `PATH` for the per-start
+conversion; on POWER it is only in the `uspex-25` module's mamba
+environment. The launch code therefore uses the sandbox (see the review on
+#73).
 
 ### 5.5 Other cluster facts relevant here
 
@@ -229,14 +264,55 @@ sandbox must be group-readable for `bmdguest`.
   to one core. Every concurrent step therefore needs an explicit `--mem`.
   `sbatch` from inside a job is allowed.
 
-- Compute nodes run Rocky Linux 9.7. `backend/config.py` loads
-  `intel/rocky8-oneAPI-2023` and `vasp/rocky8-intel-6.4.1`; whether these
-  still load on the nodes is **open** (#59).
-- `compute-0-332` and `compute-0-333` have a different NUMA layout and were
-  not part of the lab's VASP benchmarks; pilots exclude them.
+- Compute nodes run Rocky Linux 9 at different minor releases (9.5 and
+  9.7 seen). All Rocky 9 releases ship glibc 2.34, so USPEX 25 needs its
+  container on every node (inferred, not checked node by node).
+- `intel/rocky8-oneAPI-2023` and `vasp/rocky8-intel-6.4.1`, which
+  `backend/config.py` loads, still load on Rocky 9 nodes:
+  `vasp_std` is `/powerapps/sources/rocky8/vasp.6.4.1/bin/vasp_std` with no
+  missing libraries (checked 2026-11-02, #59).
+- Node types (lab hardware inventory, 30 Jul 2026, and `lscpu` on 4 Nov):
+  compute-0-269, 270, 370 and 371 (and probably 271 and 369) are AMD EPYC
+  9654 (Zen 4), NPS1: two NUMA domains, one per socket, **socket 0 = CPUs
+  0–95, socket 1 = CPUs 96–191** (checked with `lscpu`), about 1 TB. The
+  `mpirun_pinned` core lists (0-47, 96-143, 48-95, 144-191) assume this
+  numbering. `compute-0-332` and `compute-0-333` are EPYC 9655 (Zen 5),
+  NPS4 with 8 domains of 24 cores; they were not part of the lab's VASP
+  benchmarks, and searches exclude them (`--exclude=compute-0-[332-333]`).
+  SLURM feature tags do not distinguish the two types.
 - Strings inside the USPEX 25 program show that `commandExecutable` and
   `coresPerJob` take one value per relaxation step (error text: "number of
   commandExecutable entries is not equal to the number of steps").
+
+### 5.6 Launch checks (4 Nov 2026, #59)
+
+A 4-core probe job (`reference/uspex_pilot/probe/probe.sbatch`) ran USPEX
+with a dummy relaxation command that only records how it is called, then
+4-rank VASP without USPEX:
+
+- `whichCluster = -1`: USPEX runs `commandExecutable` as `sh run_local.sh`
+  from inside each CalcFold (`Calculation/Calcfold_<system>_<step>`),
+  `numParallelCalcs` at a time, with the full container environment.
+- `whichCluster = 0`: USPEX never runs the command, also when a host loop
+  makes `run_local.sh` executable (USPEX writes it without an execute bit,
+  but that is not the cause).
+- With the container's default ASCII locale (`LC_ALL=C`, `--cleanenv`),
+  mode −1 crashed during set-up with `UnicodeEncodeError`; a UTF-8 locale
+  fixes it.
+- `SINGULARITYENV_*` variables reach the container under `--cleanenv`.
+- `srun --exact --mpi=pmi2 -n 4 --mem=8G vasp_std` and `mpirun -n 4
+  vasp_std` both start 4 real ranks on separate cores and give the same
+  energy (Si8, F = −42.483167 eV).
+
+The Si8 pilot through the bridge (`reference/uspex_pilot/si_bridge/`, mode
+−1, `srun_steps`, 2 relaxations × 4 ranks in an 8-core job) then ran to
+completion in 38 minutes: 4 generations, 35 individuals, all 105
+relaxations with status 0, no failed tasks. The best structure (individual
+35, −43.2799 eV per 8 atoms, 20.46 Å³/atom) is **diamond Si**: USPEX lists
+it as space group 1, but spglib gives Fd-3m (227) at symprec ≥ 0.05 and
+pymatgen's StructureMatcher matches ideal diamond (RMS 0.0004). Its output
+is in `reference/uspex_pilot/si_bridge/sample_results1/`, whose README
+describes the real file format (it differs from the manual: see there).
 
 ## 6. VASP policy for searches (to be reviewed, #65)
 
@@ -249,10 +325,19 @@ because many sampled structures are metallic. Pressure is set only by
 `ExternalPressure` in `INPUT.txt`; do not put `PSTRESS` in the INCARs (§4.1).
 The enthalpy is taken from the last step (§4.8, `abinitioCode`).
 
-Proposal to review against BMD standards (`docs/methodology.md`):
+Proposal to review against BMD standards (`docs/methodology.md`; the ladder
+itself is in #74, which also carries #65):
 
-- Steps that change volume (ISIF 3) use the BMD relaxation ENCUT (580 eV);
-  only fixed-volume steps may use a lower cutoff.
+- Since #78 (BMD Standard Geometry Relaxation v1), BMD's relaxation cutoff
+  is species-dependent: `ENCUT = ceil(1.3 × max ENMAX / 50) × 50`, from the
+  versioned `backend/calculations/potcar_enmax_PBE_64.json`, without
+  `ADDGRID`; a static after a relaxation uses `max(620 eV, that cutoff)`.
+  Following the lab's direction that the last steps match BMD standards,
+  the volume-changing steps (ISIF 3) use that rule and the ranking single
+  point `max(620, rule)`; the composition is fixed per search, so this is
+  still one INCAR set for every candidate. Fixed-volume early steps may use
+  a lower cutoff, never below max ENMAX (for Si8: 250 / 350 / 620 eV
+  instead of 430 / 580 / 620).
 - The last step sets the ranking energy and must match BMD standards. Its
   smearing is a lab decision: MP with small SIGMA, or Gaussian SIGMA 0.05.
   (BMD relaxations currently use Gaussian SIGMA 0.2.)
@@ -261,6 +346,14 @@ Proposal to review against BMD standards (`docs/methodology.md`):
 - `LWAVE = .FALSE.`, `LCHARG = .FALSE.`
 - POTCARs from the shared `PBE_64` repository, same choice as the rest of
   bmd-compute, written as `Specific/POTCAR_<El>`.
+
+ENMAX of BMD's POTCARs (PBE_64 on POWER, checked 4 Nov against the atomate2
+`RelaxSetGenerator` symbol table): only `Li_sv` (499.034 eV) and `He`
+(478.896 eV) exceed 430 eV, the fixed early-step cutoff first proposed in
+#75; every other symbol BMD uses (including `Na_pv`, `Mg`, and the standard
+B, C, N, O, F, H) is at or below it. An ENMAX-based early cutoff removes
+the problem; #74 also refuses any step whose ENCUT is below a search's
+largest ENMAX.
 
 Gap: the Relaxed Energy workflow has no pressure setting, so hand-off of
 candidates from searches at non-zero pressure is not yet consistent.
@@ -277,8 +370,11 @@ Upper bound on VASP runs ≈ (`initialPopSize` + `populationSize` ×
 concurrent relaxations, wall time ≈ 250 × the time of one structure's
 relaxation chain, plus idle time at the end of each generation: about 5 days
 at 30 min per chain, about 3 weeks at 2 h. Searches usually stop earlier via
-`stopCrit`. Whether surviving structures are recalculated is **open**. Phase 0
-replaces these numbers with measurements.
+`stopCrit`. Surviving structures **are** recalculated: each generation adds
+them again as `keptBest` individuals (the Si8 pilot ran 8 + 3 × 9 = 35
+individuals for population 8, i.e. 105 relaxations). Measured: the Si8
+pilot (8 atoms, 3 steps, 2 × 4 ranks) took about 10–60 s per relaxation and
+38 minutes in total.
 
 ## 8. Phases and work items
 
@@ -302,13 +398,15 @@ replaces these numbers with measurements.
 - Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks
   correctly on a full node (`I_MPI_DEBUG=4`)? Does Intel MPI respect SLURM's
   per-task core binding?
-- Do the `rocky8` modules in `backend/config.py` load on Rocky 9.7 nodes?
-- Does the bridge pilot work end to end, and does `whichCluster = −1` also run
-  calculations in parallel?
-- Which file holds the enthalpies for `goodStructures_POSCARS`; are survivors
-  recalculated?
-- Which shared `/bmd` directory holds the unpacked cache and sandbox, and who
-  maintains them?
-- Lab sign-off on the INCAR ladder and final-step smearing (#65).
+- After a restart, do individual numbers continue across `results1/` →
+  `results2/`? (The output format itself is now known:
+  `reference/uspex_pilot/si_bridge/sample_results1/README.md`.)
+- Is `value : sleepSeconds` the right `INPUT.txt` form? The manual shows the
+  keyword only in prose.
+- Who maintains `/bmd/shared/uspex_cache` and the sandbox, and does
+  `bmdguest` reach them with the current permissions?
+- Lab sign-off on the INCAR ladder (#75): final-step smearing, the early-step
+  ENCUT (must not fall below any POTCAR's ENMAX in a search), `PREC` of the
+  loose steps, how tightly step 4 relaxes every candidate, and `KPAR`.
 - BMD review of the resume and cancel exception (#69).
 - Who looks after multi-week searches that occupy a whole node?

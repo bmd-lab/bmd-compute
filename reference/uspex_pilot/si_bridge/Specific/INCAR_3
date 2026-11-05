@@ -1,0 +1,16 @@
+SYSTEM = Si8 USPEX bridge pilot, step 3 (pilot settings, not BMD policy)
+PREC = Normal
+ENCUT = 400
+EDIFF = 1E-4
+EDIFFG = 1E-3
+NSW = 50
+ISIF = 3
+IBRION = 1
+POTIM = 0.30
+ISMEAR = 1
+SIGMA = 0.05
+ISPIN = 1
+NCORE = 4
+KPAR = 1
+LWAVE = .FALSE.
+LCHARG = .FALSE.
