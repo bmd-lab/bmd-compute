@@ -305,8 +305,14 @@ with a dummy relaxation command that only records how it is called, then
   energy (Si8, F = −42.483167 eV).
 
 The Si8 pilot through the bridge (`reference/uspex_pilot/si_bridge/`, mode
-−1, `srun_steps`, 2 relaxations × 4 ranks in an 8-core job) then completed
-its first 23 relaxations, all with status 0, about 10–60 s each.
+−1, `srun_steps`, 2 relaxations × 4 ranks in an 8-core job) then ran to
+completion in 38 minutes: 4 generations, 35 individuals, all 105
+relaxations with status 0, no failed tasks. The best structure (individual
+35, −43.2799 eV per 8 atoms, 20.46 Å³/atom) is **diamond Si**: USPEX lists
+it as space group 1, but spglib gives Fd-3m (227) at symprec ≥ 0.05 and
+pymatgen's StructureMatcher matches ideal diamond (RMS 0.0004). Its output
+is in `reference/uspex_pilot/si_bridge/sample_results1/`, whose README
+describes the real file format (it differs from the manual: see there).
 
 ## 6. VASP policy for searches (to be reviewed, #65)
 
@@ -364,8 +370,11 @@ Upper bound on VASP runs ≈ (`initialPopSize` + `populationSize` ×
 concurrent relaxations, wall time ≈ 250 × the time of one structure's
 relaxation chain, plus idle time at the end of each generation: about 5 days
 at 30 min per chain, about 3 weeks at 2 h. Searches usually stop earlier via
-`stopCrit`. Whether surviving structures are recalculated is **open**. Phase 0
-replaces these numbers with measurements.
+`stopCrit`. Surviving structures **are** recalculated: each generation adds
+them again as `keptBest` individuals (the Si8 pilot ran 8 + 3 × 9 = 35
+individuals for population 8, i.e. 105 relaxations). Measured: the Si8
+pilot (8 atoms, 3 steps, 2 × 4 ranks) took about 10–60 s per relaxation and
+38 minutes in total.
 
 ## 8. Phases and work items
 
@@ -389,13 +398,9 @@ replaces these numbers with measurements.
 - Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks
   correctly on a full node (`I_MPI_DEBUG=4`)? Does Intel MPI respect SLURM's
   per-task core binding?
-- Does the full Si8 pilot finish and find diamond Si (space group 227)?
-  (Launching is settled, §5.6.)
-- What does USPEX 25 write: the `Individuals` columns and units, the
-  individual IDs in `*POSCARS` files, which file holds the enthalpies for
-  `goodStructures_POSCARS`, whether survivors are recalculated, and whether
-  IDs continue across `results1/` → `results2/` after a restart? (Needed
-  before the results parser #72 is relied on.)
+- After a restart, do individual numbers continue across `results1/` →
+  `results2/`? (The output format itself is now known:
+  `reference/uspex_pilot/si_bridge/sample_results1/README.md`.)
 - Is `value : sleepSeconds` the right `INPUT.txt` form? The manual shows the
   keyword only in prose.
 - Who maintains `/bmd/shared/uspex_cache` and the sandbox, and does
