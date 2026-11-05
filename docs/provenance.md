@@ -20,6 +20,7 @@ The top-level provenance sections are:
 - `python_environment`
 - `vasp`
 - `potcar`
+- `structure_source`
 - `execution`
 
 All values are intended to be JSON-safe.
@@ -93,6 +94,29 @@ The VASP section records:
 Per-stage executable provenance distinguishes ordinary `vasp_std` stages from SOC/non-collinear `vasp_ncl` stages.
 
 The actual argv passed to Custodian is still determined at runtime from the sbatch environment and submission resources.
+
+## Structure Source
+
+`structure_source` records where the submitted structure came from:
+
+- `type` and `format`: how the structure text reached bmd-compute
+  (`pasted_text` and `poscar`/`cif` for the browser workbench)
+- `origin`: null when the user entered the structure directly; otherwise the
+  verified origin record of a structure taken from another source
+
+Today the only source is a candidate of an imported USPEX search. Its record
+holds the uploaded archive's SHA-256, the results folder, the USPEX individual
+ID, its USPEX energy and origin, and more; see
+[structure_search_import.md](structure_search_import.md). The same record is
+stored in `flow_spec.structure.origin`. It reaches the server as a signed
+token and is accepted only if it belongs to exactly the posted structure text
+(`backend/structure_origin.py`).
+
+The USPEX energy in the record is USPEX's search-grade value. It is not a BMD
+result.
+
+Records written before this section existed lack `structure_source`; their
+structures were entered directly.
 
 ## Workflow And Resources
 
