@@ -814,6 +814,31 @@ def _block_to_structure(block: _PoscarBlock, atom_types: list[str] | None, path:
     return Poscar.from_str("\n".join(lines) + "\n").structure
 
 
+def available_structure_ids(
+    calculation_dir: str,
+    results_folder: str,
+    *,
+    poscars_file: str = GATHERED_POSCARS_FILE,
+) -> set[int] | None:
+    """
+    Return the individual IDs that have a POSCAR block in one ``*POSCARS`` file.
+
+    Returns None if the file does not exist. Blocks are scanned with plain
+    string handling (no pymatgen), so this is cheap even for large files.
+    Unfinished or unreadable blocks are left out, as in :func:`load_structures`.
+    """
+
+    if poscars_file not in POSCARS_FILES:
+        raise USPEXResultsError(
+            f"poscars_file must be one of {POSCARS_FILES!r}, not {poscars_file!r}."
+        )
+    path = os.path.join(calculation_dir, results_folder, poscars_file)
+    blocks = _scan_poscars_file(path, [])
+    if blocks is None:
+        return None
+    return {block.id for block in blocks if block.id is not None}
+
+
 def load_structures(
     calculation_dir: str,
     ids,
@@ -926,6 +951,7 @@ __all__ = [
     "SYMMETRY_SYMPREC",
     "USPEXFormatError",
     "USPEXResultsError",
+    "available_structure_ids",
     "find_results_folders",
     "load_structures",
     "read_atom_types",
