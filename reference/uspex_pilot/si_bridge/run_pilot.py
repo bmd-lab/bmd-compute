@@ -127,6 +127,9 @@ def main() -> int:
                              "and Specific/, use a fresh spool WORK/spool_TAG and log uspex_master_TAG.log")
     parser.add_argument("--pick-up-gen", type=int,
                         help="with --resume: write 'N : pickUpGen' into INPUT.txt (manual section 4.7)")
+    parser.add_argument("--seeds", type=Path,
+                        help="new search only: copy this multi-POSCAR file to search/Seeds/POSCARS "
+                             "(manual section 6.5), e.g. a stopped run's good_structures_POSCARS")
     parser.add_argument("--pick-up-folder", type=int,
                         help="with --resume: write 'N : pickUpFolder' into INPUT.txt (results<N>/)")
     args = parser.parse_args()
@@ -149,6 +152,9 @@ def main() -> int:
         specific = search_dir / "Specific"
         shutil.copytree(HERE / "Specific", specific)
         shutil.copyfile(args.potcar, specific / "POTCAR_Si")
+        if args.seeds is not None:
+            (search_dir / "Seeds").mkdir()
+            shutil.copyfile(args.seeds, search_dir / "Seeds" / "POSCARS")
 
     bridge = bridge_script_path()
     if not str(bridge).startswith("/bmd/"):
