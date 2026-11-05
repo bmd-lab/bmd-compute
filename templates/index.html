@@ -995,6 +995,57 @@ button.hardware-custom-toggle[aria-expanded="true"] {
     padding: 18px;
 }
 
+.table-scroll {
+    border: 1px solid var(--bmd-border);
+    border-radius: 8px;
+    margin-top: 14px;
+    max-height: 520px;
+    overflow: auto;
+}
+
+.candidate-table th {
+    background: var(--bmd-surface-secondary);
+    border-bottom: 1px solid var(--bmd-border);
+    color: var(--bmd-text-muted);
+    font-size: 13px;
+    padding: 9px 10px;
+    position: sticky;
+    text-align: left;
+    top: 0;
+    white-space: nowrap;
+}
+
+.candidate-table td {
+    font-size: 14px;
+    padding: 8px 10px;
+    white-space: nowrap;
+}
+
+.candidate-table td:first-child {
+    color: var(--bmd-text);
+    width: auto;
+}
+
+.candidate-table td.numeric,
+.candidate-table th.numeric {
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.candidate-table input[type="checkbox"] {
+    width: auto;
+}
+
+.structure-search-handoff {
+    display: grid;
+    gap: 12px;
+    margin-top: 14px;
+}
+
+.structure-origin-note {
+    margin-top: 12px;
+}
+
 @media (max-width: 760px) {
     .container {
         margin-top: 22px;
@@ -1134,6 +1185,193 @@ button.hardware-custom-toggle[aria-expanded="true"] {
 
         </section>
 
+        <section class="stage" id="structure-search-import">
+
+            <div class="stage-header">
+                <div>
+                    <h2>Import Structure Search Results</h2>
+                    <div class="summary-line">Upload the results of a USPEX search you ran yourself, then send candidates to a Desired Output.</div>
+                </div>
+                <div class="stage-status">
+                    {% if structure_search_error %}<span class="pill failed">Failed</span>{% elif structure_search %}<span class="pill ready">Imported</span>{% else %}<span class="pill">Optional</span>{% endif %}
+                </div>
+            </div>
+
+            <form action="/structure-search/import" method="post" enctype="multipart/form-data">
+                <div class="form-row">
+                    <label>USPEX results archive (.zip or .tar.gz)</label>
+                    <input type="file" name="archive" accept=".zip,.tar.gz,.tgz,application/zip,application/gzip">
+                </div>
+                <div class="summary-line">
+                    Archive the USPEX calculation folder, or its results1/ (results2/, ...) folders. Each results folder needs Individuals and gatheredPOSCARS (or good_structures_POSCARS). Only those result files are read; nothing in the archive is run.
+                </div>
+                <button type="submit">Import Results</button>
+            </form>
+
+            {% if structure_search_error %}
+            <div class="prep-panel failed" data-structure-search-error>
+                <div class="prep-title">Import Failed</div>
+                <table class="compact-table failure-table">
+                    <tr>
+                        <td>Reason</td>
+                        <td>{{ structure_search_error.message }}</td>
+                    </tr>
+                    {% if structure_search_error.suggestion %}
+                    <tr>
+                        <td>Suggestion</td>
+                        <td>{{ structure_search_error.suggestion }}</td>
+                    </tr>
+                    {% endif %}
+                </table>
+            </div>
+            {% endif %}
+
+        </section>
+
+        {% if structure_search %}
+        {% set search = structure_search %}
+        <section class="stage" id="structure-search-candidates" data-structure-search-import="{{ search.import_id }}">
+
+            <div class="stage-header">
+                <div>
+                    <h2>Structure Search Candidates</h2>
+                    <div class="summary-line">
+                        {{ search.archive.filename }} · {{ search.results_folders | join(", ") }} · {{ search.n_individuals }} individuals · {{ search.n_candidates }} candidates
+                    </div>
+                </div>
+                <div class="stage-status">USPEX</div>
+            </div>
+
+            <div class="prep-panel warning">
+                <div class="prep-title">USPEX energies are search-grade</div>
+                <div class="summary-line">
+                    Energies come from USPEX's own relaxations (the energy column of Individuals: eV per cell, the enthalpy at the search pressure). Use them to choose candidates. The final ranking comes from the BMD calculation each candidate is sent to.
+                </div>
+            </div>
+
+            {% if search.pressure_note %}
+            <div class="prep-panel warning" data-structure-search-pressure>
+                <div class="prep-title">Search pressure</div>
+                <div class="summary-line">{{ search.pressure_note }}</div>
+            </div>
+            {% endif %}
+
+            {% if search.warnings %}
+            <div class="prep-panel warning" data-structure-search-warnings>
+                <div class="prep-title">Notes from reading the results ({{ search.warnings | length }})</div>
+                <ul>
+                    {% for warning in search.warnings %}
+                    <li>{{ warning }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+
+            {% for visualization in search.visualizations %}
+            <div class="prep-panel workflow-visualization">
+                <div class="prep-title">{{ visualization.title }}</div>
+                {% if visualization.subtitle %}
+                <div class="summary-line">{{ visualization.subtitle }}</div>
+                {% endif %}
+                <div
+                    id="{{ visualization.element_id }}"
+                    class="result-plot"
+                    data-result-plot="{{ visualization.id }}">
+                    <div class="plot-message">Loading plot...</div>
+                </div>
+            </div>
+            {% endfor %}
+
+            <form action="/structure-search/hand-off" method="post" id="structure-search-handoff-form">
+                <input type="hidden" name="import_id" value="{{ search.import_id }}">
+                <div class="summary-line">
+                    {% if search.n_candidates > search.candidates | length %}Showing the best {{ search.candidates | length }} of {{ search.n_candidates }} candidates. {% endif %}Ranked by USPEX energy per atom. A recalculated survivor (origin keptBest) is listed once, as the lowest-energy member of its chain. BMD space group: pymatgen/spglib at symprec {{ search.symmetry_symprec }} Å.
+                </div>
+                <div class="table-scroll">
+                    <table class="candidate-table" data-candidate-table>
+                        <thead>
+                            <tr>
+                                <th>Select</th>
+                                <th class="numeric">Rank</th>
+                                <th class="numeric">ID</th>
+                                <th>Results</th>
+                                <th class="numeric">Generation</th>
+                                <th>Origin</th>
+                                <th>Composition</th>
+                                <th class="numeric">Energy (eV/cell)</th>
+                                <th class="numeric">Energy (eV/atom)</th>
+                                <th class="numeric">Volume (Å³/atom)</th>
+                                <th>USPEX space group</th>
+                                <th>BMD space group</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in search.candidates %}
+                            <tr data-candidate="{{ row.selection }}">
+                                <td>
+                                    <input
+                                        type="checkbox"
+                                        name="candidates"
+                                        value="{{ row.selection }}"
+                                        aria-label="Select individual {{ row.id }}"
+                                        {% if not row.handoff_available %}disabled title="No POSCAR block in the uploaded files"{% endif %}
+                                        {% if structure_handoff and row.selection in structure_handoff | map(attribute="candidate.selection") | list %}checked{% endif %}>
+                                </td>
+                                <td class="numeric">{{ row.rank }}</td>
+                                <td class="numeric">{{ row.id }}</td>
+                                <td>{{ row.results_folder }}</td>
+                                <td class="numeric">{{ row.generation }}</td>
+                                <td>{{ row.origin or "—" }}</td>
+                                <td>{{ row.formula or (row.composition | join(", ")) }}</td>
+                                <td class="numeric">{{ "%.3f" | format(row.energy_ev) }}</td>
+                                <td class="numeric">{{ "%.4f" | format(row.energy_ev_per_atom) }}</td>
+                                <td class="numeric">{% if row.volume_per_atom_a3 is not none %}{{ "%.2f" | format(row.volume_per_atom_a3) }}{% else %}—{% endif %}</td>
+                                <td>{{ row.space_group_uspex if row.space_group_uspex is not none else "—" }}</td>
+                                <td>{% if row.symmetry %}{{ row.symmetry.space_group_symbol }} ({{ row.symmetry.space_group_number }}){% else %}—{% endif %}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="form-row">
+                    <label>Desired Output</label>
+                    <select name="workflow">
+                        {% for option in structure_handoff_outputs %}
+                        <option value="{{ option.value }}" {% if structure_handoff_workflow == option.value %}selected{% endif %}>{{ option.label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <button type="submit">Use Selected Candidates</button>
+            </form>
+
+            {% if structure_handoff %}
+            <div class="structure-search-handoff" data-structure-handoff>
+                <div class="summary-line">
+                    Each candidate is built through the normal workbench, like a pasted POSCAR. Its USPEX record (archive SHA-256, results folder, individual ID, USPEX energy and origin) is added to the new calculation's provenance.{% if structure_handoff | length > 1 %} Each Build opens in a new tab.{% endif %}
+                </div>
+                {% for item in structure_handoff %}
+                <div class="prep-panel" data-handoff-candidate="{{ item.candidate.selection }}">
+                    <div class="prep-title">Individual {{ item.candidate.id }} ({{ item.candidate.results_folder }}) · {{ item.candidate.formula or "" }} · {{ "%.4f" | format(item.candidate.energy_ev_per_atom) }} eV/atom (USPEX)</div>
+                    <details class="disclosure">
+                        <summary>POSCAR</summary>
+                        <pre class="log-output">{{ item.structure_text }}</pre>
+                    </details>
+                    <form action="/build-calculation" method="post"{% if structure_handoff | length > 1 %} target="_blank"{% endif %}>
+                        <textarea class="hidden-field" name="structure">{{ item.structure_text }}</textarea>
+                        <input type="hidden" name="fmt" value="{{ item.fmt }}">
+                        <input type="hidden" name="workflow" value="{{ structure_handoff_workflow }}">
+                        <input type="hidden" name="structure_origin_token" value="{{ item.origin_token }}">
+                        <button type="submit">Build {{ (structure_handoff_outputs | selectattr("value", "equalto", structure_handoff_workflow) | map(attribute="label") | first) or "Calculation" }}</button>
+                    </form>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+        </section>
+        {% endif %}
+
         <div class="entry-divider">OR</div>
 
         <section class="stage">
@@ -1246,6 +1484,22 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                 </div>
             </div>
 
+            {% if structure_origin %}
+            <div class="prep-panel structure-origin-note" data-structure-origin>
+                <div class="prep-title">Structure origin</div>
+                {% if structure_origin.source == "uspex_import" %}
+                <table class="compact-table">
+                    <tr><td>Source</td><td>USPEX structure search, imported from {{ structure_origin.archive_filename }}{% if structure_origin.import_id %} (<a href="/structure-search/{{ structure_origin.import_id }}">candidates</a>){% endif %}</td></tr>
+                    <tr><td>Individual</td><td>{{ structure_origin.individual_id }} in {{ structure_origin.calculation_path_in_archive ~ "/" if structure_origin.calculation_path_in_archive else "" }}{{ structure_origin.results_folder }}, generation {{ structure_origin.generation }}{% if structure_origin.origin %}, origin {{ structure_origin.origin }}{% endif %}</td></tr>
+                    <tr><td>USPEX energy</td><td>{{ structure_origin.uspex_energy_ev }} eV/cell ({{ structure_origin.uspex_energy_ev_per_atom }} eV/atom), search-grade</td></tr>
+                    <tr><td>Archive SHA-256</td><td class="mono">{{ structure_origin.archive_sha256 }}</td></tr>
+                </table>
+                {% else %}
+                <div class="summary-line">{{ structure_origin.description or structure_origin.source }}</div>
+                {% endif %}
+            </div>
+            {% endif %}
+
             <div class="details-grid">
 
                 <details class="disclosure">
@@ -1354,6 +1608,7 @@ button.hardware-custom-toggle[aria-expanded="true"] {
 
                 <textarea class="hidden-field" name="structure">{{ structure_text }}</textarea>
                 <input type="hidden" name="fmt" value="{{ fmt }}">
+                {% if structure_origin_token %}<input type="hidden" name="structure_origin_token" value="{{ structure_origin_token }}">{% endif %}
 
                 <div class="calculation-layout">
                     <div class="configuration-grid">
@@ -2108,6 +2363,7 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                     <input type="hidden" name="planned_resources" value="{{ selected_resources.planned_token }}">
                     <input type="hidden" name="submission_attempt_id" value="{{ submission_spec.submission.attempt_id }}">
                     <input type="hidden" name="submission_identity_token" value="{{ submission_spec.submission.identity_token }}">
+                    {% if structure_origin_token %}<input type="hidden" name="structure_origin_token" value="{{ structure_origin_token }}">{% endif %}
                     <button
                         type="submit"
                         data-current-calculation-action
@@ -2132,6 +2388,7 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                     <input type="hidden" name="planned_resources" value="{{ selected_resources.planned_token }}">
                     <input type="hidden" name="submission_attempt_id" value="{{ submission_spec.submission.attempt_id }}">
                     <input type="hidden" name="submission_identity_token" value="{{ submission_spec.submission.identity_token }}">
+                    {% if structure_origin_token %}<input type="hidden" name="structure_origin_token" value="{{ structure_origin_token }}">{% endif %}
                     <input
                         type="hidden"
                         name="remote_prepared"
@@ -3517,9 +3774,13 @@ document.addEventListener("DOMContentLoaded", function () {
 });
 </script>
 
-{% if results_summary and results_summary.status == "success" and results_summary.visualizations %}
+{% set line_plot_visualizations = (
+    (results_summary.visualizations if results_summary and results_summary.status == "success" and results_summary.visualizations else [])
+    + (structure_search.visualizations if structure_search and structure_search.visualizations else [])
+) %}
+{% if line_plot_visualizations %}
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<script type="application/json" id="workflow-result-visualizations">{{ results_summary.visualizations | tojson }}</script>
+<script type="application/json" id="workflow-result-visualizations">{{ line_plot_visualizations | tojson }}</script>
 <script>
 document.addEventListener("DOMContentLoaded", function () {
     var dataElement = document.getElementById("workflow-result-visualizations");
@@ -3756,11 +4017,21 @@ document.addEventListener("DOMContentLoaded", function () {
             var name = trace.name || ("Trace " + (index + 1));
             var xUnit = plot.x_hover_unit || "";
             var yUnit = plot.y_hover_unit || "";
+            // Optional per-trace x values, mode, marker text and hover formats
+            // (structure-search plot); results plots use the shared x.
+            var xFormat = plot.x_hover_format || ".3f";
+            var yFormat = plot.y_hover_format || ".3f";
+            var hoverText = Array.isArray(trace.text) ? "<br>%{text}" : "";
             return {
-                x: xValues,
+                x: Array.isArray(trace.x) ? trace.x : xValues,
                 y: trace.y || [],
+                text: Array.isArray(trace.text) ? trace.text : undefined,
                 type: "scatter",
-                mode: "lines",
+                mode: trace.mode || "lines",
+                marker: {
+                    color: trace.color || colors[index % colors.length],
+                    size: 8
+                },
                 name: name,
                 line: {
                     color: trace.color || colors[index % colors.length],
@@ -3770,8 +4041,8 @@ document.addEventListener("DOMContentLoaded", function () {
                 legendgroup: trace.legendgroup || name,
                 showlegend: trace.showlegend !== false,
                 hovertemplate: (
-                    "%{x:.3f}" + xUnit + "<br>%{y:.3f}" + yUnit +
-                    "<extra>" + name + "</extra>"
+                    "%{x:" + xFormat + "}" + xUnit + "<br>%{y:" + yFormat + "}" + yUnit +
+                    hoverText + "<extra>" + name + "</extra>"
                 )
             };
         });
@@ -3853,9 +4124,10 @@ document.addEventListener("DOMContentLoaded", function () {
                 linecolor: plotTheme.borderStrong,
                 gridcolor: plotTheme.grid,
                 zerolinecolor: plotTheme.borderStrong,
-                tickmode: hasTicks ? "array" : "auto",
+                tickmode: hasTicks ? "array" : (plot.x_dtick ? "linear" : "auto"),
                 tickvals: hasTicks ? plot.tickvals : undefined,
-                ticktext: hasTicks ? plot.ticktext : undefined
+                ticktext: hasTicks ? plot.ticktext : undefined,
+                dtick: (!hasTicks && plot.x_dtick) ? plot.x_dtick : undefined
             },
             yaxis: {
                 title: plot.yaxis_title || "Value",

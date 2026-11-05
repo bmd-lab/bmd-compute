@@ -54,6 +54,7 @@ Required unless marked optional:
 | `submission.attempt_state` | path of the submission-attempt state file |
 | `flow_spec.workflow_spec.stages[]` | the resolved executable workflow, in canonical stage order; each stage has `stage_type`, `theory`, `modifiers` (list), `options` (object) and `label` (string or null) |
 | `flow_spec.structure` | optional; the submitted structure representation |
+| `flow_spec.structure.origin` | optional; verified record of where the structure came from (for example a USPEX candidate), see `provenance.md`, Structure Source |
 | `paths.run_dir`, `paths.result_dir` | run directory and final-result directory |
 | `paths.stage_dirs` | object mapping stage identifiers to directories (below) |
 | `paths.log_out`, `log_err`, `slurm_out`, `slurm_err` | optional log paths |

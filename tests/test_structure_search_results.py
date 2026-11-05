@@ -411,6 +411,25 @@ def test_load_structures_rejects_unknown_file():
         load_structures(str(PILOT), [1], poscars_file="Individuals")
 
 
+def test_available_structure_ids():
+    gathered = uspex_results.available_structure_ids(str(PILOT), "results1")
+    assert gathered == set(range(1, 36))
+    good = uspex_results.available_structure_ids(
+        str(PILOT), "results1", poscars_file="good_structures_POSCARS"
+    )
+    assert 35 in good and 12 not in good
+    assert uspex_results.available_structure_ids(
+        str(PILOT), "results1", poscars_file="best_structure_POSCAR"
+    ) == {35}
+
+
+def test_available_structure_ids_missing_file(search):
+    (search / "results1" / "gatheredPOSCARS").unlink()
+    assert uspex_results.available_structure_ids(str(search), "results1") is None
+    with pytest.raises(USPEXResultsError, match="poscars_file must be one of"):
+        uspex_results.available_structure_ids(str(search), "results1", poscars_file="x")
+
+
 def test_incomplete_last_poscar_block_is_ignored(search):
     gathered = search / "results1" / "gatheredPOSCARS"
     complete = gathered.read_text()

@@ -78,6 +78,20 @@ Implications:
 - Resume and Refresh Queue Status can still recover job state from SLURM/job records
 - Load Results may parse remotely again after restart
 
+## Uploaded Structure-Search Results
+
+Imports of USPEX results (`structure_search_import.md`) are the app's first
+server-side uploads. They are written to `uploads/structure_search/` in the
+checkout (git-ignored). Each import keeps only the USPEX result files, at
+most 512 MB, and is deleted when a later import finds it older than 7 days
+or beyond the newest 20. The web host therefore needs a few GB free in the
+checkout. The folder may be deleted at any time; calculations built from an
+import keep their origin in the submission record.
+
+Structure origin tokens are signed with a key derived from
+`BMD_SUBMISSION_IDENTITY_SECRET`. Without it, a restart invalidates origins
+that were handed off but not yet built.
+
 ## Submission Idempotency
 
 Submission idempotency is enforced with remote-side state under the BMD logs area, including submission attempt records and lock state.

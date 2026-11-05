@@ -4,7 +4,7 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.templating import Jinja2Templates
 
 from backend.config import bmd_debug_enabled
@@ -88,6 +88,13 @@ from backend.submission import (
     create_submission_spec,
     verify_submission_identity_token,
 )
+from backend.structure_origin import verify_structure_origin
+from backend.structure_search.imports import (
+    StructureSearchImportError,
+    hand_off_candidates,
+    import_uspex_archive,
+    load_candidate_page,
+)
 from backend.summary import summarize_structure
 from backend.workflow_summary import (
     calculation_plan_from_workflow_spec,
@@ -126,6 +133,12 @@ def page_context(
     selected_desired_output: str | None = None,
     workflow_identity_available: bool = True,
     show_submitted_workflow: bool = False,
+    structure_origin: dict | None = None,
+    structure_origin_token: str = "",
+    structure_search=None,
+    structure_search_error=None,
+    structure_handoff=None,
+    structure_handoff_workflow: str | None = None,
 ):
     if selected_workflow is None:
         selected_workflow = (
@@ -187,8 +200,31 @@ def page_context(
         "structure_error": structure_error,
         "calculation_error": calculation_error,
         "collapse_structure_input": collapse_structure_input,
+        # Where the structure came from: the submission record is
+        # authoritative once there is one; before that, the verified token.
+        "structure_origin": recorded_structure_origin(submission_spec) or structure_origin,
+        "structure_origin_token": structure_origin_token if structure_origin else "",
+        "structure_search": structure_search,
+        "structure_search_error": structure_search_error,
+        "structure_handoff": structure_handoff,
+        "structure_handoff_workflow": structure_handoff_workflow or "relaxed_energy",
+        "structure_handoff_outputs": [
+            option
+            for option in calculation_form_options()["desired_outputs"]
+            if option["value"] != "custom"
+        ],
         "bmd_debug": bmd_debug_enabled(),
     }
+
+
+def recorded_structure_origin(submission_spec) -> dict | None:
+    """The structure origin stored in a submission record, if any."""
+
+    if not isinstance(submission_spec, dict):
+        return None
+    structure = (submission_spec.get("flow_spec") or {}).get("structure")
+    origin = structure.get("origin") if isinstance(structure, dict) else None
+    return origin if isinstance(origin, dict) else None
 
 
 def monitor_state_json(
@@ -289,6 +325,8 @@ def structure_error_response(
     selected_resources: "SelectedResources | ExecutionResources | None" = None,
     selected_desired_output: str | None = None,
     workflow_identity_available: bool = True,
+    structure_origin: dict | None = None,
+    structure_origin_token: str = "",
 ):
     return templates.TemplateResponse(
         request=request,
@@ -302,6 +340,8 @@ def structure_error_response(
             selected_desired_output=selected_desired_output,
             workflow_identity_available=workflow_identity_available,
             structure_error=structure_error_context(exc),
+            structure_origin=structure_origin,
+            structure_origin_token=structure_origin_token,
         ),
         status_code=400,
     )
@@ -328,6 +368,8 @@ def calculation_error_response(
     selected_resources: "SelectedResources | ExecutionResources | None" = None,
     selected_desired_output: str | None = None,
     workflow_identity_available: bool = True,
+    structure_origin: dict | None = None,
+    structure_origin_token: str = "",
 ):
     summary = None
     try:
@@ -348,6 +390,8 @@ def calculation_error_response(
             selected_desired_output=selected_desired_output,
             workflow_identity_available=workflow_identity_available,
             calculation_error=calculation_error_context(exc),
+            structure_origin=structure_origin,
+            structure_origin_token=structure_origin_token,
         ),
         status_code=400,
     )
@@ -1270,6 +1314,7 @@ def build_submission_state_from_structure(
     submission_attempt_id: str | None = None,
     default_treatment_resolution: ResolvedDefaultWorkflow | None = None,
     planned_resources: str | None = None,
+    structure_origin: dict | None = None,
 ):
     if (
         default_treatment_resolution is not None
@@ -1346,6 +1391,9 @@ def build_submission_state_from_structure(
             "text": structure_text,
         },
     }
+    if structure_origin is not None:
+        # Verified by backend.structure_origin; recorded as provenance.structure_source.
+        flow_spec["structure"]["origin"] = deepcopy(structure_origin)
     if calculation_spec is not None:
         flow_spec["calculation_spec"] = calculation_spec.to_dict()
     if default_treatment_resolution is not None:
@@ -1649,6 +1697,7 @@ def build_workflow(
     workflow_spec_json: str | None = Form(None),
     workflow: str | None = Form(None),
     method: str | None = Form(None),
+    structure_origin_token: str | None = Form(None),
 ):
     calculation_spec = default_calculation_spec()
     workflow_spec = default_workflow_spec()
@@ -1661,7 +1710,12 @@ def build_workflow(
     resource_request = ResourceRequest()
     execution_resources = SelectedResources(request=resource_request)
     method_considerations = None
+    structure_origin_token = optional_form_value(structure_origin_token) or ""
+    structure_origin = None
     try:
+        # Where the structure came from (for example a USPEX candidate), if
+        # the form carries a signed origin; refused if it does not match.
+        structure_origin = verify_structure_origin(structure_origin_token, structure)
         workflow_spec = workflow_spec_from_form(
             workflow_spec_json=workflow_spec_json,
             purpose=purpose,
@@ -1705,6 +1759,7 @@ def build_workflow(
             workflow_spec=workflow_spec,
             execution_resources=resource_request,
             default_treatment_resolution=default_treatment_resolution,
+            structure_origin=structure_origin,
         )
         execution_resources = selected_resources_from_submission(
             submission_spec, resource_request
@@ -1719,6 +1774,8 @@ def build_workflow(
             selected_workflow=requested_workflow_spec,
             selected_resources=execution_resources,
             exc=exc,
+            structure_origin=structure_origin,
+            structure_origin_token=structure_origin_token,
         )
     except CalculationValidationError as exc:
         return calculation_error_response(
@@ -1730,6 +1787,8 @@ def build_workflow(
             selected_workflow=requested_workflow_spec,
             selected_resources=execution_resources,
             exc=exc,
+            structure_origin=structure_origin,
+            structure_origin_token=structure_origin_token,
         )
 
     return templates.TemplateResponse(
@@ -1748,6 +1807,8 @@ def build_workflow(
             submission_spec=submission_spec,
             method_considerations=method_considerations,
             default_treatment_resolution=default_treatment_resolution,
+            structure_origin=structure_origin,
+            structure_origin_token=structure_origin_token,
         ),
     )
 
@@ -1771,6 +1832,7 @@ def prepare_remote(
     workflow: str | None = Form(None),
     method: str | None = Form(None),
     planned_resources: str | None = Form(None),
+    structure_origin_token: str | None = Form(None),
 ):
     preparation_started = time.perf_counter()
     # Accepted for legacy clients only; the signed server identity is authoritative.
@@ -1786,7 +1848,12 @@ def prepare_remote(
     resource_request = ResourceRequest()
     execution_resources = SelectedResources(request=resource_request)
     method_considerations = None
+    structure_origin_token = optional_form_value(structure_origin_token) or ""
+    structure_origin = None
     try:
+        # Where the structure came from (for example a USPEX candidate), if
+        # the form carries a signed origin; refused if it does not match.
+        structure_origin = verify_structure_origin(structure_origin_token, structure)
         identity = authoritative_submission_identity(
             submission_identity_token,
             submission_attempt_id,
@@ -1837,6 +1904,7 @@ def prepare_remote(
             submission_attempt_id=identity["attempt_id"],
             default_treatment_resolution=default_treatment_resolution,
             planned_resources=optional_form_value(planned_resources),
+            structure_origin=structure_origin,
         )
         execution_resources = selected_resources_from_submission(
             submission_spec, resource_request
@@ -1851,6 +1919,8 @@ def prepare_remote(
             selected_workflow=requested_workflow_spec,
             selected_resources=execution_resources,
             exc=exc,
+            structure_origin=structure_origin,
+            structure_origin_token=structure_origin_token,
         )
     except CalculationValidationError as exc:
         return calculation_error_response(
@@ -1862,6 +1932,8 @@ def prepare_remote(
             selected_workflow=requested_workflow_spec,
             selected_resources=execution_resources,
             exc=exc,
+            structure_origin=structure_origin,
+            structure_origin_token=structure_origin_token,
         )
     remote_preparation = prepare_remote_submission(
         submission_spec,
@@ -1887,6 +1959,8 @@ def prepare_remote(
             remote_preparation=remote_preparation,
             method_considerations=method_considerations,
             default_treatment_resolution=default_treatment_resolution,
+            structure_origin=structure_origin,
+            structure_origin_token=structure_origin_token,
         ),
     )
 
@@ -1911,6 +1985,7 @@ def submit_workflow(
     workflow: str | None = Form(None),
     method: str | None = Form(None),
     planned_resources: str | None = Form(None),
+    structure_origin_token: str | None = Form(None),
 ):
     # Accepted for legacy clients only; the signed server identity is authoritative.
     del created_at
@@ -1925,7 +2000,12 @@ def submit_workflow(
     resource_request = ResourceRequest()
     execution_resources = SelectedResources(request=resource_request)
     method_considerations = None
+    structure_origin_token = optional_form_value(structure_origin_token) or ""
+    structure_origin = None
     try:
+        # Where the structure came from (for example a USPEX candidate), if
+        # the form carries a signed origin; refused if it does not match.
+        structure_origin = verify_structure_origin(structure_origin_token, structure)
         identity = authoritative_submission_identity(
             submission_identity_token,
             submission_attempt_id,
@@ -1976,6 +2056,7 @@ def submit_workflow(
             submission_attempt_id=identity["attempt_id"],
             default_treatment_resolution=default_treatment_resolution,
             planned_resources=optional_form_value(planned_resources),
+            structure_origin=structure_origin,
         )
         execution_resources = selected_resources_from_submission(
             submission_spec, resource_request
@@ -1990,6 +2071,8 @@ def submit_workflow(
             selected_workflow=requested_workflow_spec,
             selected_resources=execution_resources,
             exc=exc,
+            structure_origin=structure_origin,
+            structure_origin_token=structure_origin_token,
         )
     except CalculationValidationError as exc:
         return calculation_error_response(
@@ -2001,6 +2084,8 @@ def submit_workflow(
             selected_workflow=requested_workflow_spec,
             selected_resources=execution_resources,
             exc=exc,
+            structure_origin=structure_origin,
+            structure_origin_token=structure_origin_token,
         )
     prepared = remote_prepared.lower() == "true"
     submission_result = submit_remote_workflow(
@@ -2043,6 +2128,8 @@ def submit_workflow(
             results_summary=results_summary,
             method_considerations=method_considerations,
             default_treatment_resolution=default_treatment_resolution,
+            structure_origin=structure_origin,
+            structure_origin_token=structure_origin_token,
         ),
     )
 
@@ -2219,6 +2306,102 @@ def refresh_monitoring(
             collapse_structure_input=True,
             monitor_state_override=monitor_state_override,
         ),
+    )
+
+
+def structure_search_response(
+    request: Request,
+    *,
+    structure_search=None,
+    error: StructureSearchImportError | None = None,
+    structure_handoff=None,
+    structure_handoff_workflow: str | None = None,
+):
+    """Render the workbench with the structure-search import panel filled in."""
+
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context=page_context(
+            structure_search=structure_search,
+            structure_search_error=(
+                {"message": error.message, "suggestion": error.suggestion}
+                if error is not None
+                else None
+            ),
+            structure_handoff=structure_handoff,
+            structure_handoff_workflow=structure_handoff_workflow,
+            collapse_structure_input=structure_search is not None,
+        ),
+        status_code=400 if error is not None else 200,
+    )
+
+
+@app.post("/structure-search/import")
+def import_structure_search(
+    request: Request,
+    archive: UploadFile | None = File(None),
+):
+    """Upload USPEX results run by hand and show their candidates (#63)."""
+
+    has_file = archive is not None and bool(archive.filename)
+    try:
+        import_id = import_uspex_archive(
+            archive.file if has_file else None,
+            archive.filename if has_file else None,
+        )
+        structure_search = load_candidate_page(import_id)
+    except StructureSearchImportError as exc:
+        return structure_search_response(request, error=exc)
+    return structure_search_response(request, structure_search=structure_search)
+
+
+@app.get("/structure-search/{import_id}")
+def show_structure_search(request: Request, import_id: str):
+    """Show the candidates of an earlier import again."""
+
+    try:
+        structure_search = load_candidate_page(import_id)
+    except StructureSearchImportError as exc:
+        return structure_search_response(request, error=exc)
+    return structure_search_response(request, structure_search=structure_search)
+
+
+@app.post("/structure-search/hand-off")
+def hand_off_structure_search(
+    request: Request,
+    import_id: str = Form(...),
+    candidates: list[str] | None = Form(None),
+    workflow: str = Form("relaxed_energy"),
+):
+    """Prepare selected candidates for the normal Build route.
+
+    Nothing is built here: each candidate is shown with a Build button that
+    posts its POSCAR text, the chosen Desired Output and its signed origin
+    to /build-calculation, exactly like a pasted structure.
+    """
+
+    structure_search = None
+    try:
+        structure_search = load_candidate_page(import_id)
+        if workflow == "custom" or desired_output_workflow_spec(workflow) is None:
+            raise StructureSearchImportError(
+                "Unknown Desired Output.",
+                suggestion="Choose one of the Desired Outputs offered in the list.",
+            )
+        structure_handoff = hand_off_candidates(import_id, candidates or [])
+    except StructureSearchImportError as exc:
+        return structure_search_response(
+            request,
+            structure_search=structure_search,
+            error=exc,
+            structure_handoff_workflow=workflow,
+        )
+    return structure_search_response(
+        request,
+        structure_search=structure_search,
+        structure_handoff=structure_handoff,
+        structure_handoff_workflow=workflow,
     )
 
 

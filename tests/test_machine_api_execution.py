@@ -834,6 +834,9 @@ def test_browser_routes_and_openapi_are_unchanged(tokens):
         "/monitor",
         "/prepare-remote",
         "/resume",
+        "/structure-search/hand-off",
+        "/structure-search/import",
+        "/structure-search/{import_id}",
         "/submit",
     ]
 
