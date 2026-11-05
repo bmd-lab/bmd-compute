@@ -4124,7 +4124,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 linecolor: plotTheme.borderStrong,
                 gridcolor: plotTheme.grid,
                 zerolinecolor: plotTheme.borderStrong,
-                tickmode: hasTicks ? "array" : "auto",
+                tickmode: hasTicks ? "array" : (plot.x_dtick ? "linear" : "auto"),
                 tickvals: hasTicks ? plot.tickvals : undefined,
                 ticktext: hasTicks ? plot.ticktext : undefined,
                 dtick: (!hasTicks && plot.x_dtick) ? plot.x_dtick : undefined
