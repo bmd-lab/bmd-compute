@@ -507,6 +507,12 @@ def walltime_explanation(estimate: Mapping[str, Any]) -> str:
         text = "Conservative fallback: " + "; ".join(parts) + "."
         if estimate.get("minimum_floor_applied"):
             text += " A 72 h minimum applies outside the calibrated range."
+    if any(stage.get("geometry_convergence_role") for stage in stages):
+        text += (
+            " Includes the worst case of the adaptive geometry convergence (higher-cutoff "
+            "probe, one refinement relaxation and a final probe); the calculation may "
+            "finish earlier."
+        )
     if estimate.get("capped_at_qos_limit"):
         text += " Capped at the 100-day QOS limit; review this calculation before submitting."
     return text
@@ -525,6 +531,9 @@ def estimate_stage(
         "stage_type": stage_type.value,
         "theory": stage.theory.value,
     }
+    if preview.get("geometry_convergence_role"):
+        # A possible stage of the adaptive geometry convergence (worst case).
+        record["geometry_convergence_role"] = preview["geometry_convergence_role"]
     try:
         descriptors = stage_descriptors(preview, cpus=cpus, potcar_functional=potcar_functional)
     except Exception as exc:  # noqa: BLE001 - any failure means "cannot be sized"

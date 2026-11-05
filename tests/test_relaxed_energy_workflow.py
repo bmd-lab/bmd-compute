@@ -38,6 +38,7 @@ from backend.calculations.registry import (
 from backend.calculations.resources import walltime_seconds
 from backend.generated_inputs import preview_generated_inputs
 from backend.parser import parse_structure
+from conftest import planned
 from backend.results import parse_vasp_result_files, result_stage_directory_from_submission_spec
 from backend.workflow_summary import calculation_plan_from_workflow_spec
 from backend.workflows import build_atomate2_flow_for_workflow_spec
@@ -157,32 +158,35 @@ def test_relaxed_energy_is_the_first_browser_option_with_its_label_and_descripti
 
 
 def test_each_stage_starts_from_the_previous_stage_final_structure():
+    structure = parse_structure(SI_POSCAR, "poscar")
     flow = build_atomate2_flow_for_workflow_spec(
-        "initial-structure",
-        desired_output_workflow_spec("relaxed_energy"),
+        structure,
+        planned(structure, desired_output_workflow_spec("relaxed_energy")),
         label="Si",
         resources={"ntasks": 24},
     )
-    first_relax, second_relax, static = flow.jobs
+    first_relax, second_relax, controller, static = flow.jobs
 
-    assert [job.name for job in flow.jobs] == ["stage_01", "stage_02", "stage_03"]
-    assert flow.metadata["bmd_stage_directories"] == ("stage_01", "stage_02", "stage_03")
-    assert first_relax.function_args == ("initial-structure",)
+    assert [job.name for job in flow.jobs] == ["stage_01", "stage_02", "geometry_convergence", "stage_03"]
+    assert flow.metadata["bmd_stage_directories"] == ("stage_01", "stage_02", "geometry_convergence", "stage_03")
+    assert first_relax.function_args == (structure,)
 
     second_input = second_relax.function_args[0]
     assert second_input.uuid == first_relax.uuid
     assert second_input.attributes == (("a", "structure"),)
 
-    # The final static receives the structure produced by the SECOND relax,
-    # not the input structure and not the first relax's structure.
+    # The adaptive geometry convergence follows the SECOND relax; the final
+    # static receives the geometry it accepted (the second relax's, or its
+    # single refinement's), never the first relax's or the input structure.
+    assert controller.function_args[0].uuid == second_relax.uuid
     static_input = static.function_args[0]
-    assert static_input.uuid == second_relax.uuid
+    assert static_input.uuid == controller.uuid
     assert static_input.uuid != first_relax.uuid
     assert static_input.attributes == (("a", "structure"),)
     # As for every PBE static that follows a stage, it also reads that
     # stage's directory (the existing chaining, unchanged).
     prev_dir = static.function_kwargs["prev_dir"]
-    assert prev_dir.uuid == second_relax.uuid
+    assert prev_dir.uuid == controller.uuid  # the accepted relaxation's directory
     assert prev_dir.attributes == (("a", "dir_name"),)
     # No stage copies charge densities or wavefunctions (unchanged policy).
     assert all(
@@ -231,7 +235,14 @@ def test_stages_reuse_existing_definitions_with_no_new_incar_defaults(structure)
     energy_only = _stage_material(_plan(structure, "energy_only"))
 
     assert relaxed_energy[:2] == relaxed_structure
-    assert relaxed_energy[2:] == energy_only
+    # The static is the Energy only static except for its ENCUT floor: the
+    # highest relaxation cutoff the adaptive geometry convergence may accept.
+    def without_encut(material):
+        return [{**stage, "incar": {k: v for k, v in stage["incar"].items() if k != "ENCUT"}} for stage in material]
+
+    assert without_encut(relaxed_energy[2:]) == without_encut(energy_only)
+    floor = _plan(structure, "relaxed_energy").workflow_spec.stages[1].options["geometry_convergence"]["refinement_encut"]
+    assert relaxed_energy[2]["incar"]["ENCUT"] == max(energy_only[0]["incar"]["ENCUT"], floor)
     assert _resolved_modifiers(_plan(structure, "relaxed_energy")) == (
         _resolved_modifiers(_plan(structure, "relaxed_structure"))
         + _resolved_modifiers(_plan(structure, "energy_only"))
@@ -242,9 +253,10 @@ def test_stages_reuse_existing_definitions_with_no_new_incar_defaults(structure)
 
 
 def test_generated_inputs_preview_all_three_stages():
+    structure = parse_structure(SI_POSCAR, "poscar")
     preview = preview_generated_inputs(
-        parse_structure(SI_POSCAR, "poscar"),
-        desired_output_workflow_spec("relaxed_energy"),
+        structure,
+        planned(structure, desired_output_workflow_spec("relaxed_energy")),
         resources={"ntasks": 24},
     )
     headers = [line for line in preview["incar"].splitlines() if line.startswith("# Stage")]
@@ -335,7 +347,10 @@ def test_one_allocation_sized_for_all_three_stages():
     energy_only = _plan(BI2SE3_POSCAR, "energy_only")
 
     estimate = relaxed_energy.submission_spec["flow_spec"]["resource_selection"]["walltime_estimate"]
-    assert [stage["stage_type"] for stage in estimate["stages"]] == ["relax", "relax", "static"]
+    workflow_stages = [stage for stage in estimate["stages"] if not stage.get("geometry_convergence_role")]
+    assert [stage["stage_type"] for stage in workflow_stages] == ["relax", "relax", "static"]
+    # Plus the worst case of the adaptive geometry convergence.
+    assert [stage["geometry_convergence_role"] for stage in estimate["stages"][3:]] == ["initial_probe", "refinement", "final_probe"]
 
     # One SLURM allocation, single node, for the whole workflow.
     assert relaxed_energy.submission_spec["resources"]["nodes"] == 1
@@ -356,11 +371,18 @@ def test_one_allocation_sized_for_all_three_stages():
 def test_per_stage_estimates_match_the_component_workflows():
     def stage_seconds(plan):
         estimate = plan.submission_spec["flow_spec"]["resource_selection"]["walltime_estimate"]
-        return [stage["seconds"] for stage in estimate["stages"]]
+        return [stage["seconds"] for stage in estimate["stages"] if not stage.get("geometry_convergence_role")]
+
+    def convergence_seconds(plan):
+        estimate = plan.submission_spec["flow_spec"]["resource_selection"]["walltime_estimate"]
+        return [stage["seconds"] for stage in estimate["stages"] if stage.get("geometry_convergence_role")]
 
     relaxed_energy = stage_seconds(_plan(SI_POSCAR, "relaxed_energy"))
     assert relaxed_energy[:2] == stage_seconds(_plan(SI_POSCAR, "relaxed_structure"))
-    assert relaxed_energy[2:] == stage_seconds(_plan(SI_POSCAR, "energy_only"))
+    # The static's floor (the highest possible relaxation cutoff) can make it
+    # costlier than the Energy only static, never cheaper.
+    assert relaxed_energy[2] >= stage_seconds(_plan(SI_POSCAR, "energy_only"))[0]
+    assert convergence_seconds(_plan(SI_POSCAR, "relaxed_energy")) == convergence_seconds(_plan(SI_POSCAR, "relaxed_structure"))
 
 
 # ------------------------------------------------- 7. browser / API parity
@@ -476,18 +498,25 @@ def test_relaxed_energy_is_the_only_new_identifier():
 
 
 def test_existing_desired_outputs_keep_their_stages():
+    # Every managed relaxation is the two-pass BMD Standard Geometry Relaxation.
     assert _pairs(desired_output_workflow_spec("relaxed_structure")) == [("relax", "pbe"), ("relax", "pbe")]
     assert _pairs(desired_output_workflow_spec("electronic_dos")) == [
+        ("relax", "pbe"),
         ("relax", "pbe"),
         ("static", "hse06"),
         ("dos", "hse06"),
     ]
     assert _pairs(desired_output_workflow_spec("electronic_band_structure")) == [
         ("relax", "pbe"),
+        ("relax", "pbe"),
         ("static", "hse06"),
         ("band_structure", "hse06"),
     ]
-    assert _pairs(desired_output_workflow_spec("phonons")) == [("relax", "pbe"), ("phonon_forces", "pbe")]
+    assert _pairs(desired_output_workflow_spec("phonons")) == [
+        ("relax", "pbe"),
+        ("relax", "pbe"),
+        ("phonon_forces", "pbe"),
+    ]
     for name in PRE_EXISTING_DESIRED_OUTPUTS:
         assert desired_output_from_workflow_spec(desired_output_workflow_spec(name)) == name
 

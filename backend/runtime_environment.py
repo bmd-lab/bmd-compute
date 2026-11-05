@@ -28,6 +28,15 @@ Package tiers (the versions themselves live in
   stop a run: they are numerical, serialization, configuration or job-store
   substrate that does not choose BMD's inputs or success decisions.
 
+Structure-search submissions (``submission.json`` has a ``structure_search``
+block) also get the USPEX runtime check, like "Tier 1P" for phonons:
+``backend.structure_search.runtime.search_runtime_check`` compares the USPEX
+program, its unpacked cache and the launch prerequisites on POWER with the
+record prepared in ``structure_search.runtime``. Any problem stops the run
+before USPEX or VASP starts, and the result is written to the runtime record
+under ``structure_search_runtime``. Other submissions are not affected and
+their record has no such key.
+
 Atomate2 settings that could silently alter generated inputs are also checked:
 a non-empty ``VASP_INCAR_UPDATES`` or a truthy ``VASP_INHERIT_INCAR`` stops the
 run. This module imports nothing heavy at import time.
@@ -328,10 +337,14 @@ def enforce_runtime_environment(
     settings: Any = None,
     record_path: str | Path | None = None,
     environ: Mapping[str, str] | None = None,
+    potcar_loader=None,
+    slurm_version_lookup: Callable[[], str | None] | None = None,
 ) -> dict[str, Any]:
     """Record the runtime stack and stop unless it satisfies the prepared contract.
 
     Always writes the record (pass or fail) before returning or raising.
+    ``slurm_version_lookup`` is passed to the structure-search check (tests
+    only; by default it runs ``srun --version``).
     """
 
     environ = os.environ if environ is None else environ
@@ -349,6 +362,27 @@ def enforce_runtime_environment(
         settings_snapshot = {}
         problems.append(f"atomate2 settings could not be read: {type(exc).__name__}: {exc}")
     problems.extend(atomate2_settings_problems(settings_snapshot))
+    # The species-dependent plane-wave cutoff was resolved at planning from
+    # recorded POTCAR ENMAX values; the datasets VASP will read must be those.
+    from backend.calculations.geometry_relaxation import runtime_potcar_check
+
+    flow_spec = spec.get("flow_spec") if isinstance(spec, Mapping) else None
+    potcar_check = runtime_potcar_check(flow_spec, potcar_loader=potcar_loader)
+    problems.extend(potcar_check["problems"])
+
+    from backend.structure_search.runtime import (
+        is_structure_search_spec,
+        prepared_record_from_spec,
+        search_runtime_check,
+    )
+
+    search_check = None
+    if is_structure_search_spec(spec):
+        search_check = search_runtime_check(
+            prepared_record_from_spec(spec),
+            slurm_version_lookup=slurm_version_lookup,
+        )
+        problems.extend(search_check["problems"])
 
     submission = spec.get("submission") if isinstance(spec, Mapping) else None
     record = {
@@ -374,7 +408,10 @@ def enforce_runtime_environment(
         "runtime_packages": critical,
         "supporting_packages": supporting,
         "atomate2_settings": settings_snapshot,
+        "plane_wave_cutoff_potcars": potcar_check,
     }
+    if search_check is not None:
+        record["structure_search_runtime"] = search_check
     path = Path(record_path) if record_path is not None else runtime_environment_record_path(spec)
     write_record_atomically(path, record)
     if problems:

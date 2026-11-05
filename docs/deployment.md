@@ -159,6 +159,109 @@ stage that is unsuccessful (not converged) always fails the workflow: BMD passes
 `stop_children_kwargs={"handle_unsuccessful": "error"}` to every maker instead of
 relying on atomate2's `VASP_HANDLE_UNSUCCESSFUL` setting.
 
+## Structure Searches (USPEX)
+
+Structure searches are being added (#58; design in
+`docs/structure_search.md`). The settings, resources and checks below exist,
+but no search can be submitted yet: preparation and `run_submission` are not
+wired to them (#67, part 2).
+
+### Settings
+
+Each setting is in `backend/config.py` with a POWER default and can be
+overridden with the environment variable named here, on the machine that
+prepares submissions. Preparation records the values in `submission.json`
+(`structure_search.runtime`), and the job on POWER checks against the recorded
+values, not against its own environment.
+
+| Setting | Variable | POWER default |
+|---|---|---|
+| USPEX 25.0 sandbox (unpacked image, not the `.sif`) | `BMD_USPEX_SANDBOX_DIR` | `/bmd/shared/uspex25_sandbox` |
+| Shared unpack cache, used as `XDG_CACHE_HOME` for the USPEX command only | `BMD_USPEX_CACHE_DIR` | `/bmd/shared/uspex_cache` |
+| Expected payload SHA-256 of `/opt/uspex/uspex` | `BMD_USPEX_PAYLOAD_SHA256` | `fc4a08e6…e87e95c8c` (USPEX 25.0, 11 Nov 2025) |
+| Singularity executable | `BMD_SINGULARITY_EXECUTABLE` | `/powerapps/share/rocky9/mamba/mamba-1.5.8/envs/singularity-3.8.6/bin/singularity` |
+| `I_MPI_PMI_LIBRARY` for `srun --mpi=pmi2` steps | `BMD_SEARCH_I_MPI_PMI_LIBRARY` | `/usr/lib64/libpmi2.so` |
+| Launch mode (`srun_steps` or `mpirun_pinned`) | `BMD_SEARCH_LAUNCH_MODE` | `srun_steps` |
+| Relaxations in parallel (USPEX `numParallelCalcs`) | `BMD_SEARCH_PARALLEL_RELAXATIONS` | `4` |
+| MPI ranks per relaxation | `BMD_SEARCH_RANKS_PER_RELAXATION` | `48` |
+| Bridge timeout, seconds (one relaxation step, queueing included) | `BMD_SEARCH_BRIDGE_TIMEOUT_S` | `14400` (provisional) |
+| Sockets per node | `BMD_SEARCH_NODE_SOCKETS` | `2` |
+| Cores per socket | `BMD_SEARCH_CORES_PER_SOCKET` | `96` |
+| Nodes searches exclude (SLURM host list; empty for none) | `BMD_SEARCH_EXCLUDED_NODES` | `compute-0-[332-333]` |
+
+`compute-0-332` and `compute-0-333` are excluded because they use a different
+NUMA layout (NPS4, 8 × 24 cores), so the 2 × 96 layout does not hold there.
+On the normal nodes, socket 0 holds CPUs 0–95 and socket 1 holds CPUs 96–191.
+The bridge timeout is provisional, about twice the slowest whole relaxation
+chain estimated in `docs/structure_search.md` §7; Phase 0 (#59) should
+replace it with a measured value.
+
+### Resources
+
+A search uses its own preset, `StructureSearchResources` in
+`backend/calculations/resources.py`. Ordinary workflows do not use it and are
+unchanged.
+
+```text
+partition = leeburton-pool
+nodes = 1, --exclusive
+ntasks = relaxations in parallel x ranks per relaxation   (4 x 48 = 192)
+memory = --mem=0           (the whole node; the partition default is 1 GB per job)
+walltime = explicit        (required, at most 100 days; no automatic estimate)
+account = power-leeburton-users_v2
+qos = owner100d
+exclude = compute-0-[332-333]
+```
+
+### Environment setup: unpack USPEX once
+
+`/opt/uspex/uspex` in the image is a self-extracting program. It unpacks
+itself (2 GB, about a minute on `/bmd`) into
+`<cache>/uspex_sfx/<payload sha256>/` and writes a `.ready` marker. A search
+job never unpacks it: the job-start check stops the run if `.ready` is missing.
+After a new cache or a new USPEX build, unpack it once, as an operator, on a
+compute node:
+
+```bash
+srun -p leeburton-pool -N 1 -n 1 -t 00:30:00 \
+  python3 -m backend.structure_search.runtime unpack
+```
+
+Run it from a bmd-compute checkout (Python 3.9 or later; the module uses only
+the standard library) with the same `BMD_USPEX_*` and
+`BMD_SINGULARITY_EXECUTABLE` values as the web service. It does nothing if
+`.ready` already exists. It refuses to start if a partial
+`uspex_sfx/<sha>*` folder exists (the extractor would nest a fresh copy inside
+it and fail); remove that folder after checking that no other unpack is
+running, and run it again. `<cache>` and `<cache>/uspex_sfx` must be
+group-writable with the setgid bit (`chmod g+ws`), because every USPEX start
+writes a lock file there; if `<cache>` is not writable, USPEX silently unpacks
+2 GB into `/tmp` instead.
+
+`python3 -m backend.structure_search.runtime check` runs the job-start check
+by hand and prints the result. `... record` prints the provenance record.
+
+### Job-start check
+
+For a structure-search submission, the POWER runtime-environment check (the
+same step that checks package parity) also checks, before USPEX or VASP
+starts:
+
+- the sandbox exists and contains `/opt/uspex/uspex`;
+- the `PAYLOAD_SHA256=` line in that file's header equals the prepared value,
+  and its version banner, if present, says 25.0 (the sandbox itself is not
+  hashed: the payload SHA-256 identifies the program);
+- `<cache>/uspex_sfx/<sha>/.ready` and the unpacked `uspex_core/uspex` exist;
+- `<cache>` and `<cache>/uspex_sfx` are writable by the job's user;
+- the Singularity executable exists;
+- in `srun_steps` mode, the PMI library exists and SLURM is 21.08 or later
+  (`srun --exact`).
+
+Every problem is reported at once and the run stops. The result is written to
+`runtime_environment.json` under `structure_search_runtime`, with the version,
+payload SHA-256, paths, the extractor file's size and modification time, and
+the SLURM version.
+
 ## Future Production Work
 
 Before broader production exposure, decide and document:

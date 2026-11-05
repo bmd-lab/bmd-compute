@@ -47,7 +47,9 @@ SI = Structure(
 
 
 def _all_makers(flow):
-    return [job_maker(job) for job in flow.jobs]
+    # VASP stages only: the adaptive geometry-convergence controller builds its
+    # probe and refinement makers from the final pass (same policy).
+    return [job_maker(job) for job in flow.jobs if job.name != "geometry_convergence"]
 
 
 # --- Every BMD-constructed maker carries the policy --------------------------------
@@ -179,7 +181,19 @@ def _external_default(monkeypatch, value):
 
 
 def _two_stage_flows():
-    relax_relax = build_atomate2_flow_for_workflow_spec(SI, desired_output_workflow_spec("relaxed_structure"))
+    from conftest import planned
+
+    # The two relaxation passes alone (a plan recorded without the adaptive
+    # geometry convergence), so the chain is exactly two VASP stages.
+    passes = planned(SI, desired_output_workflow_spec("relaxed_structure"))
+    passes = WorkflowSpec(
+        [
+            StageSpec(stage.stage_type, stage.theory, stage.modifiers, options={k: v for k, v in stage.options.items() if k != "geometry_convergence"})
+            for stage in passes.stages
+        ],
+        recipe=passes.recipe,
+    )
+    relax_relax = build_atomate2_flow_for_workflow_spec(SI, passes)
     static_dos = build_atomate2_flow_for_workflow_spec(
         SI,
         WorkflowSpec([StageSpec(StageType.STATIC, Theory.PBE), StageSpec(StageType.DOS, Theory.PBE)], recipe="custom"),

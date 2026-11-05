@@ -212,6 +212,19 @@ def _parse_request(request: Mapping[str, Any]) -> dict[str, Any]:
     )
     resources = normalize_execution_resources(request.get("resources"))
     potcar_functional = str(request.get("potcar_functional") or "PBE_64").strip() or "PBE_64"
+    # Inputs exactly as Compute would generate them for a new plan: relax and
+    # phonon stages without a recorded plane-wave cutoff get it resolved now
+    # (backend.calculations.geometry_relaxation); recorded cutoffs are kept.
+    from backend.calculations.geometry_relaxation import freeze_plane_wave_cutoffs
+
+    workflow_spec = validate_workflow_spec(
+        freeze_plane_wave_cutoffs(
+            structure,
+            workflow_spec,
+            potcar_functional=potcar_functional,
+            only_missing=True,
+        )
+    )
 
     return {
         "structure": structure,

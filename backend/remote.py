@@ -380,6 +380,17 @@ class RemoteRunner(ABC):
         """Read text from a remote path."""
         raise NotImplementedError
 
+    def read_contained_file(self, root: str, parts, *, max_bytes: int, python: str | None = None) -> bytes:
+        """One regular, non-symlinked file under ``root`` of at most ``max_bytes``.
+
+        A narrow helper for diagnostics (``backend.secure_remote_read``);
+        transports that cannot guarantee it refuse.
+        """
+
+        from backend.secure_remote_read import ContainedReadError
+
+        raise ContainedReadError("unsupported")
+
     @abstractmethod
     def put_bytes(self, remote_path: str, data: bytes, *, mode: int = 0o640) -> RemoteTransferResult:
         """Write bytes to a remote path."""

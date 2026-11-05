@@ -1,0 +1,60 @@
+# Runs the checks that CONTRIBUTING.md asks every contributor to run locally:
+#   python -m pytest tests -q
+#   python -m compileall backend tests
+#   git diff --check
+#
+# The scientific stack comes from constraints/scientific-runtime.txt, the same
+# file that defines the POWER runtime. bmd-agent (BMD Check) is not on PyPI, so
+# it is installed first from bmd-lab/bmd-check at the commit that file names;
+# pip then treats the bmd-agent==0.2.0 line as already satisfied.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: constraints/scientific-runtime.txt
+
+      - name: Install web and test tooling
+        # Mirrors the non-scientific part of environment.yml. httpx is needed
+        # by fastapi.testclient but is not listed in environment.yml.
+        run: python -m pip install fastapi uvicorn jinja2 python-multipart paramiko pytest httpx
+
+      - name: Install bmd-agent (BMD Check) at the pinned commit
+        # Must match the commit named in constraints/scientific-runtime.txt.
+        run: python -m pip install "git+https://github.com/bmd-lab/bmd-check@5e3a202eabd481dfb3622a9c6a84f47cd8ed4f4d"
+
+      - name: Install the scientific runtime
+        run: python -m pip install -r constraints/scientific-runtime.txt
+
+      - name: pytest
+        run: python -m pytest tests -q
+
+      - name: compileall
+        run: python -m compileall -q backend tests
+
+      - name: git diff --check
+        # Whitespace errors introduced by this pull request, against its base.
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          git diff --check "origin/${{ github.base_ref }}" HEAD

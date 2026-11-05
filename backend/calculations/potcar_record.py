@@ -52,7 +52,7 @@ def stage_potcar_entry(preview: Mapping[str, Any]) -> dict[str, Any]:
             f"Stage {preview['index']} POSCAR species {species!r} do not pair with "
             f"POTCAR symbols {symbols!r}."
         )
-    return {
+    entry = {
         "stage_index": int(preview["index"]),
         "stage_type": stage.stage_type.value,
         "theory": stage.theory.value,
@@ -62,6 +62,22 @@ def stage_potcar_entry(preview: Mapping[str, Any]) -> dict[str, Any]:
         ],
         "symbols": list(symbols),
     }
+    cutoff = dict(getattr(stage, "options", None) or {}).get("plane_wave_cutoff")
+    if isinstance(cutoff, Mapping):
+        # The species-dependent plane-wave cutoff was resolved from exactly
+        # these POTCARs (backend.calculations.geometry_relaxation).
+        recorded = [item.get("symbol") for item in cutoff.get("potcars") or ()]
+        if recorded != list(symbols):
+            raise PotcarRecordError(
+                f"Stage {preview['index']} plane-wave cutoff was resolved for POTCARs "
+                f"{recorded!r}, but the stage generator selects {symbols!r}."
+            )
+        entry["plane_wave_cutoff"] = {
+            "rule": dict(cutoff.get("rule") or {}),
+            "enmax_ev": {item["symbol"]: item["ENMAX"] for item in cutoff["potcars"]},
+            "ENCUT": cutoff.get("ENCUT"),
+        }
+    return entry
 
 
 def aggregate_stage_potcars(stages: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
