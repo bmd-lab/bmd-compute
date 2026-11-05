@@ -1,0 +1,35 @@
+PARAMETERS EVOLUTIONARY ALGORITHM
+USPEX : calculationMethod
+300 : calculationType
+
+% atomType
+Si
+% EndAtomType
+
+% numSpecies
+8
+% EndNumSpecies
+
+0.0 : ExternalPressure
+8 : populationSize
+8 : initialPopSize
+4 : numGenerations
+3 : stopCrit
+
+% abinitioCode
+1 1 1
+% ENDabinit
+
+% KresolStart
+0.16 0.10 0.07
+% Kresolend
+
+% commandExecutable
+sh /bmd/roeeasher/uspex_si_pilot_5/search/bmd_bridge_pilot.sh 1
+sh /bmd/roeeasher/uspex_si_pilot_5/search/bmd_bridge_pilot.sh 2
+sh /bmd/roeeasher/uspex_si_pilot_5/search/bmd_bridge_pilot.sh 3
+% EndExecutable
+
+-1 : whichCluster
+2 : numParallelCalcs
+1 : coresPerJob
