@@ -11,6 +11,7 @@ The VASP steps inherit this process's environment.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import shutil
 import sys
@@ -35,7 +36,8 @@ from backend.structure_search.bridge.master import (  # noqa: E402
 STEPS = 3
 
 
-def write_input(search_dir: Path, bridge: Path, num_parallel: int, which_cluster: int = 0) -> None:
+def write_input(search_dir: Path, bridge: Path, num_parallel: int, which_cluster: int = 0,
+                generations: int = 4) -> None:
     executable = "\n".join(uspex_command_executable(bridge, STEPS))
     text = f"""PARAMETERS EVOLUTIONARY ALGORITHM
 USPEX : calculationMethod
@@ -52,7 +54,7 @@ Si
 0.0 : ExternalPressure
 8 : populationSize
 8 : initialPopSize
-4 : numGenerations
+{generations} : numGenerations
 3 : stopCrit
 
 % abinitioCode
@@ -108,6 +110,41 @@ exit "$status"
     return wrapper
 
 
+def ea_seed_headers(text: str) -> str:
+    """Rewrite each POSCAR block's comment line as in the manual's seed example.
+
+    USPEX 25 writes ``number=<id>, energy=...`` comment lines; the manual's
+    seed example (section 6.5) uses ``EA33 2.69006 5.50602 4.82874 55.2408
+    73.8275 60.7535 no SG``: an ID, the lattice lengths and angles. Blocks are
+    VASP5 POSCARs (comment, scale, 3 lattice rows, species, counts, Direct,
+    positions).
+    """
+
+    lines = text.splitlines()
+    out: list[str] = []
+    i = n = 0
+    while i < len(lines):
+        if not lines[i].strip():
+            i += 1
+            continue
+        scale = float(lines[i + 1].split()[0])
+        vectors = [[scale * float(x) for x in lines[i + k].split()[:3]] for k in (2, 3, 4)]
+        counts = [int(x) for x in lines[i + 6].split()]
+        lengths = [math.sqrt(sum(c * c for c in v)) for v in vectors]
+
+        def angle(a: int, b: int) -> float:
+            dot = sum(x * y for x, y in zip(vectors[a], vectors[b]))
+            return math.degrees(math.acos(max(-1.0, min(1.0, dot / (lengths[a] * lengths[b])))))
+
+        n += 1
+        a, b, c = lengths
+        out.append(f"EA{n} {a:.5f} {b:.5f} {c:.5f} {angle(1, 2):.4f} {angle(0, 2):.4f} {angle(0, 1):.4f} no SG")
+        block_end = i + 8 + sum(counts)
+        out.extend(lines[i + 1:block_end])
+        i = block_end
+    return "\n".join(out) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work", required=True, type=Path, help="pilot work directory under /bmd")
@@ -125,6 +162,19 @@ def main() -> int:
     parser.add_argument("--resume", metavar="TAG",
                         help="rerun USPEX in an existing WORK/search (restart test): keep INPUT.txt "
                              "and Specific/, use a fresh spool WORK/spool_TAG and log uspex_master_TAG.log")
+    parser.add_argument("--pick-up-gen", type=int,
+                        help="with --resume: write 'N : pickUpGen' into INPUT.txt (manual section 4.7)")
+    parser.add_argument("--seeds", type=Path,
+                        help="new search only: copy this multi-POSCAR file to search/Seeds/POSCARS "
+                             "(manual section 6.5), e.g. a stopped run's good_structures_POSCARS")
+    parser.add_argument("--seeds-name", default="POSCARS",
+                        help="file name in Seeds/ (POSCARS, or POSCARS_<gen> for one generation)")
+    parser.add_argument("--seeds-ea-headers", action="store_true",
+                        help="rewrite each seed's comment line in the manual's form "
+                             "'EA<n> a b c alpha beta gamma no SG' (manual section 6.5)")
+    parser.add_argument("--generations", type=int, default=4, help="numGenerations for a new search")
+    parser.add_argument("--pick-up-folder", type=int,
+                        help="with --resume: write 'N : pickUpFolder' into INPUT.txt (results<N>/)")
     args = parser.parse_args()
 
     work = args.work.resolve()
@@ -145,6 +195,12 @@ def main() -> int:
         specific = search_dir / "Specific"
         shutil.copytree(HERE / "Specific", specific)
         shutil.copyfile(args.potcar, specific / "POTCAR_Si")
+        if args.seeds is not None:
+            (search_dir / "Seeds").mkdir()
+            text = args.seeds.read_text()
+            if args.seeds_ea_headers:
+                text = ea_seed_headers(text)
+            (search_dir / "Seeds" / args.seeds_name).write_text(text)
 
     bridge = bridge_script_path()
     if not str(bridge).startswith("/bmd/"):
@@ -154,7 +210,19 @@ def main() -> int:
     # path), so it points at the new spool; INPUT.txt itself is not touched.
     wrapper = write_bridge_wrapper(search_dir, bridge, spool, args.bridge_timeout)
     if not args.resume:
-        write_input(search_dir, wrapper, args.parallel, args.which_cluster)
+        write_input(search_dir, wrapper, args.parallel, args.which_cluster, args.generations)
+    elif args.pick_up_gen is not None or args.pick_up_folder is not None:
+        # A plain rerun in the same folder started a new search (restart test,
+        # 5 Nov 2026), so ask USPEX to pick up from a given generation and
+        # results folder instead. Earlier pickUp lines are replaced.
+        input_path = search_dir / "INPUT.txt"
+        lines = [line for line in input_path.read_text().splitlines()
+                 if not line.strip().endswith((": pickUpGen", ": pickUpFolder"))]
+        if args.pick_up_gen is not None:
+            lines.append(f"{args.pick_up_gen} : pickUpGen")
+        if args.pick_up_folder is not None:
+            lines.append(f"{args.pick_up_folder} : pickUpFolder")
+        input_path.write_text("\n".join(lines) + "\n")
 
     master = build_master_command(
         singularity=args.singularity,
