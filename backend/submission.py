@@ -157,6 +157,25 @@ def verify_submission_identity_token(
     }
 
 
+def derived_signing_key(purpose: str) -> bytes:
+    """
+    Return a signing key for one purpose, derived from the identity secret.
+
+    Other signed browser values (for example the structure origin record in
+    ``backend.structure_origin``) use their own derived key, so a value
+    signed for one purpose can never pass as another, while deployments
+    still configure only ``BMD_SUBMISSION_IDENTITY_SECRET``.
+    """
+
+    if not purpose:
+        raise ValueError("A signing purpose is required.")
+    return hmac.new(
+        _submission_identity_secret(),
+        b"bmd-compute derived signing key\x00" + purpose.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+
+
 def _submission_identity_secret() -> bytes:
     configured = os.environ.get(SUBMISSION_IDENTITY_SECRET_ENV)
     if configured:
@@ -1558,6 +1577,7 @@ __all__ = [
     "build_submission_script_artifact",
     "canonical_run_timestamp",
     "create_submission_identity_token",
+    "derived_signing_key",
     "build_run_job_script",
     "build_submission_command",
     "create_submission_spec",
