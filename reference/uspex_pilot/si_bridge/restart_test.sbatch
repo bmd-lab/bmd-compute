@@ -35,7 +35,12 @@ say "job ${SLURM_JOB_ID:-?} on $(hostname)"
 [ -n "${POTCAR_SI:-}" ] || die "POTCAR_SI is not set (the PBE_64 Si POTCAR)"
 [ -f "$POTCAR_SI" ] || die "POTCAR_SI=$POTCAR_SI is not a file"
 [ -f "$REPO/backend/structure_search/bridge/launcher.py" ] || die "no bridge code under REPO=$REPO"
-[ ! -e "$WORK" ] || die "WORK=$WORK already exists; choose a new directory"
+RESUME_ONLY=${RESUME_ONLY:-0}
+if [ "$RESUME_ONLY" = 1 ]; then
+  [ -f "$WORK/search/INPUT.txt" ] || die "RESUME_ONLY=1 needs an existing search in WORK=$WORK"
+else
+  [ ! -e "$WORK" ] || die "WORK=$WORK already exists; choose a new directory"
+fi
 PYTHON=${PYTHON:-/usr/bin/python3}
 IMAGE=${IMAGE:-/bmd/shared/uspex25_sandbox}
 CACHE=${CACHE:-/bmd/shared/uspex_cache}
@@ -47,6 +52,9 @@ PARALLEL=${PARALLEL:-2}
 RANKS=${RANKS:-4}
 STEP_MEM=${STEP_MEM:-8G}
 STOP_AFTER_GEN=${STOP_AFTER_GEN:-2}
+RESUME_TAG=${RESUME_TAG:-r1}
+PICKUP_GEN=${PICKUP_GEN:-}
+PICKUP_FOLDER=${PICKUP_FOLDER:-}
 WAIT_AFTER=${WAIT_AFTER:-60}
 need=$((PARALLEL * RANKS))
 [ "${SLURM_NTASKS:-$need}" -ge "$need" ] || die "PARALLEL x RANKS = $need is more than the job's ${SLURM_NTASKS} tasks"
@@ -91,6 +99,7 @@ completed_generations() { # data rows in results1/generation_properties
   awk 'NR > 1 && $1 ~ /^[0-9]+$/ {n++} END {print n + 0}' "$WORK/search/results1/generation_properties" 2>/dev/null || echo 0
 }
 
+if [ "$RESUME_ONLY" != 1 ]; then
 say "phase A: starting the search; will stop it after $STOP_AFTER_GEN generation(s) + ${WAIT_AFTER}s"
 "$PYTHON" "$REPO/reference/uspex_pilot/si_bridge/run_pilot.py" "${PILOT[@]}" > "$WORK.phaseA.out" 2>&1 &
 pid=$!
@@ -111,8 +120,15 @@ echo "   phase A relaxation statuses (123 = stopped by the SIGTERM): $(cat "$WOR
 cp "$WORK/search/results1/Individuals" "$WORK/Individuals_after_phaseA" 2>/dev/null
 tail -3 "$WORK/search/results1/Individuals" 2>/dev/null | sed 's/^/   /'
 
-say "phase B: rerunning USPEX in the same folder (fresh spool spool_r1)"
-"$PYTHON" "$REPO/reference/uspex_pilot/si_bridge/run_pilot.py" "${PILOT[@]}" --resume r1
+else
+  say "RESUME_ONLY=1: skipping phase A, using the existing search in $WORK/search"
+fi
+
+PICKUP=()
+[ -n "$PICKUP_GEN" ] && PICKUP+=(--pick-up-gen "$PICKUP_GEN")
+[ -n "$PICKUP_FOLDER" ] && PICKUP+=(--pick-up-folder "$PICKUP_FOLDER")
+say "phase B: rerunning USPEX in the same folder (fresh spool spool_$RESUME_TAG; pickUpGen=${PICKUP_GEN:-unset} pickUpFolder=${PICKUP_FOLDER:-unset})"
+"$PYTHON" "$REPO/reference/uspex_pilot/si_bridge/run_pilot.py" "${PILOT[@]}" --resume "$RESUME_TAG" "${PICKUP[@]}"
 statusB=$?
 say "phase B ended with status $statusB"
 
@@ -126,9 +142,10 @@ for r in results*; do
   echo "   generation_properties:"; sed 's/^/     /' "$r/generation_properties" 2>/dev/null
   echo "   best_structure:"; sed 's/^/     /' "$r/best_structure" 2>/dev/null; echo
 done
-echo "   relaxations: phase A $(ls "$WORK/spool/done" | wc -l), phase B $(ls "$WORK/spool_r1/done" 2>/dev/null | wc -l); statuses B: $(cat "$WORK"/spool_r1/done/* 2>/dev/null | grep status= | sort | uniq -c | tr '\n' ' ')"
-echo "   'Task failed' lines: phase A $(grep -c 'Task failed' "$WORK/uspex_master.log"), phase B $(grep -c 'Task failed' "$WORK/uspex_master_r1.log")"
+echo "   pickUp lines in INPUT.txt: $(grep -E 'pickUp' INPUT.txt | tr '\n' ' ')"
+echo "   relaxations: phase A $(ls "$WORK/spool/done" 2>/dev/null | wc -l), phase B $(ls "$WORK/spool_$RESUME_TAG/done" 2>/dev/null | wc -l); statuses B: $(cat "$WORK"/spool_$RESUME_TAG/done/* 2>/dev/null | grep status= | sort | uniq -c | tr '\n' ' ')"
+echo "   'Task failed' lines: phase A $(grep -c 'Task failed' "$WORK/uspex_master.log" 2>/dev/null), phase B $(grep -c 'Task failed' "$WORK/uspex_master_$RESUME_TAG.log")"
 echo "   resumed master log, lines about restart/continuation:"
-grep -i -E "restart|resum|continu|pickup|pick up|load|generation [0-9]+ started|results[0-9]|done" "$WORK/uspex_master_r1.log" | grep -v -i "Loading may take" | head -25 | sed 's/^/     /'
-echo "   resumed master log, last 5 lines:"; tail -5 "$WORK/uspex_master_r1.log" | sed 's/^/     /'
+grep -i -E "restart|resum|continu|pickup|pick up|load|generation [0-9]+ started|results[0-9]|done" "$WORK/uspex_master_$RESUME_TAG.log" | grep -v -i "Loading may take" | head -25 | sed 's/^/     /'
+echo "   resumed master log, last 5 lines:"; tail -5 "$WORK/uspex_master_$RESUME_TAG.log" | sed 's/^/     /'
 say "done"

@@ -125,6 +125,10 @@ def main() -> int:
     parser.add_argument("--resume", metavar="TAG",
                         help="rerun USPEX in an existing WORK/search (restart test): keep INPUT.txt "
                              "and Specific/, use a fresh spool WORK/spool_TAG and log uspex_master_TAG.log")
+    parser.add_argument("--pick-up-gen", type=int,
+                        help="with --resume: write 'N : pickUpGen' into INPUT.txt (manual section 4.7)")
+    parser.add_argument("--pick-up-folder", type=int,
+                        help="with --resume: write 'N : pickUpFolder' into INPUT.txt (results<N>/)")
     args = parser.parse_args()
 
     work = args.work.resolve()
@@ -155,6 +159,18 @@ def main() -> int:
     wrapper = write_bridge_wrapper(search_dir, bridge, spool, args.bridge_timeout)
     if not args.resume:
         write_input(search_dir, wrapper, args.parallel, args.which_cluster)
+    elif args.pick_up_gen is not None or args.pick_up_folder is not None:
+        # A plain rerun in the same folder started a new search (restart test,
+        # 5 Nov 2026), so ask USPEX to pick up from a given generation and
+        # results folder instead. Earlier pickUp lines are replaced.
+        input_path = search_dir / "INPUT.txt"
+        lines = [line for line in input_path.read_text().splitlines()
+                 if not line.strip().endswith((": pickUpGen", ": pickUpFolder"))]
+        if args.pick_up_gen is not None:
+            lines.append(f"{args.pick_up_gen} : pickUpGen")
+        if args.pick_up_folder is not None:
+            lines.append(f"{args.pick_up_folder} : pickUpFolder")
+        input_path.write_text("\n".join(lines) + "\n")
 
     master = build_master_command(
         singularity=args.singularity,
