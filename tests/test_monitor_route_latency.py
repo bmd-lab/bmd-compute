@@ -363,20 +363,24 @@ def test_home_does_not_touch_results_loading(monkeypatch):
 
 
 def test_initial_page_structure_input_is_expanded(monkeypatch):
+    # The front page asks what to calculate first; choosing a structure-based
+    # output shows the Structure Input expanded.
     def slow_results(*args, **kwargs):
-        raise AssertionError("GET / should not wait for results work")
+        raise AssertionError("the first pages should not wait for results work")
 
     monkeypatch.setattr(main, "load_results_for_completed_job", slow_results)
 
-    response = main.home(
+    response = main.calculate(
         Request(
             {
                 "type": "http",
                 "method": "GET",
-                "path": "/",
+                "path": "/calculate",
                 "headers": [],
+                "query_string": b"output=relaxed_structure",
             }
-        )
+        ),
+        output="relaxed_structure",
     )
 
     assert response.status_code == 200
