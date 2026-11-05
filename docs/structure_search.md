@@ -393,6 +393,27 @@ pilot (8 atoms, 3 steps, 2 × 4 ranks) took about 10–60 s per relaxation and
 | 2 | #69 | Resume by job ID and cancel (BMD policy review) |
 | 2 | #70 | Live acceptance search on POWER |
 
+### Browser entry point (preview, part of #68)
+
+The front page now asks "What would you like to calculate?" and offers
+**New structure** next to Relaxed structure, Phonon band structure,
+Electronic band structure and Electronic DOS. New structure asks only for a
+chemical formula (`/predict`); pressure, cell-size range, generations and
+walltime are optional overrides in a collapsed Advanced panel.
+
+A New structure request returns one ground-state structure at the accuracy
+of the Relaxed structure Desired Output: the USPEX search proposes
+candidates, the best distinct ones (5 by default) get the BMD Standard
+Geometry Relaxation, and the lowest final PBE energy per atom wins.
+
+For now the page only shows this plan
+(`backend/structure_search/prediction_plan.py`); its Submit button is
+disabled and nothing reaches POWER. The proposed defaults there (0 GPa,
+cells of 1 to floor(20 / atoms per formula unit) formula units, 50
+generations, `stopCrit` = maximum atoms per cell, a 7-day walltime, 5 refined
+candidates) need BMD Lab sign-off, and the search spec should take its
+values from that module when submission is wired.
+
 ## 9. Open questions
 
 - Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks

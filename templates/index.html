@@ -960,6 +960,86 @@ button.hardware-custom-toggle[aria-expanded="true"] {
     margin-bottom: 4px;
 }
 
+.back-link {
+    color: var(--bmd-accent);
+    font-size: 13px;
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.back-link:hover {
+    color: var(--bmd-accent-hover);
+    text-decoration: underline;
+}
+
+.choice-grid {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    margin-top: 6px;
+}
+
+.choice-card {
+    background: var(--bmd-surface);
+    border: 1px solid var(--bmd-border-strong);
+    border-radius: 8px;
+    color: var(--bmd-text);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 16px 18px;
+    text-decoration: none;
+}
+
+.choice-card:hover,
+.choice-card:focus-visible {
+    background: var(--bmd-accent-soft);
+    border-color: var(--bmd-accent-hover);
+    outline: none;
+}
+
+.choice-card .choice-title {
+    color: var(--bmd-accent);
+    font-size: 17px;
+    font-weight: 700;
+}
+
+.choice-card .choice-description {
+    color: var(--bmd-text-soft);
+    font-size: 14px;
+    line-height: 1.45;
+}
+
+.choice-card .choice-needs {
+    color: var(--bmd-text-muted);
+    font-size: 12px;
+    font-weight: 700;
+    margin-top: auto;
+}
+
+.prediction-advanced {
+    margin-top: 14px;
+}
+
+.prediction-steps {
+    color: var(--bmd-text-soft);
+    font-size: 14px;
+    line-height: 1.55;
+    margin: 0 0 16px;
+    padding-left: 20px;
+}
+
+.preview-note {
+    background: var(--bmd-advisory-soft);
+    border: 1px solid var(--bmd-advisory);
+    border-radius: 6px;
+    color: var(--bmd-text-soft);
+    font-size: 13px;
+    line-height: 1.5;
+    margin-top: 14px;
+    padding: 10px 12px;
+}
+
 .structure-viewer {
     background: var(--bmd-surface-secondary);
     border: 1px solid var(--bmd-border);
@@ -1108,6 +1188,215 @@ button.hardware-custom-toggle[aria-expanded="true"] {
 
     <div class="panel">
 
+        {% if page_mode == "chooser" %}
+        <section class="stage" data-front-page>
+
+            <div class="stage-header">
+                <div>
+                    <h2>What would you like to calculate?</h2>
+                    <div class="summary-line">Choose a result. BMD Compute then asks only for what that result needs.</div>
+                </div>
+            </div>
+
+            <div class="choice-grid">
+                {% for choice in front_page_choices %}
+                <a class="choice-card" href="{{ choice.href }}" data-front-page-choice="{{ choice.value }}">
+                    <span class="choice-title">{{ choice.label }}</span>
+                    <span class="choice-description">{{ choice.description }}</span>
+                    <span class="choice-needs">You provide: {{ choice.needs }}</span>
+                </a>
+                {% endfor %}
+            </div>
+
+        </section>
+
+        <section class="stage">
+
+            <div class="stage-header">
+                <div>
+                    <h2>Resume Existing Calculation</h2>
+                    <div class="summary-line">Monitor an existing PowerSLURM job by SLURM job ID.</div>
+                </div>
+                <div class="stage-status">
+                    {% if resume_job_id %}<span class="pill ready">Resume</span>{% else %}<span class="pill">Optional</span>{% endif %}
+                </div>
+            </div>
+
+            <form action="/resume" method="post">
+                <div class="form-row">
+                    <label>SLURM Job ID</label>
+                    <input
+                        name="job_id"
+                        placeholder="123456"
+                        value="{{ resume_job_id }}">
+                </div>
+
+                <button type="submit">Resume</button>
+            </form>
+
+        </section>
+
+        {% elif page_mode == "prediction" %}
+        <section class="stage" data-prediction-input>
+
+            <div class="entry-label">
+                <a class="back-link" href="/">&larr; What would you like to calculate?</a>
+            </div>
+
+            <div class="stage-header">
+                <div>
+                    <div class="stage-title">
+                        <span class="stage-number">1</span>
+                        <h2>New Structure</h2>
+                    </div>
+                    <div class="summary-line">Predict the ground-state crystal structure of a composition. Only the formula is needed.</div>
+                </div>
+                <div class="stage-status">
+                    {% if prediction.error %}<span class="pill failed">Failed</span>{% elif prediction.plan %}<span class="pill ready">Planned</span>{% else %}<span class="pill">Pending</span>{% endif %}
+                </div>
+            </div>
+
+            <form action="/predict" method="post">
+                <div class="form-row">
+                    <label for="formula-input">Chemical Formula</label>
+                    <input
+                        id="formula-input"
+                        name="formula"
+                        placeholder="e.g. Si, GaAs, Mg2SiO4"
+                        autocomplete="off"
+                        spellcheck="false"
+                        value="{{ prediction.formula }}">
+                </div>
+
+                <details class="disclosure prediction-advanced" data-prediction-advanced {% if prediction.advanced_open %}open{% endif %}>
+                    <summary>Advanced (optional)</summary>
+                    <div class="summary-line">Leave blank to use BMD Compute's defaults.</div>
+                    <div class="form-grid">
+                        <div class="form-row">
+                            <label>Pressure (GPa)</label>
+                            <input name="pressure_gpa" inputmode="decimal" placeholder="0" value="{{ prediction.advanced.pressure_gpa or '' }}">
+                        </div>
+                        <div class="form-row">
+                            <label>Minimum atoms per cell</label>
+                            <input name="min_atoms" inputmode="numeric" placeholder="one formula unit" value="{{ prediction.advanced.min_atoms or '' }}">
+                        </div>
+                        <div class="form-row">
+                            <label>Maximum atoms per cell</label>
+                            <input name="max_atoms" inputmode="numeric" placeholder="up to 20" value="{{ prediction.advanced.max_atoms or '' }}">
+                        </div>
+                        <div class="form-row">
+                            <label>Generations</label>
+                            <input name="num_generations" inputmode="numeric" placeholder="50" value="{{ prediction.advanced.num_generations or '' }}">
+                        </div>
+                        <div class="form-row">
+                            <label>Search walltime (H:MM:SS)</label>
+                            <input name="search_walltime" placeholder="168:00:00" value="{{ prediction.advanced.walltime or '' }}">
+                        </div>
+                    </div>
+                </details>
+
+                <button type="submit">Plan Structure Search</button>
+            </form>
+
+            {% if prediction.error %}
+            <div class="prep-panel failed">
+                <div class="prep-title">Formula Not Accepted</div>
+                <table class="compact-table failure-table">
+                    <tr>
+                        <td>Reason</td>
+                        <td>{{ prediction.error.message }}</td>
+                    </tr>
+                    {% if prediction.error.suggestion %}
+                    <tr>
+                        <td>Suggestion</td>
+                        <td>{{ prediction.error.suggestion }}</td>
+                    </tr>
+                    {% endif %}
+                </table>
+            </div>
+            {% endif %}
+
+        </section>
+
+        {% if prediction.plan %}
+        {% set plan = prediction.plan %}
+        <section class="stage" data-prediction-plan>
+
+            <div class="stage-header">
+                <div>
+                    <div class="stage-title">
+                        <span class="stage-number">2</span>
+                        <h2>Structure Search Plan</h2>
+                    </div>
+                    <div class="summary-line">
+                        {{ plan.formula }} &middot; {{ plan.formula_atoms }} atoms per formula unit &middot; {{ "%g"|format(plan.search.pressure_gpa) }} GPa
+                    </div>
+                </div>
+                <div class="stage-status"><span class="pill">Preview</span></div>
+            </div>
+
+            {% if plan.reduced_from_entered %}
+            <p class="summary-line">You entered {{ plan.entered_formula }}; the search uses the composition {{ plan.formula }} with the cell sizes below.</p>
+            {% endif %}
+
+            <ol class="prediction-steps">
+                <li><strong>Search.</strong> {{ plan.search.method }}, {{ plan.search.theory }}. Candidates are relaxed with a loose-to-tight ladder whose last step uses BMD standards.</li>
+                <li><strong>Refine.</strong> The {{ plan.refinement.candidates }} best distinct candidates get the {{ plan.refinement.method }}.</li>
+                <li><strong>Result.</strong> The candidate with the {{ plan.refinement.selection }} is returned as the ground-state structure.</li>
+            </ol>
+
+            <div class="metric-strip">
+                <div class="metric">
+                    <div class="metric-label">Cell sizes</div>
+                    <div class="metric-value">{{ plan.search.min_atoms }}&ndash;{{ plan.search.max_atoms }} atoms</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Population</div>
+                    <div class="metric-value">{{ plan.search.population_size }}</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Generations</div>
+                    <div class="metric-value">up to {{ plan.search.num_generations }}</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Search walltime</div>
+                    <div class="metric-value">{{ plan.search.walltime_display }}</div>
+                </div>
+            </div>
+
+            <div class="details-grid">
+                <details class="disclosure">
+                    <summary>Search Settings</summary>
+                    <table class="compact-table">
+                        <tr><td>Composition</td><td>{% for item in plan.composition %}{{ item.element }} {{ item.count }}{% if not loop.last %}, {% endif %}{% endfor %} per formula unit</td></tr>
+                        <tr><td>Cells searched</td><td>{% for n in plan.search.cell_sizes %}{{ n }} atoms ({{ plan.search.formula_units[loop.index0] }} f.u.){% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
+                        <tr><td>Initial population</td><td>{{ plan.search.initial_population_size }}</td></tr>
+                        <tr><td>Stop after</td><td>{{ plan.search.stop_criterion }} generations without a better structure</td></tr>
+                        <tr><td>Relaxation steps</td><td>{{ plan.search.relaxation_ladder }}</td></tr>
+                    </table>
+                </details>
+                <details class="disclosure">
+                    <summary>Search Hardware</summary>
+                    <table class="compact-table">
+                        <tr><td>Nodes</td><td>{{ plan.search.resources.nodes }} (exclusive, all memory)</td></tr>
+                        <tr><td>MPI ranks</td><td>{{ plan.search.resources.ntasks }}</td></tr>
+                        <tr><td>Partition / QOS</td><td>{{ plan.search.resources.partition }} / {{ plan.search.resources.qos }}</td></tr>
+                        {% if plan.search.resources.exclude %}<tr><td>Excluded nodes</td><td>{{ plan.search.resources.exclude }}</td></tr>{% endif %}
+                        <tr><td>Refinement</td><td>{{ plan.refinement.resources }}</td></tr>
+                    </table>
+                </details>
+            </div>
+
+            <div class="preview-note" data-prediction-defaults-note>{{ plan.defaults_note }}</div>
+
+            <button type="button" disabled data-prediction-submit>Submit Structure Search (not yet available)</button>
+            <div class="summary-line">Structure search submission is still being built. Nothing has been sent to POWER.</div>
+
+        </section>
+        {% endif %}
+
+        {% else %}
+        {% if resume_job_id or monitoring_result or (submission_result and submission_result.status == "success") %}
         <section class="stage">
 
             <div class="stage-header">
@@ -1135,10 +1424,14 @@ button.hardware-custom-toggle[aria-expanded="true"] {
         </section>
 
         <div class="entry-divider">OR</div>
+        {% endif %}
 
         <section class="stage">
 
-            <div class="entry-label">Start New Calculation</div>
+            <div class="entry-label">
+                <a class="back-link" href="/">&larr; What would you like to calculate?</a>
+                {% if chosen_output %}<span data-chosen-output="{{ chosen_output.value }}"> &middot; New calculation: {{ chosen_output.label }}</span>{% endif %}
+            </div>
 
             <div class="stage-header">
                 <div>
@@ -1160,6 +1453,7 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                 <summary>Structure Input</summary>
 
                 <form action="/analyze" method="post">
+                    {% if chosen_output %}<input type="hidden" name="output" value="{{ chosen_output.value }}">{% endif %}
 
                     <div class="form-row">
                         <label>Structure Format</label>
@@ -1203,6 +1497,7 @@ button.hardware-custom-toggle[aria-expanded="true"] {
             </details>
 
         </section>
+        {% endif %}
 
         {% if summary %}
         <section class="stage">

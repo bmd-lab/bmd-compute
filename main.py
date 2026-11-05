@@ -88,6 +88,11 @@ from backend.submission import (
     create_submission_spec,
     verify_submission_identity_token,
 )
+from backend.structure_search.prediction_plan import (
+    NEW_STRUCTURE_OUTPUT,
+    AdvancedSettings,
+    build_prediction_plan,
+)
 from backend.summary import summarize_structure
 from backend.workflow_summary import (
     calculation_plan_from_workflow_spec,
@@ -99,6 +104,63 @@ from compute_api.router import build_machine_api_router
 app = FastAPI()
 
 templates = Jinja2Templates(directory="templates")
+
+
+# The front page's "What would you like to calculate?" choices, in order.
+# ``new_structure`` is structure prediction from a formula (/predict); the
+# others are Desired Outputs of the ordinary structure-based workflow, chosen
+# again (with Relaxed Energy and Custom workflow) in Calculation Definition.
+FRONT_PAGE_CHOICES = (
+    {
+        "value": NEW_STRUCTURE_OUTPUT,
+        "label": "New structure",
+        "description": (
+            "Predict the ground-state crystal structure from a chemical formula, "
+            "relaxed to the same accuracy as Relaxed structure."
+        ),
+        "needs": "Chemical formula",
+        "href": "/predict",
+    },
+    {
+        "value": "relaxed_structure",
+        "label": "Relaxed structure",
+        "description": "Relax a structure you provide with the BMD Standard Geometry Relaxation.",
+        "needs": "Structure (POSCAR or CIF)",
+        "href": "/calculate?output=relaxed_structure",
+    },
+    {
+        "value": "phonons",
+        "label": "Phonon band structure",
+        "description": "Relax, then calculate phonons by finite displacements (non-magnetic materials).",
+        "needs": "Structure (POSCAR or CIF)",
+        "href": "/calculate?output=phonons",
+    },
+    {
+        "value": "electronic_band_structure",
+        "label": "Electronic band structure",
+        "description": "Relax, then calculate an HSE06 band structure.",
+        "needs": "Structure (POSCAR or CIF)",
+        "href": "/calculate?output=electronic_band_structure",
+    },
+    {
+        "value": "electronic_dos",
+        "label": "Electronic DOS",
+        "description": "Relax, then calculate an HSE06 density of states.",
+        "needs": "Structure (POSCAR or CIF)",
+        "href": "/calculate?output=electronic_dos",
+    },
+)
+STRUCTURE_FRONT_PAGE_OUTPUTS = frozenset(
+    choice["value"] for choice in FRONT_PAGE_CHOICES if choice["value"] != NEW_STRUCTURE_OUTPUT
+)
+
+
+def front_page_choice(value: str | None) -> dict | None:
+    value = value.strip() if isinstance(value, str) else ""
+    for choice in FRONT_PAGE_CHOICES:
+        if choice["value"] == value:
+            return choice
+    return None
 
 
 def page_context(
@@ -126,6 +188,9 @@ def page_context(
     selected_desired_output: str | None = None,
     workflow_identity_available: bool = True,
     show_submitted_workflow: bool = False,
+    page_mode: str = "structure",
+    chosen_output: str | None = None,
+    prediction=None,
 ):
     if selected_workflow is None:
         selected_workflow = (
@@ -188,6 +253,12 @@ def page_context(
         "calculation_error": calculation_error,
         "collapse_structure_input": collapse_structure_input,
         "bmd_debug": bmd_debug_enabled(),
+        # "chooser" (front page), "prediction" (New structure) or "structure"
+        # (every structure-based page, as before).
+        "page_mode": page_mode,
+        "front_page_choices": FRONT_PAGE_CHOICES,
+        "chosen_output": front_page_choice(chosen_output),
+        "prediction": prediction,
     }
 
 
@@ -289,11 +360,13 @@ def structure_error_response(
     selected_resources: "SelectedResources | ExecutionResources | None" = None,
     selected_desired_output: str | None = None,
     workflow_identity_available: bool = True,
+    chosen_output: str | None = None,
 ):
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context=page_context(
+            chosen_output=chosen_output,
             structure_text=structure_text,
             fmt=fmt,
             selected_spec=selected_spec,
@@ -1554,16 +1627,93 @@ def home(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context=page_context(),
+        context=page_context(page_mode="chooser"),
     )
+
+
+def _front_page_workflow(output: str | None) -> tuple[str | None, WorkflowSpec | None]:
+    """The structure-based front-page choice and its unresolved recipe, if valid."""
+
+    # Direct calls (tests, internal callers) may pass FastAPI's Form default.
+    value = output.strip() if isinstance(output, str) else ""
+    if value not in STRUCTURE_FRONT_PAGE_OUTPUTS:
+        return None, None
+    return value, desired_output_workflow_spec(value)
+
+
+@app.get("/calculate")
+def calculate(request: Request, output: str | None = None):
+    chosen, workflow_spec = _front_page_workflow(output)
+    if chosen is None:
+        # Unknown or missing choice: back to the question rather than guessing.
+        return home(request)
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context=page_context(selected_workflow=workflow_spec, chosen_output=chosen),
+    )
+
+
+def _prediction_response(request: Request, *, formula: str = "", advanced=None, plan=None, error=None):
+    advanced = advanced or AdvancedSettings()
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context=page_context(
+            page_mode="prediction",
+            chosen_output=NEW_STRUCTURE_OUTPUT,
+            prediction={
+                "formula": formula,
+                "advanced": dataclasses.asdict(advanced),
+                "advanced_open": not advanced.is_empty(),
+                "plan": plan,
+                "error": calculation_error_context(error) if error is not None else None,
+            },
+        ),
+        status_code=400 if error is not None else 200,
+    )
+
+
+@app.get("/predict")
+def predict_form(request: Request):
+    return _prediction_response(request)
+
+
+@app.post("/predict")
+def predict_preview(
+    request: Request,
+    formula: str = Form(""),
+    pressure_gpa: str | None = Form(None),
+    min_atoms: str | None = Form(None),
+    max_atoms: str | None = Form(None),
+    num_generations: str | None = Form(None),
+    search_walltime: str | None = Form(None),
+):
+    # Preview only: nothing is prepared on or submitted to POWER.
+    advanced = AdvancedSettings(
+        pressure_gpa=pressure_gpa,
+        min_atoms=min_atoms,
+        max_atoms=max_atoms,
+        num_generations=num_generations,
+        walltime=search_walltime,
+    )
+    try:
+        plan = build_prediction_plan(formula, advanced)
+    except CalculationValidationError as exc:
+        return _prediction_response(request, formula=formula, advanced=advanced, error=exc)
+    return _prediction_response(request, formula=formula, advanced=advanced, plan=plan)
 
 
 @app.post("/analyze")
 def analyze(
     request: Request,
     structure: str = Form(...),
-    fmt: str = Form(...)
+    fmt: str = Form(...),
+    output: str | None = Form(None),
 ):
+    # The front-page choice, if any, preselects its Desired Output; otherwise
+    # the default (Relaxed Energy) as before.
+    chosen, chosen_workflow = _front_page_workflow(output)
     try:
         structure_obj = parse_structure(structure, fmt)
     except StructureValidationError as exc:
@@ -1572,6 +1722,8 @@ def analyze(
             structure_text=structure,
             fmt=fmt,
             exc=exc,
+            selected_workflow=chosen_workflow,
+            chosen_output=chosen,
         )
 
     summary = summarize_structure(structure_obj)
@@ -1586,7 +1738,8 @@ def analyze(
             structure_text=structure,
             fmt=fmt,
             summary=summary,
-            selected_workflow=default_workflow_spec(),
+            selected_workflow=chosen_workflow or default_workflow_spec(),
+            chosen_output=chosen,
         ),
     )
 
