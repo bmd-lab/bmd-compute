@@ -47,7 +47,11 @@ GOLDEN_SEARCHES = [
     ("incar_Li2O", ["Li", "O"], (500, 650, 650)),
 ]
 
-SEARCH_WIDE = {"ISPIN": 1, "NCORE": 4, "KPAR": 1, "LWAVE": False, "LCHARG": False}
+KPAR = {1: 1, 2: 1, 3: 1, 4: 4, 5: 4}  # lab decision, 5 Nov 2026
+
+
+def _wide(step):
+    return {"ISPIN": 1, "NCORE": 4, "KPAR": KPAR[step], "LWAVE": False, "LCHARG": False}
 
 
 @pytest.fixture(autouse=True)
@@ -115,7 +119,7 @@ def test_manual_steps_set_only_the_manual_tags_and_search_wide_tags(si_record, s
     settings = dict(_settings(si_record, step))
     encut = settings.pop("ENCUT")
     assert encut == (250 if step < 3 else 350)
-    assert settings == {**MANUAL[step - 1], **SEARCH_WIDE}
+    assert settings == {**MANUAL[step - 1], **_wide(step)}
     for key in ("ALGO", "LREAL", "LASPH", "NELM", "ADDGRID"):
         assert key not in settings
 
@@ -125,9 +129,11 @@ def test_manual_steps_set_only_the_manual_tags_and_search_wide_tags(si_record, s
 def test_step_4_is_bmd_geometry_optimisation_pass_1(si_record):
     settings = _settings(si_record, 4)
     pass_1, _ = bmd_stage_settings(si_record)
-    # Every tag BMD's generator writes for pass 1, plus only the search-wide tags.
-    assert {key: settings[key] for key in pass_1} == {**pass_1, **{k: v for k, v in SEARCH_WIDE.items() if k in pass_1}}
-    assert set(settings) == set(pass_1) | set(SEARCH_WIDE)
+    # Every tag BMD's generator writes for pass 1, unchanged; the search adds only KPAR.
+    assert "KPAR" not in pass_1
+    assert {key: settings[key] for key in pass_1} == pass_1
+    assert set(settings) == set(pass_1) | {"KPAR"}
+    assert settings["KPAR"] == 4
     # ... which are the protocol's documented pass-1 settings.
     protocol = {key: value for key, value in COMMON_RELAX_SETTINGS.items() if value is not None}
     protocol.update(PASS_CONVERGENCE[1])
@@ -137,7 +143,7 @@ def test_step_4_is_bmd_geometry_optimisation_pass_1(si_record):
     assert (settings["ALGO"], settings["NSW"], settings["NELM"]) == ("Fast", 99, 200)
     assert (settings["ISMEAR"], settings["SIGMA"]) == (0, 0.2)
     assert incar_policy_record(si_record)["step_4_protocol"] == {
-        "id": PROTOCOL_ID, "version": 1, "pass": 1,
+        "id": PROTOCOL_ID, "version": 1, "pass": 1, "search_wide_additions": {"KPAR": 4},
     }
 
 
@@ -173,7 +179,8 @@ def test_ranking_cutoff_ignores_the_adaptive_refinement_cutoff():
 def test_search_wide_tags_and_nothing_structure_dependent(si_record):
     for step in incar_ladder(si_record):
         settings = step.settings
-        assert {key: settings[key] for key in SEARCH_WIDE} == SEARCH_WIDE
+        wide = _wide(step.number)
+        assert {key: settings[key] for key in wide} == wide
         assert settings["NCORE"] == DEFAULT_NCORE == 4
         assert not incar_policy.FORBIDDEN_KEYS & set(settings)
     for text in incar_texts(si_record).values():
@@ -236,18 +243,43 @@ def test_parallel_tags_invalid(kpar, ncore, ranks, match):
         incar_policy.validate_parallel_tags(kpar, ncore, ranks)
 
 
+def test_kpar_by_step_follows_the_lab_decision(si_record):
+    assert dict(incar_policy.KPAR_BY_STEP) == KPAR
+    assert [_settings(si_record, n)["KPAR"] for n in range(1, 6)] == [1, 1, 1, 4, 4]
+    assert incar_policy_record(si_record)["kpar_by_step"] == KPAR
+
+
+@pytest.mark.parametrize("ranks", [16, 32, 48, 96, 192])
+def test_rank_counts_valid_for_every_step(si_record, ranks):
+    # KPAR 4 x NCORE 4: ranks must be a multiple of 16. At 48: 12 ranks per group.
+    incar_ladder(si_record, ranks=ranks)
+
+
+@pytest.mark.parametrize(
+    ("ranks", "match"),
+    [
+        (24, "NCORE = 4 does not divide the 6"),   # valid for KPAR 1, not for KPAR 4
+        (6, "NCORE = 4 does not divide the 6"),    # invalid already for KPAR 1
+        (8, "NCORE = 4 does not divide the 2"),
+        (50, "KPAR = 4 does not divide|NCORE"),
+    ],
+)
+def test_rank_counts_invalid_for_some_step_are_refused(si_record, ranks, match):
+    with pytest.raises(ValueError, match=match):
+        incar_ladder(si_record, ranks=ranks)
+
+
 def test_ladder_checks_parallel_tags_against_the_rank_count(si_record):
     assert incar_policy.DEFAULT_RANKS_PER_RELAXATION == 48
-    assert incar_texts(si_record, ranks=24) == incar_texts(si_record)  # ranks never appear
-    with pytest.raises(ValueError, match="NCORE"):
-        incar_ladder(si_record, ranks=6)
+    assert incar_texts(si_record, ranks=96) == incar_texts(si_record)  # ranks never appear
     assert incar_policy_record(si_record, ranks=96)["ranks_per_relaxation"] == 96
 
 
-def test_only_kpar_still_needs_a_lab_decision(si_record):
-    assert incar_policy.VALUES_NEEDING_LAB_DECISION == {"FIXED_KPAR_NEEDS_LAB_DECISION": 1}
+def test_no_lab_decisions_are_open(si_record):
+    assert incar_policy.VALUES_NEEDING_LAB_DECISION == {}
     for removed in ("EARLY_STEP_PREC_NEEDS_LAB_DECISION", "STEP_4_CONVERGENCE_NEEDS_LAB_DECISION",
-                    "FINAL_SMEARING_NEEDS_LAB_DECISION", "EARLY_STEP_ENCUT_NEEDS_LAB_DECISION"):
+                    "FINAL_SMEARING_NEEDS_LAB_DECISION", "EARLY_STEP_ENCUT_NEEDS_LAB_DECISION",
+                    "FIXED_KPAR_NEEDS_LAB_DECISION"):
         assert not hasattr(incar_policy, removed)
 
 
@@ -255,8 +287,11 @@ def test_policy_record(si_record):
     record = incar_policy_record(si_record)
     assert record["plane_wave_cutoff"] == si_record
     assert record["cutoffs"] == {"early": 250, "relaxation": 350, "ranking": 620}
-    assert record["lab_decision"]["date"] == "2026-11-05"
-    assert "final relaxation step must be consistent" in record["lab_decision"]["rule"]
+    decisions = {decision["topic"]: decision for decision in record["lab_decisions"]}
+    assert set(decisions) == {"INCAR ladder", "KPAR"}
+    assert all(decision["date"] == "2026-11-05" for decision in decisions.values())
+    assert "final relaxation step must be consistent" in decisions["INCAR ladder"]["rule"]
+    assert decisions["KPAR"]["rule"] == "KPAR = 1 on steps 1-3, KPAR = 4 on steps 4-5."
     assert record["values_needing_lab_decision"] == incar_policy.VALUES_NEEDING_LAB_DECISION
     assert [row["step"] for row in record["steps"]] == [1, 2, 3, 4, 5]
 

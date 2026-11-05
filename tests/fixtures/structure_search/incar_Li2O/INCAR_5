@@ -13,6 +13,6 @@ PREC = Accurate
 SIGMA = 0.05
 ISPIN = 1
 NCORE = 4
-KPAR = 1
+KPAR = 4
 LWAVE = .FALSE.
 LCHARG = .FALSE.

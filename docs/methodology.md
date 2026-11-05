@@ -420,8 +420,8 @@ are not part of the declared methodology.
 
 ## 10. Structure searches (USPEX) — decided, not yet in use
 
-Status: **INCAR ladder decided by the BMD Lab on 5 Nov 2026 (#65, recorded
-on PR #74); KPAR is still open.** No structure search can be started from
+Status: **INCAR ladder and KPAR decided by the BMD Lab on 5 Nov 2026 (#65,
+recorded on PR #74).** No structure search can be started from
 bmd-compute yet; the design is in `structure_search.md`. The values here are
 implemented in `backend/structure_search/incar_policy.py` and `potcar.py`
 and pinned by golden files in `tests/fixtures/structure_search/`.
@@ -434,6 +434,17 @@ BMD scientific decision (5 Nov 2026):
 
 The final relaxation is BMD Geometry Optimisation pass 1, unchanged, and a
 ranking single point follows it.
+
+KPAR decision (5 Nov 2026): `KPAR = 1` on steps 1–3, `KPAR = 4` on steps
+4–5. Evidence from POWER (#59), on Si8 only:
+- 6×6×6 mesh (20 irreducible k-points), 48 ranks: KPAR 1 took 12.5 s and
+  KPAR 4 took 5.1 s (job 23367291).
+- KPAR 4 with fewer k-points than KPAR (Γ only, and 2×2×2 and 4×4×4 meshes)
+  ran normally and gave the same energy as KPAR 1 (job 23373151). KPAR above
+  NKPTS is therefore safe, but leaves ranks idle.
+
+Steps 1–3 use coarse meshes, so they keep KPAR 1. Steps 4–5 must meet BMD's
+k-point density, and they carry most of the compute.
 
 USPEX copies the same `INCAR_1 .. INCAR_5` into every candidate's
 calculation, so nothing in them can depend on a particular structure. The
@@ -490,19 +501,19 @@ Cutoffs (`ladder_cutoffs`):
 | Si | 245.345 eV (`Si`) | 250 / 350 / 620 eV |
 | Li₂O | 499.034 eV (`Li_sv`) | 500 / 650 / 650 eV |
 
-Search-wide tags on every step: `ISPIN = 1`, `NCORE = 4`, `KPAR = 1`,
-`LWAVE = False` and `LCHARG = False`. No step sets `PSTRESS` (pressure is set
+Search-wide tags on every step: `ISPIN = 1`, `NCORE = 4`, `KPAR` (1 on
+steps 1–3, 4 on steps 4–5), `LWAVE = False` and `LCHARG = False`. On step 4,
+KPAR is the only tag the search adds to BMD's generated pass-1 INCAR; the
+provenance record lists it. No step sets `PSTRESS` (pressure is set
 only by `ExternalPressure` in `INPUT.txt`), `MAGMOM`, `NBANDS`, `NPAR`, DFT+U,
-SOC or a dispersion correction. KPAR and NCORE are checked in code against
-the rank count of a relaxation (48 by default, a parameter). The
-parallelisation numbers come from the lab's VASP notes on a single 3-atom
-Sc₂C cell, so they are not general results.
+SOC or a dispersion correction. For every step, KPAR must divide the rank count of a relaxation, and NCORE
+must divide ranks / KPAR. Both are checked in code; the rank count is a
+parameter, 48 by default. At 48 ranks, KPAR 4 gives 12 ranks per group,
+which NCORE 4 divides. With KPAR 4 and NCORE 4, the rank count must be a
+multiple of 16. NCORE = 4 comes from the lab's VASP notes on a single 3-atom
+Sc₂C cell, so it is not a general result.
 
-Still open: **KPAR** stays at 1 until the full-node test (#59) measures the
-alternative. It must divide the rank count, leave a quotient NCORE divides,
-and not exceed NKPTS for any candidate. KPAR = 4 meets the first two rules
-with 48 ranks and was worth up to 9× on one k-point-dense test cell, but it
-exceeds NKPTS for candidates with fewer than 4 k-points.
+No ladder value is awaiting a lab decision.
 
 Safety checks:
 - every step's ENCUT must be at least the largest ENMAX of the search's

@@ -18,6 +18,9 @@ PR #74):
 with two follow-up choices: the final relaxation is BMD Geometry
 Optimisation pass 1 unchanged, and a ranking single point follows it.
 
+KPAR decision (roeeasher, 5 Nov 2026, recorded on PR #74): ``KPAR = 1`` on
+steps 1-3 and ``KPAR = 4`` on steps 4-5 (``KPAR_BY_STEP``).
+
 ====  =================================  ====  ======  =====  ===  ==================  =====  ======  =================  ========
 step  source                             ISIF  IBRION  POTIM  NSW  ENCUT               EDIFF  EDIFFG  smearing           PREC
 ====  =================================  ====  ======  =====  ===  ==================  =====  ======  =================  ========
@@ -68,14 +71,13 @@ Cutoffs, from the search's POTCARs (:func:`search_cutoff_record`):
 Examples: Si gives 250 / 350 / 620 eV (early / relaxation / ranking); Li2O
 (Li_sv, ENMAX 499.034 eV) gives 500 / 650 / 650 eV.
 
-Search-wide tags on every step (``SEARCH_WIDE_SETTINGS``): ``ISPIN = 1``,
-``NCORE = 4``, ``KPAR = 1`` (still a lab decision), ``LWAVE`` and ``LCHARG``
-off. No step sets ``PSTRESS`` (pressure comes from ``ExternalPressure`` in
+Search-wide tags on every step (``search_wide_settings``): ``ISPIN = 1``,
+``NCORE = 4``, ``KPAR`` from ``KPAR_BY_STEP``, ``LWAVE`` and ``LCHARG`` off. No step sets ``PSTRESS`` (pressure comes from ``ExternalPressure`` in
 INPUT.txt, manual section 4.1), ``MAGMOM``, ``NBANDS``, ``NPAR``, ``LDAU``,
 ``LSORBIT`` or ``IVDW``.
 
-The only value still awaiting a lab decision is
-``FIXED_KPAR_NEEDS_LAB_DECISION`` (see :data:`VALUES_NEEDING_LAB_DECISION`).
+No value of the ladder is awaiting a lab decision
+(:data:`VALUES_NEEDING_LAB_DECISION` is empty).
 """
 
 from __future__ import annotations
@@ -104,37 +106,41 @@ from backend.structure_search.potcar import POTCAR_FUNCTIONAL, bmd_potcar_symbol
 INCAR_POLICY_ID = "bmd_compute.structure_search_incar"
 INCAR_POLICY_VERSION = 1
 
-LAB_DECISION = {
-    "date": "2026-11-05",
-    "decided_by": "roeeasher for the BMD Lab",
-    "recorded_in": "https://github.com/bmd-lab/bmd-compute/pull/74#issuecomment-6654619861",
-    "rule": (
-        "The final relaxation step must be consistent with the accuracy of BMD's "
-        "Geometry Optimisation already implemented in bmd-compute. Before that, "
-        "follow the USPEX default recommendations (manual section 3.1)."
-    ),
-}
+LAB_DECISIONS = (
+    {
+        "topic": "INCAR ladder",
+        "date": "2026-11-05",
+        "decided_by": "roeeasher for the BMD Lab",
+        "recorded_in": "https://github.com/bmd-lab/bmd-compute/pull/74#issuecomment-6654619861",
+        "rule": (
+            "The final relaxation step must be consistent with the accuracy of BMD's "
+            "Geometry Optimisation already implemented in bmd-compute. Before that, "
+            "follow the USPEX default recommendations (manual section 3.1)."
+        ),
+    },
+    {
+        "topic": "KPAR",
+        "date": "2026-11-05",
+        "decided_by": "roeeasher for the BMD Lab",
+        "recorded_in": "https://github.com/bmd-lab/bmd-compute/pull/74#issuecomment-6659200162",
+        "rule": "KPAR = 1 on steps 1-3, KPAR = 4 on steps 4-5.",
+    },
+)
 
 
-# ---------------------------------------------------------------------------
-# The one value that still needs a lab decision.
-# ---------------------------------------------------------------------------
+# KPAR per step (lab decision, 5 Nov 2026). Evidence from POWER (#59):
+# - Si8, 6x6x6 mesh (20 irreducible k-points), 48 ranks: KPAR 1 took 12.5 s,
+#   KPAR 4 took 5.1 s (job 23367291, one pass).
+# - KPAR 4 with fewer k-points than KPAR (Gamma only, NKPTS 1; also 2x2x2 and
+#   4x4x4) ran normally and gave the same energy as KPAR 1 (job 23373151).
+#   KPAR > NKPTS is therefore safe, but leaves ranks idle.
+# Steps 1-3 use coarse meshes and keep KPAR 1. Steps 4-5 must meet BMD's
+# k-point density (KresolStart <= 0.04), carry most of the compute, and use
+# KPAR 4. These measurements come from Si8 only.
+KPAR_BY_STEP: Mapping[int, int] = {1: 1, 2: 1, 3: 1, 4: 4, 5: 4}
 
-# KPAR for every step. Because the INCAR is the same for every candidate, KPAR
-# must work for any k-point count (rules in validate_parallel_tags). KPAR = 1
-# meets every rule for any rank count and any number of k-points.
-# KPAR = 4 also meets the two divisibility rules with 48 ranks. The lab's
-# notes measured KPAR as worth up to 9x on a k-point-dense cell. But
-# KPAR = 4 exceeds NKPTS for candidates with fewer than 4 irreducible
-# k-points, which a search does produce (large cells, coarse early
-# KresolStart). So it stays at 1 until the full-node test (#59) shows the
-# speed-up on real search candidates, and how VASP behaves when
-# KPAR > NKPTS.
-FIXED_KPAR_NEEDS_LAB_DECISION = 1
-
-VALUES_NEEDING_LAB_DECISION = {
-    "FIXED_KPAR_NEEDS_LAB_DECISION": FIXED_KPAR_NEEDS_LAB_DECISION,
-}
+# No ladder value is awaiting a lab decision.
+VALUES_NEEDING_LAB_DECISION: dict[str, Any] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -157,15 +163,17 @@ DEFAULT_RANKS_PER_RELAXATION = 48
 # (3-atom Sc2C, 65 irreducible k-points), not from search candidates, so
 # they are not general results. NPAR is never set together with NCORE.
 
-# Tags every step sets, whatever its source; they override the BMD stage
-# values where both set a tag.
-SEARCH_WIDE_SETTINGS: Mapping[str, Any] = {
-    "ISPIN": 1,
-    "NCORE": DEFAULT_NCORE,
-    "KPAR": FIXED_KPAR_NEEDS_LAB_DECISION,
-    "LWAVE": False,
-    "LCHARG": False,
-}
+def search_wide_settings(step: int) -> dict[str, Any]:
+    """Tags every step sets, whatever its source; they override the BMD stage
+    values where both set a tag. Only KPAR differs between steps."""
+
+    return {
+        "ISPIN": 1,
+        "NCORE": DEFAULT_NCORE,
+        "KPAR": KPAR_BY_STEP[step],
+        "LWAVE": False,
+        "LCHARG": False,
+    }
 
 # Steps 1-3: exactly the tags of the USPEX 25.0 manual's example INCAR_1..3
 # (section 3.1), as given in the lab decision. "early" and "relaxation" are
@@ -259,9 +267,8 @@ def validate_parallel_tags(kpar: int, ncore: int, ranks: int) -> None:
     - ``ranks`` is divisible by ``KPAR``;
     - ``ranks / KPAR`` is divisible by ``NCORE``.
 
-    The third rule, ``KPAR`` <= NKPTS, depends on each candidate's mesh and
-    cannot be checked here. It is why ``FIXED_KPAR_NEEDS_LAB_DECISION`` is
-    chosen conservatively. Raises ``ValueError``.
+    ``KPAR`` larger than a candidate's NKPTS was measured to be safe (same
+    energy) but leaves ranks idle (``KPAR_BY_STEP``). Raises ``ValueError``.
     """
 
     for label, value in (("KPAR", kpar), ("NCORE", ncore), ("ranks", ranks)):
@@ -427,11 +434,13 @@ def incar_ladder(
 
     ``cutoff_record`` is the search's resolved cutoff record
     (:func:`search_cutoff_record`). ``ranks`` is the MPI rank count of one
-    relaxation; it does not change the INCARs and only checks that KPAR and
-    NCORE are valid for it.
+    relaxation; it does not change the INCARs and only checks that every
+    step's KPAR and NCORE are valid for it.
     """
 
-    validate_parallel_tags(SEARCH_WIDE_SETTINGS["KPAR"], SEARCH_WIDE_SETTINGS["NCORE"], ranks)
+    for step in range(1, NUM_STEPS + 1):
+        wide = search_wide_settings(step)
+        validate_parallel_tags(wide["KPAR"], wide["NCORE"], ranks)
     cutoffs = ladder_cutoffs(cutoff_record)
     pass_1, static = bmd_stage_settings(cutoff_record)
 
@@ -447,8 +456,9 @@ def incar_ladder(
 
     steps = []
     for index, (source, settings) in enumerate(zip(STEP_SOURCES, rows), start=1):
-        merged = {key: value for key, value in settings.items() if key not in SEARCH_WIDE_SETTINGS}
-        merged.update(SEARCH_WIDE_SETTINGS)
+        wide = search_wide_settings(index)
+        merged = {key: value for key, value in settings.items() if key not in wide}
+        merged.update(wide)
         steps.append(LadderStep(number=index, source=source, settings=merged))
     return tuple(steps)
 
@@ -596,21 +606,32 @@ def incar_policy_record(
     """JSON-safe record of one search's ladder, for provenance.
 
     ``plane_wave_cutoff`` is the resolved cutoff record unchanged, in the same
-    form BMD freezes into a Geometry Optimisation stage, and
-    ``step_4_protocol`` records that step 4 is that protocol's pass 1.
+    form BMD freezes into a Geometry Optimisation stage. ``step_4_protocol``
+    records that step 4 is that protocol's pass 1, and which search-wide tags
+    the search adds to or changes in BMD's generated pass-1 INCAR (KPAR).
     """
 
+    ladder = incar_ladder(cutoff_record, ranks)
+    pass_1, _ = bmd_stage_settings(cutoff_record)
+    step_4 = ladder[3].settings
+    additions = {key: value for key, value in step_4.items() if pass_1.get(key, object()) != value}
     return {
         "policy_id": INCAR_POLICY_ID,
         "policy_version": INCAR_POLICY_VERSION,
-        "lab_decision": dict(LAB_DECISION),
+        "lab_decisions": [dict(decision) for decision in LAB_DECISIONS],
         "ranks_per_relaxation": ranks,
         "plane_wave_cutoff": dict(_require_cutoff_record(cutoff_record)),
         "cutoffs": ladder_cutoffs(cutoff_record),
-        "step_4_protocol": {"id": PROTOCOL_ID, "version": PROTOCOL_VERSION, "pass": 1},
+        "step_4_protocol": {
+            "id": PROTOCOL_ID,
+            "version": PROTOCOL_VERSION,
+            "pass": 1,
+            "search_wide_additions": additions,
+        },
+        "kpar_by_step": dict(KPAR_BY_STEP),
         "steps": [
             {"step": step.number, "source": step.source, "incar": dict(step.settings)}
-            for step in incar_ladder(cutoff_record, ranks)
+            for step in ladder
         ],
         "bmd_standard_steps": list(BMD_STANDARD_STEPS),
         "bmd_standard_max_kresol": BMD_STANDARD_MAX_KRESOL,
@@ -634,13 +655,13 @@ __all__ = [
     "DEFAULT_RANKS_PER_RELAXATION",
     "EARLY_STEP_ENCUT_MULTIPLIER",
     "ENCUT_BELOW_ENMAX_CODE",
-    "FIXED_KPAR_NEEDS_LAB_DECISION",
+    "KPAR_BY_STEP",
     "FORBIDDEN_KEYS",
     "INCAR_POLICY_ID",
     "INCAR_POLICY_VERSION",
     "INVALID_CUTOFF_RECORD_CODE",
     "IncarPolicyError",
-    "LAB_DECISION",
+    "LAB_DECISIONS",
     "LadderStep",
     "MANUAL_STEPS",
     "NUM_STEPS",
@@ -648,7 +669,6 @@ __all__ = [
     "POTCAR_ENMAX_MISMATCH_CODE",
     "RANKING_IONIC",
     "RANKING_SMEARING",
-    "SEARCH_WIDE_SETTINGS",
     "STEP_SOURCES",
     "VALUES_NEEDING_LAB_DECISION",
     "bmd_stage_settings",
@@ -662,6 +682,7 @@ __all__ = [
     "require_potcars_match_cutoff_record",
     "require_spec_matches_ladder",
     "search_cutoff_record",
+    "search_wide_settings",
     "validate_parallel_tags",
     "write_incar_files",
 ]
