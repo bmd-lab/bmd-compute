@@ -117,6 +117,7 @@ def build_submission_provenance(submission_spec: dict) -> dict:
                 ),
             },
         },
+        "structure_source": structure_source_provenance(submission_spec),
         "execution": {
             "workflow_spec": _json_safe_value(workflow_spec),
             "automatic_treatments": _automatic_treatments_dict(submission_spec),
@@ -145,6 +146,27 @@ def build_submission_provenance(submission_spec: dict) -> dict:
                 ),
             },
         },
+    }
+
+
+def structure_source_provenance(submission_spec: dict) -> dict:
+    """
+    Where the submitted structure came from.
+
+    ``type`` and ``format`` describe how the structure text reached
+    bmd-compute (``pasted_text`` for the browser workbench). ``origin`` is the
+    verified origin record of a structure taken from another source, for
+    example a candidate of an imported USPEX search
+    (``backend.structure_search.imports.origin_record``), or None when the
+    user entered the structure directly.
+    """
+
+    structure = (submission_spec.get("flow_spec") or {}).get("structure") or {}
+    origin = structure.get("origin")
+    return {
+        "type": _json_safe_scalar(structure.get("type")),
+        "format": _json_safe_scalar(structure.get("format")),
+        "origin": _json_safe_value(origin) if isinstance(origin, dict) else None,
     }
 
 

@@ -431,6 +431,7 @@ def energy_generation_plot(page: dict) -> dict | None:
             "x_hover_unit": "",
             "y_hover_unit": " eV/atom",
             "x_hover_format": "d",
+            "x_dtick": 1,
             "y_hover_format": ".4f",
             "energy_reference": "absolute",
             "source": "Individuals",

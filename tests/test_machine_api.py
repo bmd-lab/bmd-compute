@@ -49,6 +49,9 @@ EXPECTED_BROWSER_OPENAPI_PATHS = [
     "/monitor",
     "/prepare-remote",
     "/resume",
+    "/structure-search/hand-off",
+    "/structure-search/import",
+    "/structure-search/{import_id}",
     "/submit",
 ]
 
