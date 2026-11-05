@@ -1,0 +1,38 @@
+300 : calculationType
+
+% atomType
+Si
+% EndAtomType
+
+% numSpecies
+8
+% EndNumSpecies
+
+0 : ExternalPressure
+8 : minAt
+8 : maxAt
+
+12 : populationSize
+24 : initialPopSize
+20 : numGenerations
+8 : stopCrit
+
+% abinitioCode
+1 1 1 1
+% ENDabinit
+
+% KresolStart
+0.1 0.08 0.06 0.04
+% Kresolend
+
+% commandExecutable
+sh /bmd/placeholder/bmd_bridge.sh 1
+sh /bmd/placeholder/bmd_bridge.sh 2
+sh /bmd/placeholder/bmd_bridge.sh 3
+sh /bmd/placeholder/bmd_bridge.sh 4
+% EndExecutable
+
+-1 : whichCluster
+4 : numParallelCalcs
+1 : coresPerJob
+30 : sleepSeconds
