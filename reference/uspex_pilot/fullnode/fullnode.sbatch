@@ -61,7 +61,7 @@ si8_positions="0.00 0.00 0.00
 # Si64: 2x2x2 supercell of the 8-atom diamond cell, a fixed number of
 # electronic steps so every run does the same work.
 make_si64() { # dir
-  local d=$1; mkdir -p "$d"
+  local d=$1 i j k; mkdir -p "$d"
   {
     echo "Si64 diamond 2x2x2"; echo "10.94"; echo "1 0 0"; echo "0 1 0"; echo "0 0 1"
     echo "Si"; echo "64"; echo "Direct"
