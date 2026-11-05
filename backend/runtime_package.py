@@ -9,6 +9,14 @@ from backend.runtime_package_guard import bmd_runtime_package_manifest_digest
 
 RUNTIME_PACKAGE_DIR = "backend"
 RUNTIME_PACKAGE_SOURCE_SUFFIXES = (".py",)
+# Non-Python files that are part of the runtime package, by package-relative
+# directory. Only files directly in that directory, with one of these
+# suffixes, are included. The USPEX launch bridge (bmd_bridge.sh) runs as
+# USPEX's commandExecutable inside the container, which has no python3, so it
+# is a POSIX shell script; it must reach POWER verified like every module.
+RUNTIME_PACKAGE_EXTRA_SOURCE_SUFFIXES = {
+    "structure_search/bridge": (".sh",),
+}
 RUNTIME_PACKAGE_EXCLUDED_DIRS = frozenset(
     {
         "__pycache__",
@@ -25,15 +33,26 @@ def runtime_package_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def is_runtime_package_source(relative_path: str) -> bool:
+    """Whether the package-relative POSIX path belongs in the runtime package."""
+
+    parts = relative_path.split("/")
+    if any(part in RUNTIME_PACKAGE_EXCLUDED_DIRS for part in parts):
+        return False
+    suffix = Path(parts[-1]).suffix
+    if suffix in RUNTIME_PACKAGE_SOURCE_SUFFIXES:
+        return True
+    directory = "/".join(parts[:-1])
+    return suffix in RUNTIME_PACKAGE_EXTRA_SOURCE_SUFFIXES.get(directory, ())
+
+
 def runtime_package_files() -> tuple[Path, ...]:
     root = runtime_package_root()
     files: list[Path] = []
     for path in root.rglob("*"):
         if not path.is_file():
             continue
-        if path.suffix not in RUNTIME_PACKAGE_SOURCE_SUFFIXES:
-            continue
-        if any(part in RUNTIME_PACKAGE_EXCLUDED_DIRS for part in path.relative_to(root).parts):
+        if not is_runtime_package_source(path.relative_to(root).as_posix()):
             continue
         files.append(path)
 
@@ -92,9 +111,11 @@ def runtime_package_manifest_metadata() -> dict:
 __all__ = [
     "RUNTIME_PACKAGE_DIR",
     "RUNTIME_PACKAGE_EXCLUDED_DIRS",
+    "RUNTIME_PACKAGE_EXTRA_SOURCE_SUFFIXES",
     "RUNTIME_PACKAGE_SOURCE_SUFFIXES",
     "build_runtime_package_manifest",
     "build_runtime_package_sources",
+    "is_runtime_package_source",
     "runtime_package_files",
     "runtime_package_manifest_digest",
     "runtime_package_manifest_for_sources",
