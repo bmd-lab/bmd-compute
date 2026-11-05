@@ -418,107 +418,109 @@ packages or input-altering atomate2 settings differ from preparation.
 Output-writing flags (for example `LCHARG`, `LWAVE`, `LVTOT`, `LAECHG`, `LELF`)
 are not part of the declared methodology.
 
-## 10. Structure searches (USPEX) — proposal, not yet in use
+## 10. Structure searches (USPEX) — decided, not yet in use
 
-Status: **proposal awaiting BMD scientific review and lab sign-off (#65).**
-No structure search can be started from bmd-compute yet; the design is in
-`structure_search.md`. The values here are implemented in
-`backend/structure_search/incar_policy.py` and `potcar.py` and pinned by
-golden files in `tests/fixtures/structure_search/`.
+Status: **INCAR ladder decided by the BMD Lab on 5 Nov 2026 (#65, recorded
+on PR #74); KPAR is still open.** No structure search can be started from
+bmd-compute yet; the design is in `structure_search.md`. The values here are
+implemented in `backend/structure_search/incar_policy.py` and `potcar.py`
+and pinned by golden files in `tests/fixtures/structure_search/`.
+
+BMD scientific decision (5 Nov 2026):
+
+> The final relaxation step must be consistent with the accuracy of BMD's
+> Geometry Optimisation already implemented in bmd-compute. Before that,
+> follow the USPEX default recommendations (manual §3.1).
+
+The final relaxation is BMD Geometry Optimisation pass 1, unchanged, and a
+ranking single point follows it.
 
 USPEX copies the same `INCAR_1 .. INCAR_5` into every candidate's
 calculation, so nothing in them can depend on a particular structure. The
 composition is fixed for a whole search, so the plane-wave cutoffs, which
-depend only on the search's POTCARs, are set once per search. The ladder
-starts looser than BMD standards and tightens so that the last two steps
-meet them:
+depend only on the search's POTCARs, are set once per search.
 
-| Step | Purpose | ISIF | IBRION / POTIM | NSW | ENCUT | EDIFF | EDIFFG | Smearing | ADDGRID |
+| Step | Source | ISIF | IBRION / POTIM | NSW | ENCUT | EDIFF | EDIFFG | Smearing | PREC |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | cell shape, far from a minimum | 4 | 2 / 0.02 | 99 | early * | 1e-2 | 0.1 | MP (`ISMEAR = 1`), `SIGMA = 0.10` | yes |
-| 2 | cell shape | 4 | 1 / 0.3 | 99 | early * | 1e-3 | 0.01 | MP, `SIGMA = 0.10` | yes |
-| 3 | cell shape and volume | 3 | 1 / 0.3 | 99 | relaxation | 1e-4 | 0.001 | MP, `SIGMA = 0.05` | no |
-| 4 | BMD relaxation standard | 3 | 1 / 0.3 | 99 | relaxation | 1e-6 * | -0.01 * | final * | no |
-| 5 | single point: ranking energy | 2 | -1 | 0 | ranking | 1e-6 | — | final * | yes |
+| 1 | USPEX manual INCAR_1 | 4 | 2 / 0.02 | 65 | early | 1e-2 | 0.1 | MP (`ISMEAR = 1`), `SIGMA = 0.10` | Low |
+| 2 | USPEX manual INCAR_2 | 4 | 1 / 0.30 | 55 | early | 1e-3 | 0.01 | MP, `SIGMA = 0.08` | Normal |
+| 3 | USPEX manual INCAR_3 | 3 | 2 / 0.02 | 65 | relaxation | 1e-3 | 0.01 | MP, `SIGMA = 0.07` | Normal |
+| 4 | BMD Geometry Optimisation pass 1 (`bmd_compute.geometry_relaxation/1`) | 3 | 2 | 99 | relaxation | 1e-6 | -0.01 | Gaussian, `SIGMA = 0.2` | Accurate |
+| 5 | ranking single point | 2 | -1 | 0 | ranking | 1e-6 | — | Gaussian, `SIGMA = 0.05` | Accurate |
 
-\* needs a lab decision (below).
+- **Steps 1–3** set only the tags of the manual's example INCARs, plus the
+  search-wide tags below. They set no `ALGO`, `LREAL`, `LASPH`, `NELM` or
+  `ADDGRID`.
+- **Step 4** is BMD Geometry Optimisation pass 1 (section 3). Its INCAR is
+  the one BMD's own input generator writes for that stage for the search's
+  elements, not a copy: `ALGO = Fast`, `LREAL = False`, `LASPH = True`,
+  `NELM = 200`, no `ADDGRID`, and the values in the table. The provenance
+  record names the protocol and pass.
+- **Step 5** gives the energy USPEX ranks candidates by. USPEX ranks on VASP's
+  free energy F, not E0: in the Si8 pilot, individual 27 has
+  F = −39.702683 eV and E0 = −39.702789 eV, and `Individuals_extended` shows
+  −39.7027. With step 4's `SIGMA = 0.2`, the smearing-entropy term in F would
+  favour metallic candidates. Step 5 is BMD's Static Energy after a
+  relaxation as its generator writes it (`ALGO = Normal`, `ADDGRID = True`,
+  `LASPH`, `NELM = 200`), with these changes:
+  - Gaussian `SIGMA = 0.05` instead of the tetrahedron method, which
+    candidates with coarse meshes can have too few k-points for;
+  - `ISIF = 2` and `IBRION = −1` written explicitly;
+  - the output-only flags (`NEDOS`, `LORBIT`, `LVTOT`, `LAECHG`, `LELF`)
+    dropped. Section 9 excludes these from the methodology, and a search runs
+    thousands of single points.
 
 Cutoffs (`ladder_cutoffs`):
 
-- **relaxation**: BMD's species-dependent relaxation cutoff,
+- **relaxation** (steps 3–4): BMD's species-dependent relaxation cutoff,
   `bmd_compute.plane_wave_cutoff/1` (section 3),
-  `ENCUT = ceil(1.3 × max ENMAX / 50 eV) × 50 eV`. It is resolved by the
-  same function and the same versioned ENMAX metadata as every BMD Geometry
-  Optimisation (`geometry_relaxation.resolve_cutoff_record`), from the
-  POTCARs BMD selects for the search's elements. The resolved record is part
-  of the search's INCAR provenance record. Like the relaxation protocol,
-  steps 3–4 set no `ADDGRID`.
-- **ranking**: `max(620 eV, relaxation cutoff)`, the cutoff of a BMD Static
-  Energy after a relaxation, with that stage's `ADDGRID`.
-- **early**: `ceil(m × max ENMAX / 50 eV) × 50 eV`, with the multiplier
-  *m* = 1.0 a placeholder, so steps 1–2 are never below a POTCAR's ENMAX.
+  `ENCUT = ceil(1.3 × max ENMAX / 50 eV) × 50 eV`. This is also the manual's
+  "+30–40 %" for the volume-changing steps. It is resolved by the same
+  function and versioned ENMAX metadata as every BMD Geometry Optimisation,
+  and the resolved record is part of the search's INCAR provenance.
+- **ranking** (step 5): `max(620 eV, relaxation cutoff)`. This is the static
+  rule of section 3 for a relaxation without the adaptive geometry record.
+  A search has no adaptive refinement, so `max(620, E0 + 150)` does not
+  apply.
+- **early** (steps 1–2): `ceil(1.0 × max ENMAX / 50 eV) × 50 eV`, the
+  manual's default cutoff. It is never below a POTCAR's ENMAX.
 
 | Search | Largest ENMAX | early / relaxation / ranking |
 | --- | --- | --- |
 | Si | 245.345 eV (`Si`) | 250 / 350 / 620 eV |
 | Li₂O | 499.034 eV (`Li_sv`) | 500 / 650 / 650 eV |
 
-Before the ladder followed BMD's cutoff rule, every search used 430 / 580 /
-620 eV, and searches containing Li or He (the only BMD POTCARs with ENMAX
-above 430 eV) were refused.
+Search-wide tags on every step: `ISPIN = 1`, `NCORE = 4`, `KPAR = 1`,
+`LWAVE = False` and `LCHARG = False`. No step sets `PSTRESS` (pressure is set
+only by `ExternalPressure` in `INPUT.txt`), `MAGMOM`, `NBANDS`, `NPAR`, DFT+U,
+SOC or a dispersion correction. KPAR and NCORE are checked in code against
+the rank count of a relaxation (48 by default, a parameter). The
+parallelisation numbers come from the lab's VASP notes on a single 3-atom
+Sc₂C cell, so they are not general results.
 
-Every step also sets `PREC = Accurate` (* on steps 1–2), `LREAL = False`,
-`LASPH = True`, `NELM = 200`, `ISPIN = 1`, `NCORE = 4`, `KPAR = 1` *,
-`LWAVE = False` and `LCHARG = False`. `NPAR` is never set alongside `NCORE`.
-KPAR and NCORE are checked in code against the rank count of a relaxation
-(48 by default, a parameter). The parallelisation numbers come from the lab's
-VASP notes on a single 3-atom Sc₂C cell, so they are not general results.
-No step sets `PSTRESS` (pressure is set only by `ExternalPressure` in
-`INPUT.txt`), `MAGMOM`, `NBANDS`, DFT+U, SOC or a dispersion correction.
+Still open: **KPAR** stays at 1 until the full-node test (#59) measures the
+alternative. It must divide the rank count, leave a quotient NCORE divides,
+and not exceed NKPTS for any candidate. KPAR = 4 meets the first two rules
+with 48 ranks and was worth up to 9× on one k-point-dense test cell, but it
+exceeds NKPTS for candidates with fewer than 4 k-points.
 
-Reasons:
-
-- The step pattern (ISIF 4, 4, 3, 3, then a single point), the
-  loose-to-tight EDIFF/EDIFFG of steps 1–3, IBRION 2 with POTIM 0.02 far from
-  a minimum and IBRION 1 with POTIM 0.3 after it, and Methfessel–Paxton
-  smearing for the early steps follow the USPEX 25.0 manual (section 3.1).
-- The last steps must match BMD standards (lab decision, `structure_search.md`
-  section 2), so the volume-changing steps use BMD's relaxation cutoff rule;
-  this also avoids Pulay-stress volume errors. Only fixed-volume steps use a
-  lower cutoff.
-- Safety nets: every step's ENCUT must be at least the largest ENMAX of the
-  search's POTCARs (refused with code `encut_below_potcar_enmax`, never
-  adjusted), and the ENMAX read from the copied POTCAR files must match the
-  metadata the cutoffs were resolved from (code
-  `potcar_enmax_differs_from_cutoff_record`). With the current rules the
-  first check always passes.
-- Step 4 uses BMD's pass-1 relaxation convergence (EDIFF 1e-6, forces below
-  0.01 eV/Å), and step 5 the BMD Static Energy cutoff rule and EDIFF, so
-  steps 4–5 repeat the relax-then-static pattern of Relaxed Energy. USPEX
-  ranks candidates by the energy of the last step. The search does not run
-  the relaxation protocol's tighter pass 2.
-- Steps 4 and 5 share one smearing so the geometry and the ranking energy
-  use the same occupations. For comparison, BMD's relaxation standard uses
-  Gaussian smearing with `SIGMA = 0.2` eV.
-
-Values that need a lab decision (named `*_NEEDS_LAB_DECISION` in the code):
-
-| Value | Placeholder | Notes |
-| --- | --- | --- |
-| Early-step cutoff multiplier *m* (steps 1–2) | 1.0 | `ceil(m × max ENMAX / 50) × 50`; Si gives 250 eV |
-| `PREC` of steps 1–2 | `Accurate` | the manual starts with `Low`, then `Normal`; `Accurate` also sets denser FFT grids |
-| Convergence of step 4 | `EDIFF = 1e-6`, `EDIFFG = -0.01` | relaxes every candidate to BMD standards, probably the largest cost of a search; alternative: the manual's final tolerances (`1e-4` / `1e-3`) or a value in between |
-| Smearing of steps 4–5 | Gaussian, `SIGMA = 0.05` | alternative: Methfessel–Paxton with a small SIGMA. The tetrahedron method of PBE Static Energy is not used because candidates with coarse meshes can have too few k-points for it |
-| KPAR | 1 | must divide the rank count of a relaxation (48 by default), leave a quotient NCORE divides, and not exceed NKPTS for any candidate. KPAR = 4 meets the first two rules with 48 ranks and was worth up to 9x on one k-point-dense test cell, but exceeds NKPTS for candidates with fewer than 4 k-points; Phase 0 (#59) decides |
-| Number of steps | 5 | the manual suggests 4–5; the spec's `KresolStart` must have one value per step (checked before `INPUT.txt` is written, #67) |
+Safety checks:
+- every step's ENCUT must be at least the largest ENMAX of the search's
+  POTCARs (code `encut_below_potcar_enmax`; with these rules it always
+  passes);
+- the ENMAX read from the copied POTCAR files must match the metadata the
+  cutoffs were resolved from (`potcar_enmax_differs_from_cutoff_record`);
+- BMD's generated pass-1 stage must use the same POTCARs and cutoff as the
+  search's record (`bmd_stage_inputs_differ_from_search_record`).
 
 K-points: USPEX builds each mesh from `KresolStart` (one value per step,
-units 2π/Å). BMD's k-point policy (reciprocal density 64, section 4)
-corresponds to a spacing of 64^(−1/3) = 0.25 Å⁻¹, that is 0.0398 × 2π/Å;
-pymatgen's rounded meshes give 0.040–0.042. Steps 4 and 5 must therefore use
-`KresolStart` ≤ 0.04; steps 1–3 may be coarser. How USPEX rounds a
-`KresolStart` value to a mesh has not been compared with pymatgen yet
-(Phase 0).
+units 2π/Å). Steps 1–3 use the user's values. BMD's k-point policy
+(reciprocal density 64, section 4) corresponds to a spacing of
+64^(−1/3) = 0.25 Å⁻¹, that is 0.0398 × 2π/Å; pymatgen's rounded meshes give
+0.040–0.042. Steps 4 and 5 must therefore use `KresolStart` ≤ 0.04. How
+USPEX rounds a `KresolStart` value to a mesh has not been compared with
+pymatgen yet (Phase 0). The spec must give exactly five values; this is
+checked before `INPUT.txt` is written (#67).
 
 POTCARs: the same PBE_64 files and symbol choices as every other BMD
 calculation (section 5), read from the pinned atomate2 relaxation generator
