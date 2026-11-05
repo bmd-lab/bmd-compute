@@ -197,8 +197,12 @@ def test_expected_manifest_is_the_recorded_provenance_of_byte_exact_uploads(tmp_
         path.relative_to(run_dir / "backend").as_posix(): hashlib.sha256(
             path.read_bytes()
         ).hexdigest()
-        for path in (run_dir / "backend").rglob("*.py")
+        # Every uploaded file, not only *.py: the package also holds the
+        # USPEX launch bridge script (#79).
+        for path in (run_dir / "backend").rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
     }
+    assert "structure_search/bridge/bmd_bridge.sh" in uploaded
     assert uploaded == recorded == build_runtime_package_manifest()
     assert runtime_package_manifest_for_sources(build_backend_module_sources()) == recorded
     run_job = (run_dir / "run_job.py").read_text(encoding="utf-8")

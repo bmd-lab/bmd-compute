@@ -8,6 +8,7 @@ end-to-end behaviour have their own test_structure_search_bridge_*.py files.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -15,7 +16,13 @@ from pathlib import Path
 
 import pytest
 
-from backend.runtime_package import runtime_package_relative_paths
+from backend.runtime_package import (
+    build_runtime_package_manifest,
+    build_runtime_package_sources,
+    runtime_package_manifest_for_sources,
+    runtime_package_relative_paths,
+)
+from backend.runtime_package_guard import bmd_runtime_package_problems
 from backend.structure_search.bridge import protocol
 from backend.structure_search.bridge.master import bridge_script_path
 
@@ -91,15 +98,32 @@ def test_bridge_without_spool_directories_reports_launcher_lost(tmp_path):
     assert "is the launcher running" in completed.stderr
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "The verified runtime package uploads only .py files (backend/runtime_package.py). "
-        "Issue #67 must add bmd_bridge.sh to it; remove this xfail then."
-    ),
-)
-def test_bridge_script_is_in_the_verified_runtime_package():
-    assert "structure_search/bridge/bmd_bridge.sh" in runtime_package_relative_paths()
+def test_bridge_script_is_in_the_verified_runtime_package(tmp_path):
+    """The real bmd_bridge.sh is uploaded, hashed in the manifest and verified on POWER.
+
+    #79 (#67 part 1) added ``.sh`` files in ``structure_search/bridge/`` to the
+    runtime package. This checks the real script, not a stand-in: the bytes
+    that are uploaded, the manifest hash, and the guard that run_job.py runs
+    before anything from the package is used.
+    """
+
+    relative = "structure_search/bridge/bmd_bridge.sh"
+    assert relative in runtime_package_relative_paths()
+
+    sources = build_runtime_package_sources()
+    manifest = build_runtime_package_manifest()
+    assert sources[relative].encode("utf-8") == BRIDGE.read_bytes()
+    assert manifest[relative] == hashlib.sha256(BRIDGE.read_bytes()).hexdigest()
+    assert runtime_package_manifest_for_sources(sources) == manifest
+
+    uploaded = tmp_path / "run" / "backend"
+    for path, text in sources.items():
+        target = uploaded / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(text.encode("utf-8"))
+    assert bmd_runtime_package_problems(str(uploaded), manifest) == []
+    (uploaded / relative).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    assert bmd_runtime_package_problems(str(uploaded), manifest) == [f"modified file: {relative}"]
 
 
 def test_launcher_modules_are_in_the_verified_runtime_package():

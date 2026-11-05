@@ -486,7 +486,10 @@ assert backend_module_names >= {
     "runtime_package.py",
     "workflows.py",
 }
-assert all(name.endswith(".py") for name in backend_module_names)
+# Python sources only, plus the USPEX launch bridge shell script (#79).
+assert {name for name in backend_module_names if not name.endswith(".py")} == {
+    "structure_search/bridge/bmd_bridge.sh"
+}
 assert all("__pycache__" not in name for name in backend_module_names)
 assert all(not name.startswith("tests/") for name in backend_module_names)
 assert "class CalculationSpec" in backend_module_sources["calculations/models.py"]

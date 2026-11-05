@@ -61,7 +61,10 @@ def test_runtime_package_includes_transitive_backend_python_sources():
     assert "calculations/resource_policy.py" in names
     assert "calculations/vasp_stage_definitions.py" in names
     assert "runtime_package.py" in names
-    assert all(name.endswith(".py") for name in names)
+    # Python sources only, plus the USPEX launch bridge shell script (#79).
+    assert {name for name in names if not name.endswith(".py")} == {
+        "structure_search/bridge/bmd_bridge.sh"
+    }
     assert all("__pycache__" not in name for name in names)
     assert all(not name.startswith("tests/") for name in names)
     assert tuple(sorted(runtime_package_relative_paths())) == runtime_package_relative_paths()
