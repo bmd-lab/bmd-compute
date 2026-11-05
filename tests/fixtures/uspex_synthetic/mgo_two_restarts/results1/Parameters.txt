@@ -1,5 +1,0 @@
-SYNTHETIC test input, not from a real USPEX run.
-300 : calculationType
-% atomType
-Mg O
-% EndAtomType
