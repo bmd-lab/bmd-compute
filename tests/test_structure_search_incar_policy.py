@@ -1,4 +1,4 @@
-"""Structure-search INCAR ladder (proposal under BMD review, #65)."""
+"""Structure-search INCAR ladder (#65; BMD lab decision of 5 Nov 2026)."""
 
 import math
 from pathlib import Path
@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 from conftest import synthetic_enmax_metadata, use_enmax_metadata
 
-from backend.calculations.geometry_relaxation import CUTOFF_RULE_ID, resolve_cutoff_record
+from backend.calculations.geometry_relaxation import (
+    COMMON_RELAX_SETTINGS,
+    CUTOFF_RULE_ID,
+    PASS_CONVERGENCE,
+    PROTOCOL_ID,
+    resolve_cutoff_record,
+)
 from backend.calculations.resources import DEFAULT_NCORE
 from backend.calculations.vasp_stage_definitions import ENCUT_STATIC_FINAL_DEFAULT
 from backend.structure_search import incar_policy
@@ -15,6 +21,7 @@ from backend.structure_search.incar_policy import (
     BMD_STANDARD_MAX_KRESOL,
     NUM_STEPS,
     IncarPolicyError,
+    bmd_stage_settings,
     incar_ladder,
     incar_policy_record,
     incar_texts,
@@ -39,6 +46,8 @@ GOLDEN_SEARCHES = [
     ("incar_Si", ["Si"], (250, 350, 620)),
     ("incar_Li2O", ["Li", "O"], (500, 650, 650)),
 ]
+
+SEARCH_WIDE = {"ISPIN": 1, "NCORE": 4, "KPAR": 1, "LWAVE": False, "LCHARG": False}
 
 
 @pytest.fixture(autouse=True)
@@ -69,12 +78,9 @@ def test_cutoffs_follow_bmd_rules(folder, elements, cutoffs):
     assert ladder_cutoffs(record) == {"early": early, "relaxation": relaxation, "ranking": ranking}
     encuts = [_settings(record, n)["ENCUT"] for n in range(1, 6)]
     assert encuts == [early, early, relaxation, relaxation, ranking]
-    # Steps 3-4 use exactly the cutoff a BMD Geometry Optimisation resolves.
     assert relaxation == record["ENCUT"]
     assert record["rule"]["id"] == CUTOFF_RULE_ID == "bmd_compute.plane_wave_cutoff"
-    # Step 5 is a BMD Static Energy after a relaxation: max(620, relaxation).
     assert ranking == max(ENCUT_STATIC_FINAL_DEFAULT, relaxation)
-    # No step is below any POTCAR's ENMAX.
     assert early >= record["max_enmax_ev"]
 
 
@@ -84,65 +90,100 @@ def test_search_record_uses_bmd_potcar_symbols_and_metadata():
     assert record["max_enmax_ev"] == 499.034
 
 
-def test_si8_cutoffs_are_cheaper_than_the_old_fixed_values(si_record):
-    # Previously 430 / 580 / 620 eV for every search.
-    assert ladder_cutoffs(si_record) == {"early": 250, "relaxation": 350, "ranking": 620}
-
-
 def test_early_cutoff_rounds_up_to_50_ev():
+    assert incar_policy.EARLY_STEP_ENCUT_MULTIPLIER == 1.0
     assert incar_policy.early_step_encut(245.345) == 250
     assert incar_policy.early_step_encut(400.0) == 400
     assert incar_policy.early_step_encut(400.001) == 450
     assert incar_policy.early_step_encut(499.034) == 500
 
 
-def test_addgrid_follows_bmd_stages(si_record):
-    # Relaxation protocol: no ADDGRID (steps 3-4). Static Energy keeps it (step 5).
-    assert [("ADDGRID" in _settings(si_record, n)) for n in range(1, 6)] == [True, True, False, False, True]
-    assert _settings(si_record, 5)["ADDGRID"] is True
+# --- Steps 1-3: the USPEX manual's example INCARs (lab decision) -------------
+
+MANUAL = [
+    {"PREC": "Low", "EDIFF": 1e-2, "EDIFFG": 1e-1, "NSW": 65, "IBRION": 2, "POTIM": 0.02,
+     "ISIF": 4, "ISMEAR": 1, "SIGMA": 0.10},
+    {"PREC": "Normal", "EDIFF": 1e-3, "EDIFFG": 1e-2, "NSW": 55, "IBRION": 1, "POTIM": 0.30,
+     "ISIF": 4, "ISMEAR": 1, "SIGMA": 0.08},
+    {"PREC": "Normal", "EDIFF": 1e-3, "EDIFFG": 1e-2, "NSW": 65, "IBRION": 2, "POTIM": 0.02,
+     "ISIF": 3, "ISMEAR": 1, "SIGMA": 0.07},
+]
 
 
-def test_ladder_shape_follows_the_manual(si_record):
-    assert NUM_STEPS == 5
-    assert [_settings(si_record, n)["ISIF"] for n in range(1, 6)] == [4, 4, 3, 3, 2]
-    assert _settings(si_record, 5)["NSW"] == 0
-    assert _settings(si_record, 5)["IBRION"] == -1
-    assert (_settings(si_record, 1)["IBRION"], _settings(si_record, 1)["POTIM"]) == (2, 0.02)
-    assert all(
-        (_settings(si_record, n)["IBRION"], _settings(si_record, n)["POTIM"]) == (1, 0.3)
-        for n in (2, 3, 4)
-    )
+@pytest.mark.parametrize("step", [1, 2, 3])
+def test_manual_steps_set_only_the_manual_tags_and_search_wide_tags(si_record, step):
+    settings = dict(_settings(si_record, step))
+    encut = settings.pop("ENCUT")
+    assert encut == (250 if step < 3 else 350)
+    assert settings == {**MANUAL[step - 1], **SEARCH_WIDE}
+    for key in ("ALGO", "LREAL", "LASPH", "NELM", "ADDGRID"):
+        assert key not in settings
 
 
-def test_convergence_tightens_monotonically_to_bmd_standards(si_record):
-    ediff = [_settings(si_record, n)["EDIFF"] for n in range(1, 6)]
-    assert ediff == sorted(ediff, reverse=True)
-    assert ediff[0] == 1e-2
-    assert ediff[3] == ediff[4] == 1e-6  # BMD's EDIFF on every stage
-    assert [_settings(si_record, n)["EDIFFG"] for n in (1, 2, 3)] == [1e-1, 1e-2, 1e-3]
-    assert _settings(si_record, 4)["EDIFFG"] == -0.01  # BMD pass-1 force criterion
+# --- Step 4: BMD Geometry Optimisation pass 1, unchanged ----------------------
+
+def test_step_4_is_bmd_geometry_optimisation_pass_1(si_record):
+    settings = _settings(si_record, 4)
+    pass_1, _ = bmd_stage_settings(si_record)
+    # Every tag BMD's generator writes for pass 1, plus only the search-wide tags.
+    assert {key: settings[key] for key in pass_1} == {**pass_1, **{k: v for k, v in SEARCH_WIDE.items() if k in pass_1}}
+    assert set(settings) == set(pass_1) | set(SEARCH_WIDE)
+    # ... which are the protocol's documented pass-1 settings.
+    protocol = {key: value for key, value in COMMON_RELAX_SETTINGS.items() if value is not None}
+    protocol.update(PASS_CONVERGENCE[1])
+    assert {key: settings[key] for key in protocol} == protocol
+    assert "ADDGRID" not in settings  # the protocol removes it
+    assert settings["ENCUT"] == si_record["ENCUT"] == 350
+    assert (settings["ALGO"], settings["NSW"], settings["NELM"]) == ("Fast", 99, 200)
+    assert (settings["ISMEAR"], settings["SIGMA"]) == (0, 0.2)
+    assert incar_policy_record(si_record)["step_4_protocol"] == {
+        "id": PROTOCOL_ID, "version": 1, "pass": 1,
+    }
 
 
-def test_smearing(si_record):
-    for step in (1, 2, 3):
-        assert _settings(si_record, step)["ISMEAR"] == 1  # Methfessel-Paxton, manual section 3.1
-    assert [_settings(si_record, n)["SIGMA"] for n in (1, 2, 3)] == [0.10, 0.10, 0.05]
-    final = dict(incar_policy.FINAL_SMEARING_NEEDS_LAB_DECISION)
-    for step in (4, 5):
-        assert {key: _settings(si_record, step)[key] for key in ("ISMEAR", "SIGMA")} == final
+# --- Step 5: ranking single point --------------------------------------------
+
+def test_step_5_is_a_bmd_static_with_ranking_smearing(si_record):
+    settings = _settings(si_record, 5)
+    _, static = bmd_stage_settings(si_record)
+    assert (settings["ISIF"], settings["IBRION"], settings["NSW"]) == (2, -1, 0)
+    assert (settings["ISMEAR"], settings["SIGMA"]) == (0, 0.05)
+    assert static["ISMEAR"] == -5  # BMD's static uses tetrahedron; the search does not
+    assert settings["ENCUT"] == 620
+    assert settings["EDIFF"] == 1e-6
+    assert settings["ADDGRID"] is True and static["ADDGRID"] is True
+    for key in ("ALGO", "PREC", "LREAL", "LASPH", "NELM"):
+        assert settings[key] == static[key]
+    for key in incar_policy.OUTPUT_ONLY_STATIC_KEYS:
+        assert key not in settings
+    assert {"NEDOS", "LORBIT", "LVTOT", "LAECHG", "LELF"} <= set(static)
 
 
-def test_nothing_depends_on_the_structure_and_no_pressure(si_record):
+def test_ranking_cutoff_ignores_the_adaptive_refinement_cutoff():
+    # A managed BMD static after the adaptive protocol uses max(620, E0 + 150);
+    # a search has no refinement, so step 5 uses max(620, E0).
+    record = search_cutoff_record(["Li", "O"])
+    _, static = bmd_stage_settings(record)
+    assert static["ENCUT"] == 800
+    assert _settings(record, 5)["ENCUT"] == 650
+
+
+# --- All steps ----------------------------------------------------------------
+
+def test_search_wide_tags_and_nothing_structure_dependent(si_record):
     for step in incar_ladder(si_record):
         settings = step.settings
-        assert settings["ISPIN"] == 1
+        assert {key: settings[key] for key in SEARCH_WIDE} == SEARCH_WIDE
         assert settings["NCORE"] == DEFAULT_NCORE == 4
-        assert settings["KPAR"] == incar_policy.FIXED_KPAR_NEEDS_LAB_DECISION
-        assert settings["LWAVE"] is False and settings["LCHARG"] is False
         assert not incar_policy.FORBIDDEN_KEYS & set(settings)
     for text in incar_texts(si_record).values():
         for key in ("PSTRESS", "MAGMOM", "NBANDS"):
             assert key not in text
+
+
+def test_ladder_shape():
+    assert NUM_STEPS == 5
+    assert len(incar_policy.STEP_SOURCES) == 5
 
 
 def test_render_refuses_forbidden_keys():
@@ -160,6 +201,16 @@ def test_ladder_requires_a_bmd_cutoff_record(record):
     with pytest.raises(IncarPolicyError) as excinfo:
         incar_ladder(record)
     assert excinfo.value.code == incar_policy.INVALID_CUTOFF_RECORD_CODE
+
+
+def test_record_from_other_metadata_is_refused(si_record, monkeypatch, tmp_path):
+    # The generator resolves pass 1 from the current metadata; a record made
+    # from different ENMAX values no longer matches it.
+    use_enmax_metadata(monkeypatch, tmp_path / "other.json", synthetic_enmax_metadata({"Si": 300.0}))
+    stale = dict(si_record, metadata=dict(si_record["metadata"], digest="sha256:other"))
+    with pytest.raises(IncarPolicyError) as excinfo:
+        incar_ladder(stale)
+    assert excinfo.value.code == incar_policy.BMD_STAGE_MISMATCH_CODE
 
 
 @pytest.mark.parametrize(
@@ -193,26 +244,19 @@ def test_ladder_checks_parallel_tags_against_the_rank_count(si_record):
     assert incar_policy_record(si_record, ranks=96)["ranks_per_relaxation"] == 96
 
 
-def test_values_needing_lab_decision_are_listed(si_record):
-    assert set(incar_policy.VALUES_NEEDING_LAB_DECISION) == {
-        "EARLY_STEP_ENCUT_NEEDS_LAB_DECISION",
-        "EARLY_STEP_PREC_NEEDS_LAB_DECISION",
-        "STEP_4_CONVERGENCE_NEEDS_LAB_DECISION",
-        "FINAL_SMEARING_NEEDS_LAB_DECISION",
-        "FIXED_KPAR_NEEDS_LAB_DECISION",
-        "NUM_STEPS",
-    }
-    assert incar_policy.EARLY_STEP_ENCUT_NEEDS_LAB_DECISION == 1.0
-    assert all(_settings(si_record, n)["PREC"] == "Accurate" for n in range(1, 6))
-    assert {key: _settings(si_record, 4)[key] for key in ("EDIFF", "EDIFFG")} == dict(
-        incar_policy.STEP_4_CONVERGENCE_NEEDS_LAB_DECISION
-    )
+def test_only_kpar_still_needs_a_lab_decision(si_record):
+    assert incar_policy.VALUES_NEEDING_LAB_DECISION == {"FIXED_KPAR_NEEDS_LAB_DECISION": 1}
+    for removed in ("EARLY_STEP_PREC_NEEDS_LAB_DECISION", "STEP_4_CONVERGENCE_NEEDS_LAB_DECISION",
+                    "FINAL_SMEARING_NEEDS_LAB_DECISION", "EARLY_STEP_ENCUT_NEEDS_LAB_DECISION"):
+        assert not hasattr(incar_policy, removed)
 
 
-def test_policy_record_carries_the_resolved_cutoff_record(si_record):
+def test_policy_record(si_record):
     record = incar_policy_record(si_record)
     assert record["plane_wave_cutoff"] == si_record
     assert record["cutoffs"] == {"early": 250, "relaxation": 350, "ranking": 620}
+    assert record["lab_decision"]["date"] == "2026-11-05"
+    assert "final relaxation step must be consistent" in record["lab_decision"]["rule"]
     assert record["values_needing_lab_decision"] == incar_policy.VALUES_NEEDING_LAB_DECISION
     assert [row["step"] for row in record["steps"]] == [1, 2, 3, 4, 5]
 
@@ -261,8 +305,6 @@ def test_encut_covers_the_search_potcars(folder, elements, cutoffs):
 
 
 def test_enmax_check_is_a_safety_net(si_record, monkeypatch):
-    # An ENMAX above a step's cutoff (for example from a mismatched POTCAR)
-    # is refused, never adjusted.
     with pytest.raises(IncarPolicyError) as excinfo:
         incar_policy.require_encut_covers_enmax(300.0, si_record)
     error = excinfo.value
@@ -271,8 +313,7 @@ def test_enmax_check_is_a_safety_net(si_record, monkeypatch):
     with pytest.raises(IncarPolicyError) as excinfo:
         incar_policy.require_encut_covers_enmax(700.0, si_record)
     assert excinfo.value.diagnostic["steps"] == [1, 2, 3, 4, 5]
-    # A multiplier below 1 would put steps 1-2 below ENMAX.
-    monkeypatch.setattr(incar_policy, "EARLY_STEP_ENCUT_NEEDS_LAB_DECISION", 0.8)
+    monkeypatch.setattr(incar_policy, "EARLY_STEP_ENCUT_MULTIPLIER", 0.8)
     with pytest.raises(IncarPolicyError):
         incar_policy.require_encut_covers_enmax(si_record["max_enmax_ev"], si_record)
 

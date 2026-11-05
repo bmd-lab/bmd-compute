@@ -1,82 +1,81 @@
-"""INCAR ladder for USPEX structure searches (proposal; needs BMD review, #65).
+"""INCAR ladder for USPEX structure searches (#65; lab decision of 5 Nov 2026).
 
 USPEX copies ``Specific/INCAR_1 .. INCAR_N`` unchanged into every candidate's
 calculation, one file per relaxation step. One INCAR set therefore has to work
 for any candidate cell, and nothing in it may depend on a particular
 structure (no MAGMOM, no NBANDS, a fixed KPAR, ``ISPIN = 1``). The
 composition is fixed for a whole search, so values that depend only on the
-composition, such as the plane-wave cutoffs, can differ between searches and
-are still identical for every candidate.
+composition, such as the plane-wave cutoffs, are set once per search and are
+still identical for every candidate.
 
-Lab direction (docs/structure_search.md section 2): start from looser
-criteria than BMD standards and tighten step by step, so that the last steps
-match BMD standards. The ladder below combines the USPEX 25.0 manual's
-recommendations (section 3.1) with BMD's relaxation and static settings
-(``docs/methodology.md`` section 3):
+BMD scientific decision (roeeasher for the BMD Lab, 5 Nov 2026, recorded on
+PR #74):
 
-====  ==========================  ====  ======  =====  ===  ===================  =====  ======  =====================
-step  purpose                     ISIF  IBRION  POTIM  NSW  ENCUT (eV)           EDIFF  EDIFFG  smearing
-====  ==========================  ====  ======  =====  ===  ===================  =====  ======  =====================
-1     shape, far from a minimum   4     2       0.02   99   early                1e-2   1e-1    MP, SIGMA 0.10
-2     shape                       4     1       0.3    99   early                1e-3   1e-2    MP, SIGMA 0.10
-3     volume                      3     1       0.3    99   BMD relaxation       1e-4   1e-3    MP, SIGMA 0.05
-4     volume, BMD relax standard  3     1       0.3    99   BMD relaxation       1e-6   -0.01   final (Gauss 0.05)
-5     single point (ranking)      2     -1      -      0    max(620, relax.)     1e-6   -       final (Gauss 0.05)
-====  ==========================  ====  ======  =====  ===  ===================  =====  ======  =====================
+    The final relaxation step must be consistent with the accuracy of BMD's
+    Geometry Optimisation already implemented in bmd-compute. Before that,
+    follow the USPEX default recommendations (manual section 3.1).
 
-Cutoffs, from the search's POTCARs (``search_cutoff_record``):
+with two follow-up choices: the final relaxation is BMD Geometry
+Optimisation pass 1 unchanged, and a ranking single point follows it.
 
-- "BMD relaxation" is BMD's species-dependent relaxation cutoff,
-  ``bmd_compute.plane_wave_cutoff/1``:
-  ``ENCUT = ceil(1.3 x max ENMAX / 50 eV) x 50 eV``. It is resolved by the
-  same function and the same versioned ENMAX metadata as every BMD Geometry
-  Optimisation (``backend.calculations.geometry_relaxation.resolve_cutoff_record``,
-  ``potcar_enmax_PBE_64.json``), and the resolved record is part of the
-  ladder's provenance record. Like BMD's relaxation protocol, steps 3 and 4
-  set no ``ADDGRID``.
-- Step 5 uses ``max(620 eV, BMD relaxation cutoff)``, the cutoff of a BMD
-  Static Energy after a relaxation, and keeps that stage's ``ADDGRID``.
-- "early" is ``ceil(EARLY_STEP_ENCUT_NEEDS_LAB_DECISION x max ENMAX / 50 eV)
-  x 50 eV``. With the placeholder multiplier 1.0 it is never below any
-  POTCAR's ENMAX.
+====  =================================  ====  ======  =====  ===  ==================  =====  ======  =================  ========
+step  source                             ISIF  IBRION  POTIM  NSW  ENCUT               EDIFF  EDIFFG  smearing           PREC
+====  =================================  ====  ======  =====  ===  ==================  =====  ======  =================  ========
+1     USPEX manual INCAR_1               4     2       0.02   65   early               1e-2   1e-1    MP, SIGMA 0.10     Low
+2     USPEX manual INCAR_2               4     1       0.30   55   early               1e-3   1e-2    MP, SIGMA 0.08     Normal
+3     USPEX manual INCAR_3               3     2       0.02   65   relaxation          1e-3   1e-2    MP, SIGMA 0.07     Normal
+4     BMD Geometry Optimisation pass 1   3     2       -      99   relaxation          1e-6   -0.01   Gauss, SIGMA 0.2   Accurate
+5     ranking single point               2     -1      -      0    max(620, relax.)    1e-6   -       Gauss, SIGMA 0.05  Accurate
+====  =================================  ====  ======  =====  ===  ==================  =====  ======  =================  ========
+
+- Steps 1-3 set only what the manual's example INCARs set, plus the
+  search-wide tags below: no ALGO, LREAL, LASPH, NELM or ADDGRID.
+- Step 4 *is* BMD Geometry Optimisation pass 1
+  (``bmd_compute.geometry_relaxation/1``). Its INCAR is the one BMD's own
+  input generator writes for that stage for the search's elements
+  (:func:`bmd_stage_settings`); it is not retyped here.
+- Step 5 gives the energy USPEX ranks candidates by. USPEX ranks on VASP's
+  free energy F, not E0 (Si8 pilot: individual 27 has F = -39.702683 eV and
+  E0 = -39.702789 eV, and ``Individuals_extended`` shows -39.7027). With
+  step 4's SIGMA 0.2, the smearing-entropy term in F would favour metallic
+  candidates, so a single point with Gaussian SIGMA 0.05 follows. Its other
+  settings are those BMD's generator writes for a Static Energy after a
+  relaxation (including ADDGRID), except:
+
+  - ENCUT is ``max(620 eV, relaxation cutoff)``, the rule
+    ``docs/methodology.md`` section 3 gives for a static after a relaxation
+    without the adaptive geometry record. A search has no adaptive
+    refinement, so the managed workflow's ``max(620, E0 + 150)`` does not
+    apply;
+  - Gaussian ``SIGMA = 0.05`` replaces the tetrahedron method
+    (``ISMEAR = -5``), which candidates with coarse meshes can have too few
+    k-points for;
+  - ``ISIF = 2`` and ``IBRION = -1`` are written explicitly;
+  - output-only flags (``OUTPUT_ONLY_STATIC_KEYS``) are dropped: a search
+    runs thousands of calculations, and section 9 of the methodology
+    excludes output-writing flags from the declared methodology.
+
+Cutoffs, from the search's POTCARs (:func:`search_cutoff_record`):
+
+- "relaxation" is BMD's species-dependent relaxation cutoff,
+  ``bmd_compute.plane_wave_cutoff/1``: ``ceil(1.3 x max ENMAX / 50 eV) x
+  50 eV`` (the manual's "+30-40 %"). It is resolved by the same function and
+  versioned ENMAX metadata as every BMD Geometry Optimisation.
+- "early" is ``ceil(EARLY_STEP_ENCUT_MULTIPLIER x max ENMAX / 50 eV) x 50 eV``
+  with multiplier 1.0 (the manual's "default cutoff"), so it is never below
+  a POTCAR's ENMAX.
 
 Examples: Si gives 250 / 350 / 620 eV (early / relaxation / ranking); Li2O
 (Li_sv, ENMAX 499.034 eV) gives 500 / 650 / 650 eV.
 
-Reasons:
+Search-wide tags on every step (``SEARCH_WIDE_SETTINGS``): ``ISPIN = 1``,
+``NCORE = 4``, ``KPAR = 1`` (still a lab decision), ``LWAVE`` and ``LCHARG``
+off. No step sets ``PSTRESS`` (pressure comes from ``ExternalPressure`` in
+INPUT.txt, manual section 4.1), ``MAGMOM``, ``NBANDS``, ``NPAR``, ``LDAU``,
+``LSORBIT`` or ``IVDW``.
 
-- The last steps must match BMD standards (lab decision), and BMD's
-  relaxation standard is ``bmd_compute.geometry_relaxation/1`` with the
-  species-dependent cutoff; the volume-changing steps follow it, which also
-  avoids Pulay-stress volume errors. Only the fixed-volume steps use a lower
-  cutoff.
-- Every step's ENCUT must be at least the largest ENMAX of the search's
-  POTCARs (:func:`require_encut_covers_enmax`). With the current rules this
-  always holds; the check is a safety net and refuses a search, never
-  adjusts it.
-- Step 4 uses BMD's pass-1 relaxation convergence (EDIFF 1e-6, forces below
-  0.01 eV/A), so the geometry the ranking energy is evaluated on meets BMD
-  standards. This relaxes every candidate, including poor ones, to that
-  standard and is probably the largest cost of a search; it is listed as a
-  lab decision. (BMD's relaxation protocol adds a tighter pass 2, EDIFF
-  1e-7 / -0.001 eV/A, which the search does not.)
-- Step 5 sets the energy USPEX ranks candidates by (the enthalpy is taken
-  from the last step). It uses the BMD Static Energy cutoff rule and EDIFF,
-  so steps 4 to 5 are the same relax-then-static sequence as the Relaxed
-  Energy workflow.
-- Steps 4 and 5 share the final-step smearing so that the geometry and the
-  ranking energy use the same occupations. (BMD's relaxation standard itself
-  uses Gaussian smearing with SIGMA 0.2 eV.)
-- Methfessel-Paxton smearing in steps 1 to 3 follows the manual: many
-  sampled structures are metallic.
-- No PSTRESS: pressure is set only by ``ExternalPressure`` in INPUT.txt
-  (manual section 4.1).
-- ``LWAVE`` and ``LCHARG`` are off because a search runs thousands of VASP
-  calculations.
-
-Values still awaiting a lab decision are module constants whose names say so
-(``*_NEEDS_LAB_DECISION`` in :data:`VALUES_NEEDING_LAB_DECISION`). Phase 0
-(#59) should calibrate them.
+The only value still awaiting a lab decision is
+``FIXED_KPAR_NEEDS_LAB_DECISION`` (see :data:`VALUES_NEEDING_LAB_DECISION`).
 """
 
 from __future__ import annotations
@@ -84,6 +83,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, Decimal
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -91,6 +91,8 @@ from backend.calculations.geometry_relaxation import (
     CUTOFF_INCREMENT_EV,
     CUTOFF_RULE_ID,
     CUTOFF_RULE_VERSION,
+    PROTOCOL_ID,
+    PROTOCOL_VERSION,
     resolve_cutoff_record,
 )
 from backend.calculations.registry import CalculationValidationError
@@ -102,39 +104,21 @@ from backend.structure_search.potcar import POTCAR_FUNCTIONAL, bmd_potcar_symbol
 INCAR_POLICY_ID = "bmd_compute.structure_search_incar"
 INCAR_POLICY_VERSION = 1
 
+LAB_DECISION = {
+    "date": "2026-11-05",
+    "decided_by": "roeeasher for the BMD Lab",
+    "recorded_in": "https://github.com/bmd-lab/bmd-compute/pull/74#issuecomment-6654619861",
+    "rule": (
+        "The final relaxation step must be consistent with the accuracy of BMD's "
+        "Geometry Optimisation already implemented in bmd-compute. Before that, "
+        "follow the USPEX default recommendations (manual section 3.1)."
+    ),
+}
+
 
 # ---------------------------------------------------------------------------
-# Values that need a lab decision. Each is a placeholder chosen as described;
-# change it here and update the golden INCAR files and docs/methodology.md.
+# The one value that still needs a lab decision.
 # ---------------------------------------------------------------------------
-
-# Multiplier of the early-step (1 and 2) cutoff rule:
-# ENCUT = ceil(multiplier x max ENMAX / 50 eV) x 50 eV. Placeholder 1.0, so
-# the early cutoff is the lowest 50 eV step at or above every POTCAR's ENMAX
-# (Si: 250 eV). A value below 1 would put steps 1-2 below ENMAX, which
-# require_encut_covers_enmax refuses. Replaces the earlier fixed 430 eV,
-# which refused every search containing Li (Li_sv, ENMAX 499.034 eV) or He
-# (478.896 eV).
-EARLY_STEP_ENCUT_NEEDS_LAB_DECISION = 1.0
-
-# PREC of the loose steps 1 and 2. The manual's ladder starts with Low, then
-# Normal; Accurate also sets denser FFT grids, so these steps cost more than
-# they need to. Kept at BMD's Accurate until the lab decides.
-EARLY_STEP_PREC_NEEDS_LAB_DECISION = "Accurate"
-
-# Convergence of step 4. BMD's relaxation standard relaxes every candidate,
-# including poor ones that will never be shortlisted (the shortlist is
-# re-relaxed by Relaxed Energy anyway), and is probably the main cost of a
-# search. The alternative is the manual's final tolerances (EDIFF 1e-4,
-# EDIFFG 1e-3) or a value in between; Phase 0 can measure the cost.
-STEP_4_CONVERGENCE_NEEDS_LAB_DECISION: Mapping[str, Any] = {"EDIFF": 1e-6, "EDIFFG": -0.01}
-
-# Smearing of steps 4 and 5 (the final geometry and the ranking energy).
-# Options under discussion: Methfessel-Paxton (ISMEAR 1) with a small SIGMA,
-# or Gaussian (ISMEAR 0) with SIGMA 0.05. Placeholder: Gaussian, SIGMA 0.05.
-# BMD's tetrahedron method (ISMEAR -5, used by PBE Static Energy) is not an
-# option: candidates with coarse meshes can have fewer k-points than it needs.
-FINAL_SMEARING_NEEDS_LAB_DECISION: Mapping[str, Any] = {"ISMEAR": 0, "SIGMA": 0.05}
 
 # KPAR for every step. Because the INCAR is the same for every candidate, KPAR
 # must work for any k-point count (rules in validate_parallel_tags). KPAR = 1
@@ -143,16 +127,24 @@ FINAL_SMEARING_NEEDS_LAB_DECISION: Mapping[str, Any] = {"ISMEAR": 0, "SIGMA": 0.
 # notes measured KPAR as worth up to 9x on a k-point-dense cell. But
 # KPAR = 4 exceeds NKPTS for candidates with fewer than 4 irreducible
 # k-points, which a search does produce (large cells, coarse early
-# KresolStart). So the placeholder stays at 1 until the Phase 0 pilot (#59)
-# shows the speed-up on real search candidates, and how VASP behaves when
+# KresolStart). So it stays at 1 until the full-node test (#59) shows the
+# speed-up on real search candidates, and how VASP behaves when
 # KPAR > NKPTS.
 FIXED_KPAR_NEEDS_LAB_DECISION = 1
 
+VALUES_NEEDING_LAB_DECISION = {
+    "FIXED_KPAR_NEEDS_LAB_DECISION": FIXED_KPAR_NEEDS_LAB_DECISION,
+}
 
 
 # ---------------------------------------------------------------------------
-# Fixed parts of the policy.
+# Decided parts of the policy.
 # ---------------------------------------------------------------------------
+
+# Multiplier of the early-step (1 and 2) cutoff rule:
+# ENCUT = ceil(multiplier x max ENMAX / 50 eV) x 50 eV. 1.0 is the manual's
+# "default cutoff": the lowest 50 eV step at or above every POTCAR's ENMAX.
+EARLY_STEP_ENCUT_MULTIPLIER = 1.0
 
 # MPI ranks of one relaxation (docs/structure_search.md section 4: 4 x 48 on
 # a 192-core node; to be measured in Phase 0). The INCARs do not contain the
@@ -165,26 +157,34 @@ DEFAULT_RANKS_PER_RELAXATION = 48
 # (3-atom Sc2C, 65 irreducible k-points), not from search candidates, so
 # they are not general results. NPAR is never set together with NCORE.
 
-# Ionic step limit of every relaxation step: BMD's relaxation value
-# (docs/methodology.md section 3, adopted from atomate2).
-RELAX_STEP_NSW = 99
-
-# Settings shared by every step: BMD's common stage settings
-# (docs/methodology.md section 3) plus what a search must fix for all
-# candidates. Steps 3 and 4 remove ADDGRID, as BMD's relaxation protocol
-# does; steps 1-2 and 5 keep it (step 5 as BMD's Static Energy).
-COMMON_SETTINGS: Mapping[str, Any] = {
-    "PREC": "Accurate",
-    "LREAL": False,
-    "ADDGRID": True,
-    "LASPH": True,
-    "NELM": 200,
+# Tags every step sets, whatever its source; they override the BMD stage
+# values where both set a tag.
+SEARCH_WIDE_SETTINGS: Mapping[str, Any] = {
     "ISPIN": 1,
     "NCORE": DEFAULT_NCORE,
     "KPAR": FIXED_KPAR_NEEDS_LAB_DECISION,
     "LWAVE": False,
     "LCHARG": False,
 }
+
+# Steps 1-3: exactly the tags of the USPEX 25.0 manual's example INCAR_1..3
+# (section 3.1), as given in the lab decision. "early" and "relaxation" are
+# replaced by the search's cutoffs.
+MANUAL_STEPS: tuple[Mapping[str, Any], ...] = (
+    {"PREC": "Low", "ENCUT": "early", "EDIFF": 1e-2, "EDIFFG": 1e-1, "NSW": 65,
+     "IBRION": 2, "POTIM": 0.02, "ISIF": 4, "ISMEAR": 1, "SIGMA": 0.10},
+    {"PREC": "Normal", "ENCUT": "early", "EDIFF": 1e-3, "EDIFFG": 1e-2, "NSW": 55,
+     "IBRION": 1, "POTIM": 0.30, "ISIF": 4, "ISMEAR": 1, "SIGMA": 0.08},
+    {"PREC": "Normal", "ENCUT": "relaxation", "EDIFF": 1e-3, "EDIFFG": 1e-2, "NSW": 65,
+     "IBRION": 2, "POTIM": 0.02, "ISIF": 3, "ISMEAR": 1, "SIGMA": 0.07},
+)
+
+# Step 5 overrides of BMD's static-after-relaxation INCAR.
+RANKING_SMEARING: Mapping[str, Any] = {"ISMEAR": 0, "SIGMA": 0.05}
+RANKING_IONIC: Mapping[str, Any] = {"ISIF": 2, "IBRION": -1, "NSW": 0}
+# Output-writing flags of BMD's Static Energy that the ranking single point
+# drops (docs/methodology.md section 9: not part of the declared methodology).
+OUTPUT_ONLY_STATIC_KEYS = frozenset({"NEDOS", "LORBIT", "LVTOT", "LAECHG", "LELF", "LVHAR"})
 
 # Keys that must never appear: pressure belongs in INPUT.txt; MAGMOM and
 # NBANDS depend on the structure and cannot be shared by every candidate; and
@@ -198,9 +198,10 @@ FORBIDDEN_KEYS = frozenset({"PSTRESS", "MAGMOM", "NBANDS", "LDAU", "LSORBIT", "I
 # factor). The equivalent spacing is 64**(-1/3) = 0.25 1/A, which in USPEX's
 # KresolStart units (2 pi / A) is 0.0398. Rounded meshes from pymatgen give
 # 0.040-0.042 in practice; the limit below is that value rounded to 0.04.
-# Steps 4 and 5 (BMD-standard steps) must be at least this dense. How USPEX
-# rounds a KresolStart value to a mesh is not documented here; Phase 0 should
-# compare the KPOINTS USPEX writes with pymatgen's mesh for the same cell.
+# Steps 4 and 5 (the BMD-standard steps) must be at least this dense; steps
+# 1-3 use the user's spec values. How USPEX rounds a KresolStart value to a
+# mesh is not documented here; Phase 0 should compare the KPOINTS USPEX writes
+# with pymatgen's mesh for the same cell.
 BMD_RECIPROCAL_DENSITY = 64
 BMD_EQUIVALENT_KRESOL = BMD_RECIPROCAL_DENSITY ** (-1.0 / 3.0) / (2.0 * math.pi)
 BMD_STANDARD_MAX_KRESOL = 0.04
@@ -211,28 +212,42 @@ BMD_STANDARD_STEPS = (4, 5)
 ENCUT_BELOW_ENMAX_CODE = "encut_below_potcar_enmax"
 POTCAR_ENMAX_MISMATCH_CODE = "potcar_enmax_differs_from_cutoff_record"
 INVALID_CUTOFF_RECORD_CODE = "invalid_plane_wave_cutoff_record"
+BMD_STAGE_MISMATCH_CODE = "bmd_stage_inputs_differ_from_search_record"
 
-_STEP_PURPOSES = (
-    "fixed-volume relaxation far from a minimum",
-    "fixed-volume relaxation",
-    "full relaxation including volume",
-    "full relaxation to BMD relaxation standards",
-    "single point: the energy USPEX ranks candidates by",
+STEP_SOURCES = (
+    "USPEX manual INCAR_1 (section 3.1)",
+    "USPEX manual INCAR_2 (section 3.1)",
+    "USPEX manual INCAR_3 (section 3.1)",
+    f"BMD Geometry Optimisation pass 1 ({PROTOCOL_ID}/{PROTOCOL_VERSION})",
+    "ranking single point (BMD Static Energy after a relaxation, Gaussian SIGMA 0.05)",
 )
-NUM_STEPS = len(_STEP_PURPOSES)
+NUM_STEPS = len(STEP_SOURCES)
 
 
 @dataclass(frozen=True)
 class LadderStep:
-    """One relaxation step of the ladder: its purpose and its INCAR settings."""
+    """One relaxation step of the ladder: where it comes from and its INCAR settings."""
 
     number: int
-    purpose: str
+    source: str
     settings: Mapping[str, Any]
 
 
-def _mp(sigma: float) -> dict[str, Any]:
-    return {"ISMEAR": 1, "SIGMA": sigma}
+class IncarPolicyError(CalculationValidationError):
+    """A structure search does not fit the INCAR ladder."""
+
+    def __init__(self, message: str, *, code: str, suggestion: str | None = None, **details):
+        super().__init__(
+            message,
+            suggestion=suggestion,
+            diagnostic={
+                "code": code,
+                "policy_id": INCAR_POLICY_ID,
+                "policy_version": INCAR_POLICY_VERSION,
+                **details,
+            },
+        )
+        self.code = code
 
 
 def validate_parallel_tags(kpar: int, ncore: int, ranks: int) -> None:
@@ -287,6 +302,9 @@ def _require_cutoff_record(record: Any) -> Mapping[str, Any]:
         and isinstance(record.get("max_enmax_ev"), (int, float))
         and math.isfinite(float(record["max_enmax_ev"]))
         and float(record["max_enmax_ev"]) > 0
+        and isinstance(record.get("potcars"), list)
+        and bool(record["potcars"])
+        and isinstance(record.get("functional"), str)
     )
     if not valid:
         raise IncarPolicyError(
@@ -298,9 +316,9 @@ def _require_cutoff_record(record: Any) -> Mapping[str, Any]:
 
 
 def early_step_encut(max_enmax_ev: float) -> int:
-    """``ceil(EARLY_STEP_ENCUT_NEEDS_LAB_DECISION x max ENMAX / 50 eV) x 50 eV``."""
+    """``ceil(EARLY_STEP_ENCUT_MULTIPLIER x max ENMAX / 50 eV) x 50 eV``."""
 
-    scaled = Decimal(repr(float(max_enmax_ev))) * Decimal(repr(EARLY_STEP_ENCUT_NEEDS_LAB_DECISION))
+    scaled = Decimal(repr(float(max_enmax_ev))) * Decimal(repr(EARLY_STEP_ENCUT_MULTIPLIER))
     steps = (scaled / Decimal(CUTOFF_INCREMENT_EV)).to_integral_value(rounding=ROUND_CEILING)
     return int(steps) * CUTOFF_INCREMENT_EV
 
@@ -321,6 +339,86 @@ def ladder_cutoffs(cutoff_record: Mapping[str, Any]) -> dict[str, int]:
     }
 
 
+def _element_of(symbol: str) -> str:
+    return str(symbol).split("_", 1)[0]
+
+
+def _plain(value):
+    # pymatgen returns ENCUT as a float (350.0); INCARs here write whole numbers.
+    if isinstance(value, float) and value.is_integer() and abs(value) >= 1:
+        return int(value)
+    return value
+
+
+@lru_cache(maxsize=32)
+def _bmd_stage_incars(symbols: tuple[str, ...], functional: str, metadata_digest: str) -> tuple[dict, dict]:
+    """BMD's generated INCARs for pass 1 and the static after it, for these POTCARs.
+
+    Builds a placeholder cell with one atom of each element and asks BMD's
+    own input generators (POTCAR.spec mode, no POTCAR file is read) for the
+    INCARs of a BMD Standard Geometry Relaxation followed by a PBE Static
+    Energy. Only composition-level settings are used from them: every key
+    that depends on a structure is either absent for a non-magnetic PBE
+    stage or forbidden by FORBIDDEN_KEYS. ``metadata_digest`` only keys the
+    cache, so a change of ENMAX metadata regenerates the INCARs.
+    """
+
+    from pymatgen.core import Lattice, Structure
+
+    from backend.calculations.geometry_relaxation import (
+        freeze_plane_wave_cutoffs,
+        protocol_relaxation_stages,
+    )
+    from backend.calculations.models import StageSpec, StageType, Theory, WorkflowSpec
+    from backend.calculations.potcar_record import input_set_potcar_symbols
+    from backend.generated_inputs import generated_input_stage_previews
+
+    elements = [_element_of(symbol) for symbol in symbols]
+    coords = [[i / len(elements)] * 3 for i in range(len(elements))]
+    structure = Structure(Lattice.cubic(4.0 * len(elements)), elements, coords)
+    workflow = WorkflowSpec(stages=(
+        *protocol_relaxation_stages(),
+        StageSpec(stage_type=StageType.STATIC, theory=Theory.PBE),
+    ))
+    workflow = freeze_plane_wave_cutoffs(structure, workflow, potcar_functional=functional)
+    previews = generated_input_stage_previews(structure, workflow, potcar_functional=functional)
+    generated_symbols = tuple(input_set_potcar_symbols(previews[0]["input_set"]))
+    if generated_symbols != symbols:
+        raise IncarPolicyError(
+            f"BMD's generator selected POTCARs {list(generated_symbols)}, but the search's "
+            f"cutoff record has {list(symbols)}.",
+            code=BMD_STAGE_MISMATCH_CODE,
+        )
+    pass_1 = {key: _plain(value) for key, value in dict(previews[0]["input_set"].incar).items()}
+    static = {key: _plain(value) for key, value in dict(previews[2]["input_set"].incar).items()}
+    return pass_1, static
+
+
+def bmd_stage_settings(cutoff_record: Mapping[str, Any]) -> tuple[dict, dict]:
+    """(pass-1 INCAR, static-after-relaxation INCAR) BMD writes for this search's POTCARs.
+
+    The pass-1 INCAR must use exactly the search's resolved relaxation cutoff;
+    otherwise the two were resolved from different metadata and the search is
+    refused (``BMD_STAGE_MISMATCH_CODE``).
+    """
+
+    record = _require_cutoff_record(cutoff_record)
+    symbols = tuple(str(row["symbol"]) for row in record["potcars"])
+    digest = str((record.get("metadata") or {}).get("digest", ""))
+    pass_1, static = _bmd_stage_incars(symbols, str(record["functional"]), digest)
+    if int(pass_1.get("ENCUT", -1)) != int(record["ENCUT"]):
+        raise IncarPolicyError(
+            f"BMD's Geometry Optimisation resolved ENCUT {pass_1.get('ENCUT')} eV for these "
+            f"POTCARs, but the search's cutoff record has {record['ENCUT']} eV.",
+            code=BMD_STAGE_MISMATCH_CODE,
+        )
+    return dict(pass_1), dict(static)
+
+
+def _sorted(settings: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: settings[key] for key in sorted(settings)}
+
+
 def incar_ladder(
     cutoff_record: Mapping[str, Any],
     ranks: int = DEFAULT_RANKS_PER_RELAXATION,
@@ -333,82 +431,34 @@ def incar_ladder(
     NCORE are valid for it.
     """
 
-    validate_parallel_tags(COMMON_SETTINGS["KPAR"], COMMON_SETTINGS["NCORE"], ranks)
+    validate_parallel_tags(SEARCH_WIDE_SETTINGS["KPAR"], SEARCH_WIDE_SETTINGS["NCORE"], ranks)
     cutoffs = ladder_cutoffs(cutoff_record)
+    pass_1, static = bmd_stage_settings(cutoff_record)
 
-    final_smearing = dict(FINAL_SMEARING_NEEDS_LAB_DECISION)
-    step_4_convergence = dict(STEP_4_CONVERGENCE_NEEDS_LAB_DECISION)
-    relax = {"NSW": RELAX_STEP_NSW, "ALGO": "Fast"}
-    rows = (
-        {"ISIF": 4, "IBRION": 2, "POTIM": 0.02, **relax, "ENCUT": cutoffs["early"],
-         "EDIFF": 1e-2, "EDIFFG": 1e-1, **_mp(0.10)},
-        {"ISIF": 4, "IBRION": 1, "POTIM": 0.3, **relax, "ENCUT": cutoffs["early"],
-         "EDIFF": 1e-3, "EDIFFG": 1e-2, **_mp(0.10)},
-        {"ISIF": 3, "IBRION": 1, "POTIM": 0.3, **relax, "ENCUT": cutoffs["relaxation"],
-         "EDIFF": 1e-4, "EDIFFG": 1e-3, **_mp(0.05)},
-        {"ISIF": 3, "IBRION": 1, "POTIM": 0.3, **relax, "ENCUT": cutoffs["relaxation"],
-         **step_4_convergence, **final_smearing},
-        {"ISIF": 2, "IBRION": -1, "NSW": 0, "ALGO": "Normal",
-         "ENCUT": cutoffs["ranking"], "EDIFF": 1e-6, **final_smearing},
-    )
-    # Per-step overrides of COMMON_SETTINGS. A dict update keeps a key in
-    # COMMON_SETTINGS' position, so the INCAR line order is stable; ``None``
-    # removes the key.
-    overrides = {
-        1: {"PREC": EARLY_STEP_PREC_NEEDS_LAB_DECISION},
-        2: {"PREC": EARLY_STEP_PREC_NEEDS_LAB_DECISION},
-        3: {"ADDGRID": None},
-        4: {"ADDGRID": None},
-    }
+    manual = [
+        {key: (cutoffs[value] if key == "ENCUT" else value) for key, value in step.items()}
+        for step in MANUAL_STEPS
+    ]
+    ranking = {key: value for key, value in static.items() if key not in OUTPUT_ONLY_STATIC_KEYS}
+    ranking.update(RANKING_IONIC)
+    ranking.update(RANKING_SMEARING)
+    ranking["ENCUT"] = cutoffs["ranking"]
+    rows = (*manual, _sorted(pass_1), _sorted(ranking))
+
     steps = []
-    for index, (purpose, settings) in enumerate(zip(_STEP_PURPOSES, rows), start=1):
-        merged = {**settings, **COMMON_SETTINGS, **overrides.get(index, {})}
-        steps.append(LadderStep(
-            number=index,
-            purpose=purpose,
-            settings={key: value for key, value in merged.items() if value is not None},
-        ))
+    for index, (source, settings) in enumerate(zip(STEP_SOURCES, rows), start=1):
+        merged = {key: value for key, value in settings.items() if key not in SEARCH_WIDE_SETTINGS}
+        merged.update(SEARCH_WIDE_SETTINGS)
+        steps.append(LadderStep(number=index, source=source, settings=merged))
     return tuple(steps)
-
-
-
-# Every value a lab decision is still needed for. NUM_STEPS is listed because
-# the step count is a choice too: the manual suggests 4-5 steps, and the
-# spec's KresolStart must have exactly NUM_STEPS values
-# (require_spec_matches_ladder). Calling that check before INPUT.txt is
-# written belongs to the search entry point (#67).
-VALUES_NEEDING_LAB_DECISION = {
-    "EARLY_STEP_ENCUT_NEEDS_LAB_DECISION": EARLY_STEP_ENCUT_NEEDS_LAB_DECISION,
-    "EARLY_STEP_PREC_NEEDS_LAB_DECISION": EARLY_STEP_PREC_NEEDS_LAB_DECISION,
-    "STEP_4_CONVERGENCE_NEEDS_LAB_DECISION": dict(STEP_4_CONVERGENCE_NEEDS_LAB_DECISION),
-    "FINAL_SMEARING_NEEDS_LAB_DECISION": dict(FINAL_SMEARING_NEEDS_LAB_DECISION),
-    "FIXED_KPAR_NEEDS_LAB_DECISION": FIXED_KPAR_NEEDS_LAB_DECISION,
-    "NUM_STEPS": NUM_STEPS,
-}
-
-
-class IncarPolicyError(CalculationValidationError):
-    """A structure search does not fit the INCAR ladder."""
-
-    def __init__(self, message: str, *, code: str, suggestion: str | None = None, **details):
-        super().__init__(
-            message,
-            suggestion=suggestion,
-            diagnostic={
-                "code": code,
-                "policy_id": INCAR_POLICY_ID,
-                "policy_version": INCAR_POLICY_VERSION,
-                **details,
-            },
-        )
-        self.code = code
 
 
 def require_spec_matches_ladder(spec) -> None:
     """Check a search's KresolStart values against the ladder and BMD k-point policy.
 
     The spec must have one KresolStart value per ladder step, and the
-    BMD-standard steps must be at least as dense as BMD's k-point policy.
+    BMD-standard steps (4 and 5) must be at least as dense as BMD's k-point
+    policy. Steps 1-3 use the user's values.
     """
 
     kresol = tuple(spec.kresol_start)
@@ -445,9 +495,9 @@ def require_encut_covers_enmax(
     ``largest_enmax_ev`` is the largest ENMAX (eV) of the search's POTCARs,
     for example ``potcar.max_enmax(write_specific_potcars(...))``. Every
     step's ENCUT must be at least that value. With the current cutoff rules
-    this always holds; the check is a safety net (for example against a
-    multiplier below 1). A failing search is refused with code
-    ``ENCUT_BELOW_ENMAX_CODE``; the cutoff is never raised here.
+    this always holds; the check is a safety net. A failing search is
+    refused with code ``ENCUT_BELOW_ENMAX_CODE``; the cutoff is never raised
+    here.
     """
 
     enmax = float(largest_enmax_ev)
@@ -546,17 +596,20 @@ def incar_policy_record(
     """JSON-safe record of one search's ladder, for provenance.
 
     ``plane_wave_cutoff`` is the resolved cutoff record unchanged, in the same
-    form BMD freezes into a Geometry Optimisation stage.
+    form BMD freezes into a Geometry Optimisation stage, and
+    ``step_4_protocol`` records that step 4 is that protocol's pass 1.
     """
 
     return {
         "policy_id": INCAR_POLICY_ID,
         "policy_version": INCAR_POLICY_VERSION,
+        "lab_decision": dict(LAB_DECISION),
         "ranks_per_relaxation": ranks,
         "plane_wave_cutoff": dict(_require_cutoff_record(cutoff_record)),
         "cutoffs": ladder_cutoffs(cutoff_record),
+        "step_4_protocol": {"id": PROTOCOL_ID, "version": PROTOCOL_VERSION, "pass": 1},
         "steps": [
-            {"step": step.number, "purpose": step.purpose, "incar": dict(step.settings)}
+            {"step": step.number, "source": step.source, "incar": dict(step.settings)}
             for step in incar_ladder(cutoff_record, ranks)
         ],
         "bmd_standard_steps": list(BMD_STANDARD_STEPS),
@@ -575,36 +628,40 @@ def _incar_value(value) -> str:
 
 __all__ = [
     "BMD_EQUIVALENT_KRESOL",
+    "BMD_STAGE_MISMATCH_CODE",
     "BMD_STANDARD_MAX_KRESOL",
     "BMD_STANDARD_STEPS",
-    "COMMON_SETTINGS",
     "DEFAULT_RANKS_PER_RELAXATION",
-    "EARLY_STEP_PREC_NEEDS_LAB_DECISION",
+    "EARLY_STEP_ENCUT_MULTIPLIER",
     "ENCUT_BELOW_ENMAX_CODE",
-    "INVALID_CUTOFF_RECORD_CODE",
-    "POTCAR_ENMAX_MISMATCH_CODE",
-    "STEP_4_CONVERGENCE_NEEDS_LAB_DECISION",
-    "early_step_encut",
-    "ladder_cutoffs",
-    "require_encut_covers_enmax",
-    "require_potcars_match_cutoff_record",
-    "search_cutoff_record",
-    "EARLY_STEP_ENCUT_NEEDS_LAB_DECISION",
-    "FINAL_SMEARING_NEEDS_LAB_DECISION",
     "FIXED_KPAR_NEEDS_LAB_DECISION",
     "FORBIDDEN_KEYS",
     "INCAR_POLICY_ID",
     "INCAR_POLICY_VERSION",
+    "INVALID_CUTOFF_RECORD_CODE",
     "IncarPolicyError",
+    "LAB_DECISION",
     "LadderStep",
+    "MANUAL_STEPS",
     "NUM_STEPS",
-    "RELAX_STEP_NSW",
+    "OUTPUT_ONLY_STATIC_KEYS",
+    "POTCAR_ENMAX_MISMATCH_CODE",
+    "RANKING_IONIC",
+    "RANKING_SMEARING",
+    "SEARCH_WIDE_SETTINGS",
+    "STEP_SOURCES",
     "VALUES_NEEDING_LAB_DECISION",
+    "bmd_stage_settings",
+    "early_step_encut",
     "incar_ladder",
     "incar_policy_record",
     "incar_texts",
+    "ladder_cutoffs",
     "render_incar",
+    "require_encut_covers_enmax",
+    "require_potcars_match_cutoff_record",
     "require_spec_matches_ladder",
+    "search_cutoff_record",
     "validate_parallel_tags",
     "write_incar_files",
 ]
