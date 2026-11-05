@@ -122,22 +122,39 @@ def main() -> int:
     parser.add_argument("--bridge-timeout", type=int, default=3600)
     parser.add_argument("--which-cluster", type=int, choices=(-1, 0), default=-1,
                         help="USPEX whichCluster: 0 = local with core control, -1 = local without")
+    parser.add_argument("--resume", metavar="TAG",
+                        help="rerun USPEX in an existing WORK/search (restart test): keep INPUT.txt "
+                             "and Specific/, use a fresh spool WORK/spool_TAG and log uspex_master_TAG.log")
     args = parser.parse_args()
 
     work = args.work.resolve()
     search_dir = work / "search"
-    spool = work / "spool"
-    search_dir.mkdir(parents=True, exist_ok=False)
-    specific = search_dir / "Specific"
-    shutil.copytree(HERE / "Specific", specific)
-    shutil.copyfile(args.potcar, specific / "POTCAR_Si")
+    if args.resume:
+        # USPEX continues a search when it is rerun in the same folder (manual
+        # section 4.7). Only the bridge spool is new, as for a resumed attempt.
+        if not (search_dir / "INPUT.txt").is_file():
+            raise SystemExit(f"--resume needs an existing search in {search_dir}")
+        spool = work / f"spool_{args.resume}"
+        if spool.exists():
+            raise SystemExit(f"{spool} already exists; choose a new --resume tag")
+        master_log = work / f"uspex_master_{args.resume}.log"
+    else:
+        spool = work / "spool"
+        master_log = work / "uspex_master.log"
+        search_dir.mkdir(parents=True, exist_ok=False)
+        specific = search_dir / "Specific"
+        shutil.copytree(HERE / "Specific", specific)
+        shutil.copyfile(args.potcar, specific / "POTCAR_Si")
 
     bridge = bridge_script_path()
     if not str(bridge).startswith("/bmd/"):
         # USPEX runs the bridge inside the container, which only sees /bmd.
         raise SystemExit(f"the bmd-compute checkout must be under /bmd (bridge is {bridge})")
+    # On resume the wrapper is rewritten in place (INPUT.txt refers to its
+    # path), so it points at the new spool; INPUT.txt itself is not touched.
     wrapper = write_bridge_wrapper(search_dir, bridge, spool, args.bridge_timeout)
-    write_input(search_dir, wrapper, args.parallel, args.which_cluster)
+    if not args.resume:
+        write_input(search_dir, wrapper, args.parallel, args.which_cluster)
 
     master = build_master_command(
         singularity=args.singularity,
@@ -158,7 +175,7 @@ def main() -> int:
         "SINGULARITYENV_LANG": "C.UTF-8",
         "SINGULARITYENV_PYTHONIOENCODING": "utf-8",
     })
-    (work / "master_command.txt").write_text(
+    (work / ("master_command.txt" if not args.resume else f"master_command_{args.resume}.txt")).write_text(
         master.shell_line() + "\n# plus, set by the pilot: "
         + " ".join(f"{k}={v}" for k, v in sorted(master_env.items()) if k not in master.env or master.env[k] != v)
         + "\n"
@@ -180,7 +197,7 @@ def main() -> int:
         master_env,
         master.cwd,
         settings,
-        master_log=work / "uspex_master.log",
+        master_log=master_log,
         stop_event=stop,
     )
     print(f"USPEX master finished with status {status}")

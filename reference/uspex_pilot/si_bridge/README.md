@@ -80,3 +80,18 @@ grep -h "MPI startup(): Rank" -A13 $(ls $W/spool/logs/*.log | head -1) | head -1
 - The lowest-enthalpy structure should be diamond Si (space group 227).
 - Whether `whichCluster = 0` core control works in the container (if USPEX
   fails before the first CalcFold, retry with `-1 : whichCluster`).
+
+## Restart test
+
+`restart_test.sbatch` (same 8-core layout) starts the pilot search, sends it
+SIGTERM about a minute after `STOP_AFTER_GEN` generations (default 2) are
+complete, as SLURM does at the end of an allocation, then reruns USPEX in the
+same folder with a fresh bridge spool (`run_pilot.py --resume r1`). The job
+log reports which `results*/` folders exist afterwards, whether individual
+numbers and generations continue, and how the resumed run ended. It answers
+how a "resume search" attempt (#69) behaves.
+
+```bash
+REPO=/bmd/<user>/bmd-compute-pilot WORK=/bmd/<user>/uspex_restart_1 POTCAR_SI=<path> \
+  sbatch --export=ALL reference/uspex_pilot/si_bridge/restart_test.sbatch
+```
