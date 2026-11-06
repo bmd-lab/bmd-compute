@@ -276,10 +276,12 @@ def test_search_resources_are_the_exclusive_node_preset():
 def test_preview_plan_is_built_from_the_spec_defaults(formula):
     from backend.structure_search import admission, incar_policy
     from backend.structure_search.prediction_plan import reduce_composition
+    from backend.structure_search.search_plan import canonical_composition
     from backend.structure_search.spec import default_search_spec, search_defaults_record
 
     plan = build_prediction_plan(formula)
-    spec = default_search_spec(reduce_composition(parse_formula(formula)))
+    # Elements in the search plan's canonical order (Ca(OH)2 -> Ca, H, O).
+    spec = default_search_spec(canonical_composition(reduce_composition(parse_formula(formula))))
     admission.require_admissible_search(spec)
     assert plan["spec"] == spec.to_record()
     assert plan["defaults"] == search_defaults_record()

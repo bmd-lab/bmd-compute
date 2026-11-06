@@ -4,8 +4,10 @@ The front page's **New structure** option asks only for a chemical formula.
 This module parses the formula and shows the plan BMD Compute would run. It
 submits nothing (search submission is not implemented yet).
 
-Every default, limit and policy shown here comes from the authoritative
-search specification, never from this module:
+The preview is a view of the frozen, digest-addressed
+:class:`~backend.structure_search.search_plan.StructureSearchPlan` for the
+request, and shows its digest. Every default, limit and policy in that plan
+comes from the authoritative search specification, never from this module:
 
 * defaults: :func:`backend.structure_search.spec.default_search_spec` and
   :func:`~backend.structure_search.spec.search_defaults_record`;
@@ -33,10 +35,11 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from backend.calculations.registry import CalculationValidationError
-from backend.calculations.resources import structure_search_resources, walltime_seconds
+from backend.calculations.resources import walltime_seconds
 
 PLAN_SCHEMA = "bmd_compute.structure_prediction_preview"
-PLAN_SCHEMA_VERSION = 2
+# Version 3: a view of the frozen StructureSearchPlan, with its digest.
+PLAN_SCHEMA_VERSION = 3
 
 NEW_STRUCTURE_OUTPUT = "new_structure"
 
@@ -194,89 +197,96 @@ def preview_defaults() -> dict[str, Any]:
 def build_prediction_plan(formula: str, advanced: AdvancedSettings | None = None) -> dict[str, Any]:
     """The plan a New structure request for ``formula`` would run (preview only).
 
-    Raises :class:`FormulaError` for an unreadable formula and the spec's or
-    admission's validation error for a request outside the search scope.
+    The preview is a view of the frozen :class:`~backend.structure_search.search_plan.StructureSearchPlan`
+    for the request (``search_plan.build_search_plan_from_formula``) and shows its
+    digest. Raises :class:`FormulaError` for an unreadable formula and the spec's
+    or admission's validation error for a request outside the search scope.
     """
 
-    from backend.structure_search import admission, incar_policy, spec as spec_module
+    from backend.structure_search.search_plan import build_search_plan_from_formula
 
     advanced = advanced or AdvancedSettings()
-    entered = parse_formula(formula)
-    composition = reduce_composition(entered)
-    if len(composition) > admission.MAX_ELEMENTS:
-        # Checked before building a spec so the message names the formula.
-        raise FormulaError(
-            f"Structure prediction supports at most {admission.MAX_ELEMENTS} elements; "
-            f"{formula_text(composition)} has {len(composition)}.",
-            code=admission.TOO_MANY_ELEMENTS_CODE,
-        )
-    spec = spec_module.default_search_spec(
-        composition,
-        min_atoms=advanced.min_atoms,
-        max_atoms=advanced.max_atoms,
-        num_generations=advanced.num_generations,
-        walltime=advanced.walltime,
-    )
-    admission.require_admissible_search(spec)
+    plan = build_search_plan_from_formula(formula, advanced)
+    return preview_from_plan(plan, advanced_overrides=not advanced.is_empty())
 
-    cutoffs = incar_policy.ladder_cutoffs(incar_policy.search_cutoff_record(spec.elements))
-    step_cutoff = ("early", "early", "relaxation", "relaxation", "ranking")
+
+def _reduced_in_entered_order(entered: Mapping[str, Any], fallback: str) -> str:
+    """One formula unit of the entered formula, in the order it was typed (presentation only)."""
+
+    try:
+        return formula_text(reduce_composition(parse_formula(entered["entered_formula"])))
+    except (KeyError, TypeError, FormulaError):
+        return fallback
+
+
+def preview_from_plan(plan, *, advanced_overrides: bool = False) -> dict[str, Any]:
+    """The browser preview of a frozen search plan (every value read from the plan)."""
+
+    record = plan.record
+    composition = record["composition"]
+    entered = plan.provenance.get("request") or {}
+    search = record["search"]
+    spec = search["spec"]
+    ladder_record = record["screening_and_ranking"]
+    kpoints = {row["step"]: row["kresol"] for row in record["kpoints"]["steps"]}
+    validity = {row["step"]: row for row in record["candidate_validity"]["criteria"]}
     ladder = [
         {
-            "step": step,
-            "role": incar_policy.STEP_ROLES[step - 1],
-            "source": incar_policy.STEP_SOURCES[step - 1],
-            "encut_ev": cutoffs[step_cutoff[step - 1]],
-            "kresol": spec.kresol_start[step - 1],
-            "validity": dict(incar_policy.STEP_VALIDITY[step - 1]),
+            "step": row["step"],
+            "role": row["role"],
+            "source": row["source"],
+            "encut_ev": row["incar"]["ENCUT"],
+            "kresol": kpoints[row["step"]],
+            "validity": dict(validity[row["step"]]),
         }
-        for step in range(1, incar_policy.NUM_STEPS + 1)
+        for row in ladder_record["steps"]
     ]
-    formula_atoms = sum(spec.counts)
-    cell_sizes = [n for n in range(spec.min_atoms, spec.max_atoms + 1) if n % formula_atoms == 0]
-    record = spec.to_record()
-    resources = structure_search_resources(spec.walltime)
+    resources = record["resources"]
     return {
         "schema": PLAN_SCHEMA,
         "schema_version": PLAN_SCHEMA_VERSION,
-        "desired_output": NEW_STRUCTURE_OUTPUT,
-        "entered_formula": formula.strip(),
-        "formula": formula_text(composition),
-        "formula_atoms": formula_atoms,
-        "reduced_from_entered": composition != entered,
-        "advanced_overrides": not advanced.is_empty(),
-        "spec": record,
-        "defaults": spec_module.search_defaults_record(),
-        "scope": admission.admission_scope_record(),
+        "desired_output": record["desired_output"],
+        "plan_digest": plan.digest,
+        "search_plan_schema": f"{record['schema']}/{record['schema_version']}",
+        "entered_formula": entered.get("entered_formula", composition["search_formula"]),
+        # Shown to the user: the formula as typed, and its formula unit in the
+        # typed element order. The canonical form ("formula") is what the plan,
+        # its digest and the USPEX inputs use; it appears only in details.
+        "display_formula": entered.get("entered_formula") or composition["search_formula"],
+        "reduced_display_formula": _reduced_in_entered_order(entered, composition["search_formula"]),
+        "formula": composition["search_formula"],
+        "formula_atoms": composition["formula_atoms"],
+        "reduced_from_entered": bool(entered.get("reduced_from_entered")),
+        "reordered_from_entered": bool(entered.get("reordered_from_entered")),
+        "generator": plan.provenance.get("generator"),
+        "advanced_overrides": advanced_overrides,
+        "spec": spec,
+        "defaults": search["defaults"],
+        "scope": {key: value for key, value in record["admission"].items() if key != "decision"},
         "search": {
-            "method": "USPEX 25.0 evolutionary search, fixed composition (calculationType 300)",
-            "theory": "plain PBE, non-magnetic",
-            "pressure_gpa": spec.external_pressure_gpa,
-            "min_atoms": spec.min_atoms,
-            "max_atoms": spec.max_atoms,
-            "cell_sizes": cell_sizes,
-            "formula_units": [n // formula_atoms for n in cell_sizes],
-            "population_size": spec.resolved_population_size,
-            "initial_population_size": spec.resolved_initial_population_size,
-            "num_generations": spec.num_generations,
-            "stop_criterion": spec.stop_criterion,
-            "energy_grade": incar_policy.SEARCH_ENERGY_GRADE,
-            "equivalent_to_bmd_adaptive_relaxation": incar_policy.EQUIVALENT_TO_BMD_ADAPTIVE_RELAXATION,
+            "method": search["method"],
+            "theory": search["theory"],
+            "pressure_gpa": spec["external_pressure_gpa"],
+            "min_atoms": spec["min_atoms"],
+            "max_atoms": spec["max_atoms"],
+            "cell_sizes": search["cell_sizes"],
+            "formula_units": search["formula_units"],
+            "population_size": spec["population_size"],
+            "initial_population_size": spec["initial_population_size"],
+            "num_generations": spec["num_generations"],
+            "stop_criterion": spec["stop_criterion"],
+            "energy_grade": search["energy_grade"],
+            "equivalent_to_bmd_adaptive_relaxation": search["equivalent_to_bmd_adaptive_relaxation"],
             "ladder": ladder,
-            "cutoffs_ev": cutoffs,
-            "validity_enforced": incar_policy.STEP_VALIDITY_ENFORCED,
-            "walltime": spec.walltime,
-            "walltime_display": walltime_display(spec.walltime),
-            "resources": resources.to_dict(),
+            "cutoffs_ev": ladder_record["cutoffs"],
+            "validity_enforced": record["candidate_validity"]["enforced"],
+            "walltime": spec["walltime"],
+            "walltime_display": walltime_display(spec["walltime"]),
+            "resources": resources["request"],
+            "resources_status": resources["status"],
+            "resources_approved": resources["approved"],
         },
-        "refinement": {
-            "status": "planned, not yet available",
-            "candidates": spec_module.PLANNED_FINALIST_COUNT,
-            "selection": "lowest search-grade energy per atom, structurally distinct",
-            "method": "BMD adaptive geometry relaxation, then a plain-PBE static energy",
-            "protocols": ["bmd_compute.geometry_relaxation/1", "bmd_compute.geometry_convergence/1"],
-            "ranking": "final plain-PBE static energy per atom",
-        },
+        "refinement": record["refinement"],
         "submission_available": False,
     }
 
@@ -287,6 +297,7 @@ __all__ = [
     "MAX_FORMULA_LENGTH",
     "NEW_STRUCTURE_OUTPUT",
     "build_prediction_plan",
+    "preview_from_plan",
     "formula_text",
     "parse_formula",
     "preview_defaults",

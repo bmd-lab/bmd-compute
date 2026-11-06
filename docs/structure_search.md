@@ -449,6 +449,60 @@ left in place, would be enough (the optional `status_only` run); the
 bridge keeps withholding the files. Evidence and summary:
 `reference/uspex_pilot/validity_probe/results_23406856/`.
 
+### Frozen search plans and local preparation (USPEX integration step 3)
+
+A New structure request is planned as an immutable
+`StructureSearchPlan` (`backend/structure_search/search_plan.py`, schema
+`bmd_compute.structure_search_plan` v1) whose digest, `sha256:` of the
+canonical JSON, covers the whole record:
+
+| Section | Content | Source |
+| --- | --- | --- |
+| `request`, `composition` | Advanced overrides; the searched composition, reduced to one formula unit and in canonical element order | `prediction_plan.parse_formula` |
+| `search` | the resolved spec, the defaults record and whether it applied, cell sizes, energy grade | `spec` |
+| `admission` | decision and scope (fixed composition, ambient pressure, non-magnetic, plain PBE) | `admission` |
+| `screening_and_ranking`, `incar_files` | the full five-step ladder record and the exact `INCAR_1..5` texts | `incar_policy` |
+| `kpoints` | `KresolStart` per step, its source, and BMD's bound on steps 4–5 | `spec`, `incar_policy` |
+| `potcar` | functional, symbols, TITEL, ENMAX, dataset SHA-256, ENMAX-metadata digest, `POTCAR.spec` text; no POTCAR contents | `potcar`, cutoff record |
+| `candidate_validity` | per-step criteria, enforcement, POWER verification | `step_validity` |
+| `runtime`, `execution` | USPEX program and launch layout; `INPUT.txt` execution settings; launch-bridge script name and SHA-256 | `runtime`, `input_writer` |
+| `resources` | the exclusive-node request, marked `provisional_estimate`, `approved: false` | `resources` |
+
+Equivalent formulas give one plan: elements are put in canonical order
+(increasing Pauling electronegativity, ties and elements without one by
+symbol, the order of pymatgen's `Composition.formula`), so `SiO2` and `O2Si`
+have the same plan and digest. As before, a formula is reduced to one formula
+unit (`Si8` searches `Si`, `Si2O4` searches `SiO2`); reordering changes
+neither counts nor the cell-size range. The formula or spec as entered and
+the generating Git commit are kept in the plan's `provenance`, beside the
+record and outside the digest; a provenance that does not reduce to the
+planned composition is refused.
+
+The preview (`/predict`) is a view of this plan and shows its digest.
+`prepare_search_directory(plan, new_dir, bridge_path=...)` writes `INPUT.txt`,
+`Specific/INCAR_1..5`, `POTCAR.spec`, `search_plan.json` and
+`prepared_inputs.json` into a directory that must not exist yet, after
+refusing a wrong digest or a stale plan (today's code would plan the request
+differently). `verify_prepared_directory` checks that a directory holds
+exactly those files, without symbolic links, and that each equals what the
+frozen plan renders. Nothing is submitted; POTCAR files are staged only at
+execution.
+
+- The absolute launch-bridge path on POWER is a preparation binding:
+  outside the digest, recorded with the preparing commit in
+  `prepared_inputs.json`, and checked at execution by
+  `verify_execution_binding` (same path, a regular file, the SHA-256 in the
+  plan, plan still current). The bridge implementation hash and the runtime
+  launch policy are in the digest, so any change makes a plan stale.
+- `sleepSeconds` is 30 s, provisionally: its compatibility with real USPEX 25
+  has not been independently confirmed.
+- Symbolic links anywhere above or inside a prepared directory are refused.
+- **Workspace.** The USPEX container sees only `/bmd` (`-B /bmd`), so
+  production searches will need a dedicated writable search workspace under
+  `/bmd`, separate from the validation area (`/bmd/bmdguest/validation`) and
+  from ordinary calculations in `/bmd-db/guest`. It has not been created or
+  configured.
+
 ## 9. Open questions
 
 - Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks
@@ -466,3 +520,6 @@ bridge keeps withholding the files. Evidence and summary:
   loose steps, how tightly step 4 relaxes every candidate, and `KPAR`.
 - BMD review of the resume and cancel exception (#69).
 - Who looks after multi-week searches that occupy a whole node?
+- Where is the dedicated production search workspace under `/bmd` (owner,
+  permissions, quota), separate from `/bmd/bmdguest/validation` and
+  `/bmd-db/guest`?
