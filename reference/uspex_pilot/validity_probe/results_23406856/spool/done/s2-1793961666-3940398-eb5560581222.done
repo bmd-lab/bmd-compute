@@ -1,0 +1,9 @@
+status=0
+id=s2-1793961666-3940398-eb5560581222
+step=2
+calcfold=/bmd/bmdguest/validation/uspex_validity_probe_20261106_a/search/Calculation/Calcfold_4_2
+command=/bmd/bmdguest/validation/bmd-compute-uspex-probe-20261106d/reference/uspex_pilot/validity_probe/inject_vasp.sh 2 srun --exact --mpi=pmi2 -n 4 --mem=8G vasp_std
+returncode=0
+started=1793961666.362
+finished=1793961897.966
+validity=valid

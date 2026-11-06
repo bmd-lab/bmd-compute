@@ -16,6 +16,15 @@ allocation, and runs VASP for each request:
 * before each run, append the exact command, the variables the launcher set
   and the slot index to ``<CalcFold>/bmd_launch.jsonl``, so core placement can
   be checked afterwards against the ``I_MPI_DEBUG=4`` report in the step log
+* after VASP exits, check the step's validity
+  (``backend.structure_search.step_validity``): a step that exited 0 but
+  failed the lab's convergence criteria, or whose evidence is missing or
+  malformed, is reported with status 118 or 119 instead of 0. For every step
+  that does not count, the files USPEX reads (OUTCAR, OSZICAR, CONTCAR,
+  vasprun.xml) are archived unchanged under
+  ``<search>/bmd_step_validity/<id>/`` and renamed in the CalcFold, so
+  USPEX cannot read an energy from them. Every step's verdict is appended to
+  ``<CalcFold>/bmd_step_validity.jsonl``
 * write ``<spool>/done/<id>.done`` with the exit status, which releases the
   waiting bridge script
 * stop a step when its bridge gives up (``<spool>/cancel/<id>``)
@@ -59,6 +68,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
+from backend.structure_search import step_validity
 from backend.structure_search.bridge import protocol
 from backend.structure_search.bridge.protocol import StepRequest
 
@@ -246,6 +256,11 @@ class LauncherSettings:
         by ``ranks_per_step`` use the first cores of their slot; more ranks
         than ``ranks`` are rejected.
 
+    ``step_validity`` (default on) applies the post-step validity check of
+    ``backend.structure_search.step_validity``. Turn it off only for
+    transport-only pilots; a search whose fitness values must be trusted
+    never runs without it.
+
     ``environment`` is the complete environment of the VASP steps (modules
     already loaded); nothing is inherited from the launcher's own process.
     For ``srun_steps`` it must contain the job's ``SLURM_*`` variables; see
@@ -268,6 +283,7 @@ class LauncherSettings:
     poll_seconds: float = 1.0
     heartbeat_interval_seconds: float = 10.0
     kill_grace_seconds: float = 10.0
+    step_validity: bool = True
     step_mem: str | None = field(init=False)
     slot_first_cores: tuple[int, ...] | None = field(init=False)
 
@@ -413,6 +429,7 @@ class Launcher:
             ranks_per_step={str(k): v for k, v in sorted(self.settings.ranks_per_step.items())},
             launch_mode=self.settings.launch_mode,
             mem=self.settings.step_mem,
+            step_validity=self.settings.step_validity,
             slot_cores=(
                 None
                 if self.settings.slot_first_cores is None
@@ -552,6 +569,15 @@ class Launcher:
         else:
             status = protocol.EXIT_STOPPED
         running.log.close()
+        reason = running.stop_reason
+        validity = None
+        if self.settings.step_validity:
+            validity = self._check_validity(request_id, running, returncode)
+            if validity["classification"] != step_validity.VALID:
+                if status == 0:
+                    status = _VALIDITY_EXIT_STATUS[validity["classification"]]
+                if not reason:
+                    reason = "; ".join(validity["reasons"])
         self._write_done(
             request_id,
             status,
@@ -559,7 +585,8 @@ class Launcher:
             argv=running.argv,
             started=running.started_wall,
             returncode=returncode,
-            reason=running.stop_reason,
+            reason=reason,
+            validity=None if validity is None else validity["classification"],
         )
         (self.spool / protocol.CLAIMED_DIR / f"{request_id}{protocol.REQUEST_SUFFIX}").unlink(
             missing_ok=True
@@ -574,8 +601,58 @@ class Launcher:
             status=status,
             returncode=returncode,
             seconds=round(time.time() - running.started_wall, 3),
-            reason=running.stop_reason,
+            reason=reason,
+            validity=None if validity is None else validity["classification"],
         )
+
+    def _check_validity(
+        self, request_id: str, running: _RunningStep, returncode: int | None
+    ) -> dict:
+        """Classify a finished step, withhold its output if it does not count, record it.
+
+        Never raises: a failure of the check itself makes the step invalid.
+        """
+
+        try:
+            result = step_validity.evaluate_step(
+                running.request.step,
+                running.calcfold,
+                returncode=returncode,
+                stopped=running.stop_status is not None,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed
+            result = {
+                "step": running.request.step,
+                "classification": step_validity.INVALID_EVIDENCE,
+                "reasons": [f"validity check failed: {type(exc).__name__}: {exc}"],
+                "returncode": returncode,
+            }
+        result = {"id": request_id, "calcfold": str(running.calcfold), **result}
+        if result["classification"] != step_validity.VALID and returncode is not None:
+            # A process that never exited (abandoned at shutdown) may still be
+            # writing; its files are left alone.
+            archive = self.settings.search_dir / step_validity.ARCHIVE_DIR / request_id
+            try:
+                result["archived_to"] = str(archive)
+                result["files"] = step_validity.withhold_outputs(running.calcfold, archive, request_id)
+                step_validity.write_json_atomically(archive / "validity.json", result)
+            except OSError as exc:
+                result["withhold_error"] = f"{type(exc).__name__}: {exc}"
+        try:
+            _append_line(
+                running.calcfold / step_validity.CALCFOLD_RECORD_FILE,
+                json.dumps(result, sort_keys=True, default=str),
+            )
+        except OSError as exc:
+            self.journal("validity_record_failed", id=request_id, error=str(exc))
+        self.journal(
+            "validity",
+            id=request_id,
+            step=running.request.step,
+            classification=result["classification"],
+            reasons=result.get("reasons", []),
+        )
+        return result
 
     def _start_requests(self) -> None:
         requests_dir = self.spool / protocol.REQUESTS_DIR
@@ -733,6 +810,7 @@ class Launcher:
         started: float | None = None,
         returncode: int | None = None,
         reason: str = "",
+        validity: str | None = None,
     ) -> None:
         lines = [f"status={status}", f"id={request_id}"]
         if request is not None:
@@ -743,6 +821,8 @@ class Launcher:
             lines.append(f"returncode={returncode}")
         if started is not None:
             lines += [f"started={started:.3f}", f"finished={time.time():.3f}"]
+        if validity is not None:
+            lines.append(f"validity={validity}")
         if reason:
             lines.append("reason=" + reason.replace("\n", " "))
         protocol.write_atomically(self.spool, self._done_path(request_id), "\n".join(lines) + "\n")
@@ -766,6 +846,15 @@ def _append_line(path: Path, line: str) -> None:
         os.write(descriptor, (line + "\n").encode("utf-8"))
     finally:
         os.close(descriptor)
+
+
+_VALIDITY_EXIT_STATUS = {
+    step_validity.INVALID_CONVERGENCE: protocol.EXIT_INVALID_CONVERGENCE,
+    step_validity.INVALID_EVIDENCE: protocol.EXIT_INVALID_EVIDENCE,
+    # A failed execution keeps VASP's own non-zero status; this is only used
+    # if a stopped step somehow reports 0.
+    step_validity.EXECUTION_FAILED: protocol.EXIT_STOPPED,
+}
 
 
 def _exit_status(returncode: int) -> int:
@@ -898,6 +987,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("--heartbeat-interval-seconds", type=float, default=10.0)
     parser.add_argument("--kill-grace-seconds", type=float, default=10.0)
+    parser.add_argument(
+        "--no-step-validity",
+        action="store_true",
+        help="skip the post-step validity check (transport-only pilots; never for real searches)",
+    )
     args = parser.parse_args(argv)
 
     settings = LauncherSettings(
@@ -917,6 +1011,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         poll_seconds=args.poll_seconds,
         heartbeat_interval_seconds=args.heartbeat_interval_seconds,
         kill_grace_seconds=args.kill_grace_seconds,
+        step_validity=not args.no_step_validity,
     )
     event = threading.Event()
     install_stop_signal_handlers(event)

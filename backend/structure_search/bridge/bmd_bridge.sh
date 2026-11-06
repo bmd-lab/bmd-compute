@@ -52,6 +52,12 @@
 #   0-255  the status the launcher recorded for the VASP step. The launcher
 #          itself records 121-124 for the cases below, so these values mean
 #          the same whether this script or the launcher decided.
+#   0      VASP exited with status 0 and the step passed the launcher's
+#          validity check (backend/structure_search/step_validity.py)
+#   118    VASP exited with status 0 but the step failed a convergence or
+#          energy criterion; its output files are withheld from USPEX
+#   119    VASP exited with status 0 but its evidence (vasprun.xml, OUTCAR,
+#          CONTCAR) is missing or malformed; its output files are withheld
 #   120    usage or configuration error (nothing was run)
 #   121    launcher missing or not responding (heartbeat too old)
 #   122    the launcher rejected the request (for example, the CalcFold is

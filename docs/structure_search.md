@@ -415,6 +415,40 @@ the planned finalist refinement: the five lowest-energy structurally distinct
 candidates relaxed with BMD's adaptive geometry relaxation and ranked by
 plain-PBE static energies (not implemented yet).
 
+### Candidate validity (USPEX integration step 2)
+
+VASP stops at `NELM` or `NSW` without an error, so a zero exit status does
+not mean a step converged. After every relaxation step the host launcher
+classifies the result (`backend/structure_search/step_validity.py`) by the
+lab's stage-specific rules (methodology section 10) as `valid`,
+`invalid_convergence`, `execution_failed` or `invalid_evidence`, and only a
+valid step is reported to USPEX with status 0. Otherwise the bridge exits
+118 (not converged or non-finite energy), 119 (evidence missing or malformed)
+or VASP's own status, and the files USPEX reads are archived under
+`<search>/bmd_step_validity/<id>/` and renamed `<name>.bmd_invalid.<id>` in
+the CalcFold. Every verdict is appended to `<CalcFold>/bmd_step_validity.jsonl`
+and the launcher journal, and the done file carries `validity=` and
+`reason=`. The check is on by default (`LauncherSettings.step_validity`);
+`--no-step-validity` exists only for transport pilots. The launcher's Python
+needs pymatgen for it.
+
+**Checked on POWER (6 Nov 2026, SLURM job 23406856):** the validity probe
+(`reference/uspex_pilot/validity_probe/`) ran the real USPEX 25.0 through
+the production bridge and launcher on Si8 (population 4, 2 generations,
+26 VASP calls, 43 min 37 s). One step-2 relaxation was made electronically
+non-convergent (`NELM = 3`) and one step-3 relaxation was reported as VASP
+exit 7. The bridge reported them to USPEX with status 118 and 7 and withheld
+their files; USPEX logged "Task failed on step …", stopped each candidate's
+chain at that step, did not run it again, and did not list it in
+`Individuals` (no stale energy from an earlier step). The master exited 0
+and listed both generations; the runtime check passed; jobflow and atomate2
+were not imported. Generation 1 kept only its two valid candidates: USPEX
+did not replace the rejected ones. Not observed: status 119 (evidence
+missing or malformed), and whether the exit status alone, with the files
+left in place, would be enough (the optional `status_only` run); the
+bridge keeps withholding the files. Evidence and summary:
+`reference/uspex_pilot/validity_probe/results_23406856/`.
+
 ## 9. Open questions
 
 - Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks

@@ -1,0 +1,53 @@
+{
+ "observed": {
+  "banner_version": "25.0",
+  "i_mpi_pmi_library_exists": true,
+  "payload_sha256": "fc4a08e65ffc5f4fc3b45cb058de2cd54731ab2c191123aac8a3c69e87e95c8c",
+  "program": {
+   "exists": true,
+   "is_file": true,
+   "mtime_ns": 1765121285000000000,
+   "path": "/bmd/shared/uspex25_sandbox/opt/uspex/uspex",
+   "size_bytes": 700225802
+  },
+  "ready_marker": "/bmd/bmdguest/validation/uspex_cache_private/uspex_sfx/fc4a08e65ffc5f4fc3b45cb058de2cd54731ab2c191123aac8a3c69e87e95c8c/.ready",
+  "ready_marker_exists": true,
+  "sandbox_dir_exists": true,
+  "singularity": {
+   "executable": true,
+   "path": "/powerapps/share/rocky9/mamba/mamba-1.5.8/envs/singularity-3.8.6/bin/singularity"
+  },
+  "slurm_version": "slurm 26.05.5",
+  "unpacked_program_exists": true,
+  "writable": {
+   "/bmd/bmdguest/validation/uspex_cache_private": true,
+   "/bmd/bmdguest/validation/uspex_cache_private/uspex_sfx": true
+  }
+ },
+ "prepared": {
+  "launch": {
+   "bridge_timeout_seconds": 14400,
+   "cores_per_socket": 96,
+   "excluded_nodes": "compute-0-[332-333]",
+   "i_mpi_pmi_library": "/usr/lib64/libpmi2.so",
+   "mode": "srun_steps",
+   "node_sockets": 2,
+   "parallel_relaxations": 4,
+   "ranks_per_relaxation": 48
+  },
+  "schema": "bmd_compute.structure_search_runtime",
+  "schema_version": 1,
+  "singularity": "/powerapps/share/rocky9/mamba/mamba-1.5.8/envs/singularity-3.8.6/bin/singularity",
+  "uspex": {
+   "cache_dir": "/bmd/bmdguest/validation/uspex_cache_private",
+   "payload_sha256": "fc4a08e65ffc5f4fc3b45cb058de2cd54731ab2c191123aac8a3c69e87e95c8c",
+   "program_in_image": "/opt/uspex/uspex",
+   "ready_marker": "/bmd/bmdguest/validation/uspex_cache_private/uspex_sfx/fc4a08e65ffc5f4fc3b45cb058de2cd54731ab2c191123aac8a3c69e87e95c8c/.ready",
+   "sandbox_dir": "/bmd/shared/uspex25_sandbox",
+   "unpacked_dir": "/bmd/bmdguest/validation/uspex_cache_private/uspex_sfx/fc4a08e65ffc5f4fc3b45cb058de2cd54731ab2c191123aac8a3c69e87e95c8c",
+   "version": "25.0"
+  }
+ },
+ "problems": [],
+ "status": "passed"
+}

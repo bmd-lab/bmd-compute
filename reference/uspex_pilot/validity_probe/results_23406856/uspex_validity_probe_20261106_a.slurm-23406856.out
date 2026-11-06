@@ -1,0 +1,36 @@
+== 12:36:07 job 23406856 on compute-0-271.powerslurm, account power-leeburton-users_v2, partition leeburton-pool, qos owner100d
+== 12:36:07 REPO=/bmd/bmdguest/validation/bmd-compute-uspex-probe-20261106d WORK=/bmd/bmdguest/validation/uspex_validity_probe_20261106_a POTCAR_SI=/bmd-db/potcars/POT_PAW_PBE_64/Si/POTCAR MODE=validity
+== 12:36:07 python: /bmd/bmdguest/envs/atomate2_remote/bin/python (Python 3.12.13)
+== 12:36:14 making the module command available
+== 12:36:14 loading the VASP modules (as BMD Compute does)
+loading ...
+ 
+:: initializing oneAPI environment ...
+   slurm_script: BASH_VERSION = 5.1.8(1)-release
+   args: Using "$@" for setvars.sh arguments: load intel/rocky8-oneAPI-2023 vasp/rocky8-intel-6.4.1
+:: advisor -- latest
+:: ccl -- latest
+:: compiler -- latest
+:: dal -- latest
+:: debugger -- latest
+:: dev-utilities -- latest
+:: dnnl -- latest
+:: dpcpp-ct -- latest
+:: dpl -- latest
+:: inspector -- latest
+:: ipp -- latest
+:: ippcp -- latest
+:: itac -- latest
+:: mkl -- latest
+:: mpi -- latest
+:: tbb -- latest
+:: vtune -- latest
+:: oneAPI environment initialized ::
+ 
+loaded oneAPI
+sh shell detected
+== 12:36:20 vasp_std: /powerapps/sources/rocky8/vasp.6.4.1/bin/vasp_std
+== 12:36:20 SLURM slurm 26.05.5
+== 12:36:20 starting the validity probe (MODE=validity)
+USPEX master finished with status 0
+== 13:19:44 probe finished with status 0

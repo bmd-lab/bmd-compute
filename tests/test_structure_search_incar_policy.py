@@ -172,8 +172,12 @@ def test_step_validity_follows_the_lab_decision(si_record):
     assert validity[5]["electronic_convergence"] and validity[5]["valid_energy"]
     record = incar_policy_record(si_record)["step_validity"]
     assert record["criteria"] == [dict(row) for row in incar_policy.STEP_VALIDITY]
-    # Recorded policy only: the launch bridge does not enforce it yet.
-    assert record["enforced"] is False
+    # Enforced by the launch bridge; USPEX's handling of a failure was verified on POWER.
+    assert record["enforced"] is True
+    assert "launch bridge" in record["enforced_by"]
+    verified = record["verified_on_power"]
+    assert verified["slurm_job"] == "23406856" and verified["uspex_version"] == "25.0"
+    assert "not_yet_verified_on_power" not in record
 
 
 # --- Step 5: ranking single point --------------------------------------------

@@ -450,14 +450,29 @@ so step 4 uses the INCAR settings of BMD Geometry Optimisation pass 1 and a
 ranking single point follows it. The 6 Nov decision keeps those settings but
 not the claim of equivalence.
 
-Validity of a step's result as a fitness evaluation (6 Nov 2026; to be
-enforced by the launch bridge, not yet implemented):
+Validity of a step's result as a fitness evaluation (6 Nov 2026; checked
+by the launch bridge after every step, `backend/structure_search/step_validity.py`,
+policy `bmd_compute.structure_search_step_validity` v1):
 
 | Step | Electronic convergence | Ionic convergence | Valid energy |
 | --- | --- | --- | --- |
 | 1–3 | required | not required (reaching `NSW` allowed) | required |
 | 4 | required | required | required |
 | 5 | required | — (single point) | required (the ranking energy) |
+
+Electronic convergence is pymatgen's `Vasprun.converged_electronic` (the
+final ionic step's SCF loop ended before `NELM`) and ionic convergence is
+`Vasprun.converged_ionic` (fewer ionic steps than `NSW`), as in BMD's result
+parser and adaptive geometry relaxation. The energy is the final free energy
+(`TOTEN`), which must be finite and equal in `vasprun.xml` and `OUTCAR`.
+A step that exits 0 but fails a criterion is reported to USPEX with status
+118, one whose evidence is missing or malformed with 119, and a failed VASP
+run with its own status; in each case the files USPEX reads are withheld
+(archived unchanged and renamed). On POWER (SLURM job 23406856,
+6 Nov 2026) USPEX 25.0 rejected a candidate reported this way, for both a
+step-2 electronic non-convergence (status 118) and a step-3 VASP failure
+(status 7): its chain stopped, it was not run again and it was not listed
+with an energy (`reference/uspex_pilot/validity_probe/results_23406856/`).
 
 KPAR (proposed 5 Nov 2026, retained provisionally with `NCORE = 4` on
 6 Nov 2026, subject to POWER validation): `KPAR = 1` on steps 1–3,

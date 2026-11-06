@@ -1,0 +1,35 @@
+PARAMETERS EVOLUTIONARY ALGORITHM
+USPEX : calculationMethod
+300 : calculationType
+
+% atomType
+Si
+% EndAtomType
+
+% numSpecies
+8
+% EndNumSpecies
+
+0.0 : ExternalPressure
+4 : populationSize
+4 : initialPopSize
+2 : numGenerations
+2 : stopCrit
+
+% abinitioCode
+1 1 1
+% ENDabinit
+
+% KresolStart
+0.16 0.10 0.07
+% Kresolend
+
+% commandExecutable
+sh /bmd/bmdguest/validation/uspex_validity_probe_20261106_a/search/bmd_bridge_pilot.sh 1
+sh /bmd/bmdguest/validation/uspex_validity_probe_20261106_a/search/bmd_bridge_pilot.sh 2
+sh /bmd/bmdguest/validation/uspex_validity_probe_20261106_a/search/bmd_bridge_pilot.sh 3
+% EndExecutable
+
+-1 : whichCluster
+2 : numParallelCalcs
+1 : coresPerJob

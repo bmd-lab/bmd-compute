@@ -112,6 +112,7 @@ from backend.calculations.registry import CalculationValidationError
 from backend.calculations.resources import DEFAULT_NCORE
 from backend.calculations.vasp_stage_definitions import ENCUT_STATIC_FINAL_DEFAULT
 from backend.structure_search.potcar import POTCAR_FUNCTIONAL, bmd_potcar_symbols
+from backend.structure_search.step_validity import STEP_VALIDITY, policy_record as step_validity_policy_record
 
 
 INCAR_POLICY_ID = "bmd_compute.structure_search_incar"
@@ -283,18 +284,26 @@ SEARCH_ENERGY_GRADE = "search-grade"
 EQUIVALENT_TO_BMD_ADAPTIVE_RELAXATION = False
 
 # Validity of each step's VASP result as a fitness evaluation (lab decision,
-# 6 Nov 2026). A step that fails its criteria must not give the candidate a
-# valid fitness. Enforcement belongs to the launch bridge and is not
-# implemented yet (USPEX integration step 2); this table is the policy it
-# will enforce.
-STEP_VALIDITY = (
-    {"step": 1, "electronic_convergence": True, "ionic_convergence": False, "valid_energy": True},
-    {"step": 2, "electronic_convergence": True, "ionic_convergence": False, "valid_energy": True},
-    {"step": 3, "electronic_convergence": True, "ionic_convergence": False, "valid_energy": True},
-    {"step": 4, "electronic_convergence": True, "ionic_convergence": True, "valid_energy": True},
-    {"step": 5, "electronic_convergence": True, "ionic_convergence": False, "valid_energy": True},
-)
-STEP_VALIDITY_ENFORCED = False
+# 6 Nov 2026). The policy and its check live in step_validity; the launch
+# bridge applies it after every step and reports a step that fails it to
+# USPEX as a failure. The validity probe on POWER (SLURM job 23406856,
+# 6 Nov 2026, reference/uspex_pilot/validity_probe/results_23406856/) showed
+# that USPEX 25.0 rejects such a candidate: its chain stops, it is not run
+# again and it is not listed with an energy.
+STEP_VALIDITY_ENFORCED = True
+STEP_VALIDITY_ENFORCED_BY = "launch bridge post-step check (backend.structure_search.step_validity)"
+STEP_VALIDITY_VERIFIED_ON_POWER = {
+    "probe": "reference/uspex_pilot/validity_probe",
+    "evidence": "reference/uspex_pilot/validity_probe/results_23406856",
+    "slurm_job": "23406856",
+    "date": "2026-11-06",
+    "uspex_version": "25.0",
+    "cases": {
+        "invalid_convergence (status 118)": "rejected: chain stopped, no retry, not listed, no stale energy",
+        "execution_failed (VASP status 7)": "rejected: chain stopped, no retry, not listed, no stale energy",
+    },
+    "not_observed": "invalid_evidence (status 119); exit status alone with the files left in place",
+}
 NUM_STEPS = len(STEP_SOURCES)
 
 
@@ -702,8 +711,10 @@ def incar_policy_record(
             "search_wide_additions": additions,
         },
         "step_validity": {
-            "criteria": [dict(row) for row in STEP_VALIDITY],
+            **step_validity_policy_record(),
             "enforced": STEP_VALIDITY_ENFORCED,
+            "enforced_by": STEP_VALIDITY_ENFORCED_BY,
+            "verified_on_power": STEP_VALIDITY_VERIFIED_ON_POWER,
         },
         "kpar_by_step": dict(KPAR_BY_STEP),
         "steps": [
@@ -757,6 +768,8 @@ __all__ = [
     "STEP_SOURCES",
     "STEP_VALIDITY",
     "STEP_VALIDITY_ENFORCED",
+    "STEP_VALIDITY_ENFORCED_BY",
+    "STEP_VALIDITY_VERIFIED_ON_POWER",
     "VALUES_NEEDING_LAB_DECISION",
     "bmd_stage_settings",
     "early_step_encut",
