@@ -2,6 +2,11 @@
 
 A structure search starts from a composition, not from a ``pymatgen.Structure``.
 :class:`StructureSearchSpec` holds everything the *user* chooses for a search;
+:func:`default_search_spec` fills in every choice a formula-only request
+leaves open, from the provisional defaults in this module. This module is the
+single source of those defaults: the browser's New structure preview
+(``prediction_plan``) builds its plan from :func:`default_search_spec` and
+:func:`search_defaults_record`, never from its own copies.
 everything bmd-compute fixes itself (cluster settings, the launch bridge, the
 INCAR files) lives elsewhere (``input_writer``, ``incar_policy``).
 
@@ -286,6 +291,115 @@ class StructureSearchSpec:
         )
 
 
+# ---------------------------------------------------------------------------
+# Defaults for a formula-only request (provisional; BMD Lab sign-off pending).
+# ---------------------------------------------------------------------------
+#
+# A New structure request gives only a composition. These values fill in the
+# rest. They are bmd-compute proposals (see PROVISIONAL_DEFAULTS), recorded
+# with every spec built from them, and are not yet approved scientific policy.
+
+SEARCH_DEFAULTS_POLICY_ID = "bmd_compute.structure_search_defaults"
+SEARCH_DEFAULTS_POLICY_VERSION = 1
+SEARCH_DEFAULTS_STATUS = "provisional"
+
+# Ambient pressure only (the v1 scope; admission refuses anything else).
+DEFAULT_EXTERNAL_PRESSURE_GPA = 0.0
+# Cells of 1 .. floor(DEFAULT_MAX_CELL_ATOMS / atoms per formula unit) formula
+# units (at least one formula unit).
+DEFAULT_MAX_CELL_ATOMS = 20
+# The manual's default is 100 generations (section 4.2); 50 bounds the cost of
+# a first search. stopCrit defaults to the maximum atoms per cell, the
+# manual's fixed-composition rule ("the total number of atoms").
+DEFAULT_NUM_GENERATIONS = 50
+# One KresolStart value per step of the five-step screening ladder
+# (incar_policy.NUM_STEPS; units 2 pi / A). Steps 4 and 5 meet BMD's k-point
+# density bound (incar_policy.BMD_STANDARD_MAX_KRESOL = 0.04); steps 1-3 are
+# coarser screening meshes (the progression of the student's Mg2SiO4 example).
+DEFAULT_KRESOL_START = (0.12, 0.10, 0.08, 0.04, 0.04)
+# Explicit walltime of the search allocation (7 days). There is no automatic
+# estimate for a search.
+DEFAULT_SEARCH_WALLTIME = "168:00:00"
+# Finalists later given BMD's adaptive geometry relaxation and a plain-PBE
+# static (lab decision, 6 Nov 2026). Selection and refinement are not
+# implemented yet; the number is recorded so the preview and the later
+# implementation share it.
+PLANNED_FINALIST_COUNT = 5
+
+PROVISIONAL_DEFAULTS = (
+    "external_pressure_gpa", "min_atoms", "max_atoms", "population_size",
+    "initial_population_size", "num_generations", "stop_criterion",
+    "kresol_start", "walltime",
+)
+
+
+def default_cell_range(formula_atoms: int) -> tuple[int, int]:
+    """(min_atoms, max_atoms) for a composition of ``formula_atoms`` atoms per formula unit."""
+
+    formula_atoms = _int(formula_atoms, "formula_atoms", minimum=1)
+    whole_units = max(1, DEFAULT_MAX_CELL_ATOMS // formula_atoms)
+    return formula_atoms, whole_units * formula_atoms
+
+
+def default_search_spec(
+    composition: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+    *,
+    min_atoms: Any = None,
+    max_atoms: Any = None,
+    num_generations: Any = None,
+    walltime: Any = None,
+) -> "StructureSearchSpec":
+    """The spec of a formula-only request, with optional overrides.
+
+    ``composition`` is the composition of one formula unit (``numSpecies``),
+    as an ordered ``{element: count}`` mapping or element/count rows. Blank
+    overrides (None or an empty string) take the default. Pressure, theory,
+    magnetism, k-point resolutions and population sizes are not overridable
+    here: they are fixed by the v1 scope or by the defaults above.
+    """
+
+    elements, counts = _composition_rows(composition)
+    counts = _int_tuple(counts, "counts", minimum=1)
+    default_min, default_max = default_cell_range(sum(counts))
+
+    def chosen(value, default):
+        return default if value is None or (isinstance(value, str) and not value.strip()) else value
+
+    min_value = chosen(min_atoms, default_min)
+    max_value = chosen(max_atoms, default_max)
+    max_int = _int(max_value, "max_atoms", minimum=1)
+    return StructureSearchSpec(
+        elements=elements,
+        counts=counts,
+        min_atoms=min_value,
+        max_atoms=max_int,
+        num_generations=chosen(num_generations, DEFAULT_NUM_GENERATIONS),
+        stop_criterion=max_int,
+        kresol_start=DEFAULT_KRESOL_START,
+        walltime=chosen(walltime, DEFAULT_SEARCH_WALLTIME),
+        external_pressure_gpa=DEFAULT_EXTERNAL_PRESSURE_GPA,
+    )
+
+
+def search_defaults_record() -> dict[str, Any]:
+    """JSON-safe record of the formula-only defaults, for previews and provenance."""
+
+    return {
+        "policy_id": SEARCH_DEFAULTS_POLICY_ID,
+        "policy_version": SEARCH_DEFAULTS_POLICY_VERSION,
+        "status": SEARCH_DEFAULTS_STATUS,
+        "provisional_fields": list(PROVISIONAL_DEFAULTS),
+        "external_pressure_gpa": DEFAULT_EXTERNAL_PRESSURE_GPA,
+        "max_cell_atoms": DEFAULT_MAX_CELL_ATOMS,
+        "num_generations": DEFAULT_NUM_GENERATIONS,
+        "stop_criterion": "max_atoms",
+        "population_size": f"2 x max_atoms rounded to 10, between 10 and {POPULATION_SIZE_DEFAULT_MAX}",
+        "kresol_start": list(DEFAULT_KRESOL_START),
+        "walltime": DEFAULT_SEARCH_WALLTIME,
+        "planned_finalist_count": PLANNED_FINALIST_COUNT,
+    }
+
+
 def _composition_rows(value) -> tuple[tuple[str, ...], tuple[Any, ...]]:
     if isinstance(value, Mapping):
         return tuple(value.keys()), tuple(value.values())
@@ -384,6 +498,19 @@ def _float_tuple(value, label: str) -> tuple[float, ...]:
 
 
 __all__ = [
+    "DEFAULT_EXTERNAL_PRESSURE_GPA",
+    "DEFAULT_KRESOL_START",
+    "DEFAULT_MAX_CELL_ATOMS",
+    "DEFAULT_NUM_GENERATIONS",
+    "DEFAULT_SEARCH_WALLTIME",
+    "PLANNED_FINALIST_COUNT",
+    "PROVISIONAL_DEFAULTS",
+    "SEARCH_DEFAULTS_POLICY_ID",
+    "SEARCH_DEFAULTS_POLICY_VERSION",
+    "SEARCH_DEFAULTS_STATUS",
+    "default_cell_range",
+    "default_search_spec",
+    "search_defaults_record",
     "FIXED_COMPOSITION_BULK",
     "POPULATION_SIZE_DEFAULT_MAX",
     "SPEC_SCHEMA",

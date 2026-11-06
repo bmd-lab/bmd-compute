@@ -1,4 +1,12 @@
-"""INCAR ladder for USPEX structure searches (#65; lab decision of 5 Nov 2026).
+"""INCAR ladder for USPEX structure searches: search-grade screening and ranking.
+
+Role (lab decision of 6 Nov 2026): this five-step ladder is retained
+provisionally as the *screening and ranking* methodology of the USPEX search.
+Its energies are search-grade. It is **not** BMD's geometry relaxation: the
+five lowest-energy distinct candidates are to be refined afterwards with BMD's
+adaptive geometry relaxation (``bmd_compute.geometry_relaxation/1`` with
+``bmd_compute.geometry_convergence/1``) and ranked by consistent plain-PBE
+static energies. That finalist stage is not implemented yet.
 
 USPEX copies ``Specific/INCAR_1 .. INCAR_N`` unchanged into every candidate's
 calculation, one file per relaxation step. One INCAR set therefore has to work
@@ -8,18 +16,19 @@ composition is fixed for a whole search, so values that depend only on the
 composition, such as the plane-wave cutoffs, are set once per search and are
 still identical for every candidate.
 
-BMD scientific decision (roeeasher for the BMD Lab, 5 Nov 2026, recorded on
-PR #74):
+History: the ladder was proposed by roeeasher (5 Nov 2026, recorded on
+PR #74) as:
 
     The final relaxation step must be consistent with the accuracy of BMD's
     Geometry Optimisation already implemented in bmd-compute. Before that,
     follow the USPEX default recommendations (manual section 3.1).
 
-with two follow-up choices: the final relaxation is BMD Geometry
-Optimisation pass 1 unchanged, and a ranking single point follows it.
-
-KPAR decision (roeeasher, 5 Nov 2026, recorded on PR #74): ``KPAR = 1`` on
-steps 1-3 and ``KPAR = 4`` on steps 4-5 (``KPAR_BY_STEP``).
+with step 4 using BMD Geometry Optimisation pass-1 INCAR settings and a
+ranking single point after it, and ``KPAR = 1`` on steps 1-3, ``KPAR = 4`` on
+steps 4-5 (``KPAR_BY_STEP``). On 6 Nov 2026 Lee Burton retained the ladder and
+the KPAR/NCORE settings provisionally (KPAR/NCORE subject to POWER
+validation), as screening only (``LAB_DECISIONS``), and set the validity
+criteria of each step (``STEP_VALIDITY``).
 
 ====  =================================  ====  ======  =====  ===  ==================  =====  ======  =================  ========
 step  source                             ISIF  IBRION  POTIM  NSW  ENCUT               EDIFF  EDIFFG  smearing           PREC
@@ -27,17 +36,19 @@ step  source                             ISIF  IBRION  POTIM  NSW  ENCUT        
 1     USPEX manual INCAR_1               4     2       0.02   65   early               1e-2   1e-1    MP, SIGMA 0.10     Low
 2     USPEX manual INCAR_2               4     1       0.30   55   early               1e-3   1e-2    MP, SIGMA 0.08     Normal
 3     USPEX manual INCAR_3               3     2       0.02   65   relaxation          1e-3   1e-2    MP, SIGMA 0.07     Normal
-4     BMD Geometry Optimisation pass 1   3     2       -      99   relaxation          1e-6   -0.01   Gauss, SIGMA 0.2   Accurate
-5     ranking single point               2     -1      -      0    max(620, relax.)    1e-6   -       Gauss, SIGMA 0.05  Accurate
+4     screening, BMD pass-1 INCAR        3     2       -      99   relaxation          1e-6   -0.01   Gauss, SIGMA 0.2   Accurate
+5     search ranking single point        2     -1      -      0    max(620, relax.)    1e-6   -       Gauss, SIGMA 0.05  Accurate
 ====  =================================  ====  ======  =====  ===  ==================  =====  ======  =================  ========
 
 - Steps 1-3 set only what the manual's example INCARs set, plus the
   search-wide tags below: no ALGO, LREAL, LASPH, NELM or ADDGRID.
-- Step 4 *is* BMD Geometry Optimisation pass 1
-  (``bmd_compute.geometry_relaxation/1``). Its INCAR is the one BMD's own
-  input generator writes for that stage for the search's elements
-  (:func:`bmd_stage_settings`); it is not retyped here.
-- Step 5 gives the energy USPEX ranks candidates by. USPEX ranks on VASP's
+- Step 4 is a screening relaxation that *uses the INCAR settings* of BMD
+  Geometry Optimisation pass 1: the INCAR BMD's own input generator writes
+  for that stage for the search's elements (:func:`bmd_stage_settings`), not
+  retyped here. It is not the BMD geometry relaxation: there is no pass 2, no
+  adaptive cutoff probe or refinement, no Custodian, and the k-point mesh is
+  USPEX's (``KresolStart``), not pymatgen's.
+- Step 5 gives the search-grade energy USPEX ranks candidates by. USPEX ranks on VASP's
   free energy F, not E0 (Si8 pilot: individual 27 has F = -39.702683 eV and
   E0 = -39.702789 eV, and ``Individuals_extended`` shows -39.7027). With
   step 4's SIGMA 0.2, the smearing-entropy term in F would favour metallic
@@ -124,6 +135,36 @@ LAB_DECISIONS = (
         "decided_by": "roeeasher for the BMD Lab",
         "recorded_in": "https://github.com/bmd-lab/bmd-compute/pull/74#issuecomment-6659200162",
         "rule": "KPAR = 1 on steps 1-3, KPAR = 4 on steps 4-5.",
+    },
+    {
+        "topic": "Role of the ladder",
+        "date": "2026-11-06",
+        "decided_by": "Lee Burton",
+        "recorded_in": "USPEX integration step 1 (this branch)",
+        "rule": (
+            "Retain the five-step ladder provisionally as the search's screening and "
+            "ranking methodology. It must not be described as equivalent to BMD's "
+            "adaptive geometry relaxation; the five lowest-energy distinct candidates "
+            "are refined afterwards with that protocol and plain-PBE static energies."
+        ),
+    },
+    {
+        "topic": "Validity of a search step",
+        "date": "2026-11-06",
+        "decided_by": "Lee Burton",
+        "recorded_in": "USPEX integration step 1 (this branch)",
+        "rule": (
+            "Steps 1-3: electronic convergence required, reaching NSW allowed. "
+            "Step 4: electronic and ionic convergence required. Step 5: electronic "
+            "convergence and a valid ranking energy required."
+        ),
+    },
+    {
+        "topic": "KPAR and NCORE",
+        "date": "2026-11-06",
+        "decided_by": "Lee Burton",
+        "recorded_in": "USPEX integration step 1 (this branch)",
+        "rule": "Retain KPAR_BY_STEP and NCORE = 4 provisionally, subject to POWER validation.",
     },
 )
 
@@ -226,9 +267,34 @@ STEP_SOURCES = (
     "USPEX manual INCAR_1 (section 3.1)",
     "USPEX manual INCAR_2 (section 3.1)",
     "USPEX manual INCAR_3 (section 3.1)",
-    f"BMD Geometry Optimisation pass 1 ({PROTOCOL_ID}/{PROTOCOL_VERSION})",
-    "ranking single point (BMD Static Energy after a relaxation, Gaussian SIGMA 0.05)",
+    f"BMD Geometry Optimisation pass-1 INCAR settings ({PROTOCOL_ID}/{PROTOCOL_VERSION}), "
+    "used for screening only",
+    "BMD Static Energy INCAR settings with Gaussian SIGMA 0.05, used for search ranking only",
 )
+# What each step is for. Every step is search-grade; none is a BMD final result.
+STEP_ROLES = (
+    "screening relaxation",
+    "screening relaxation",
+    "screening relaxation",
+    "screening relaxation",
+    "search ranking single point",
+)
+SEARCH_ENERGY_GRADE = "search-grade"
+EQUIVALENT_TO_BMD_ADAPTIVE_RELAXATION = False
+
+# Validity of each step's VASP result as a fitness evaluation (lab decision,
+# 6 Nov 2026). A step that fails its criteria must not give the candidate a
+# valid fitness. Enforcement belongs to the launch bridge and is not
+# implemented yet (USPEX integration step 2); this table is the policy it
+# will enforce.
+STEP_VALIDITY = (
+    {"step": 1, "electronic_convergence": True, "ionic_convergence": False, "valid_energy": True},
+    {"step": 2, "electronic_convergence": True, "ionic_convergence": False, "valid_energy": True},
+    {"step": 3, "electronic_convergence": True, "ionic_convergence": False, "valid_energy": True},
+    {"step": 4, "electronic_convergence": True, "ionic_convergence": True, "valid_energy": True},
+    {"step": 5, "electronic_convergence": True, "ionic_convergence": False, "valid_energy": True},
+)
+STEP_VALIDITY_ENFORCED = False
 NUM_STEPS = len(STEP_SOURCES)
 
 
@@ -606,9 +672,13 @@ def incar_policy_record(
     """JSON-safe record of one search's ladder, for provenance.
 
     ``plane_wave_cutoff`` is the resolved cutoff record unchanged, in the same
-    form BMD freezes into a Geometry Optimisation stage. ``step_4_protocol``
-    records that step 4 is that protocol's pass 1, and which search-wide tags
-    the search adds to or changes in BMD's generated pass-1 INCAR (KPAR).
+    form BMD freezes into a Geometry Optimisation stage. ``step_4_incar_source``
+    records that step 4 uses that protocol's pass-1 INCAR settings for
+    screening only (it is not the protocol), and which search-wide tags the
+    search adds to or changes in BMD's generated pass-1 INCAR (KPAR).
+    ``energy_grade`` and ``equivalent_to_bmd_adaptive_relaxation`` mark every
+    energy of the ladder as search-grade; ``step_validity`` is the lab's
+    validity policy and whether it is enforced yet.
     """
 
     ladder = incar_ladder(cutoff_record, ranks)
@@ -622,15 +692,27 @@ def incar_policy_record(
         "ranks_per_relaxation": ranks,
         "plane_wave_cutoff": dict(_require_cutoff_record(cutoff_record)),
         "cutoffs": ladder_cutoffs(cutoff_record),
-        "step_4_protocol": {
+        "energy_grade": SEARCH_ENERGY_GRADE,
+        "equivalent_to_bmd_adaptive_relaxation": EQUIVALENT_TO_BMD_ADAPTIVE_RELAXATION,
+        "step_4_incar_source": {
             "id": PROTOCOL_ID,
             "version": PROTOCOL_VERSION,
             "pass": 1,
+            "use": "INCAR settings only; screening relaxation, not the BMD protocol",
             "search_wide_additions": additions,
+        },
+        "step_validity": {
+            "criteria": [dict(row) for row in STEP_VALIDITY],
+            "enforced": STEP_VALIDITY_ENFORCED,
         },
         "kpar_by_step": dict(KPAR_BY_STEP),
         "steps": [
-            {"step": step.number, "source": step.source, "incar": dict(step.settings)}
+            {
+                "step": step.number,
+                "role": STEP_ROLES[step.number - 1],
+                "source": step.source,
+                "incar": dict(step.settings),
+            }
             for step in ladder
         ],
         "bmd_standard_steps": list(BMD_STANDARD_STEPS),
@@ -669,7 +751,12 @@ __all__ = [
     "POTCAR_ENMAX_MISMATCH_CODE",
     "RANKING_IONIC",
     "RANKING_SMEARING",
+    "EQUIVALENT_TO_BMD_ADAPTIVE_RELAXATION",
+    "SEARCH_ENERGY_GRADE",
+    "STEP_ROLES",
     "STEP_SOURCES",
+    "STEP_VALIDITY",
+    "STEP_VALIDITY_ENFORCED",
     "VALUES_NEEDING_LAB_DECISION",
     "bmd_stage_settings",
     "early_step_encut",

@@ -20,7 +20,7 @@ def _spec(elements=("Si", "O"), counts=(1, 2), **overrides):
         max_atoms=4 * sum(counts),
         num_generations=10,
         stop_criterion=5,
-        kresol_start=(0.1, 0.06),
+        kresol_start=(0.12, 0.10, 0.08, 0.04, 0.04),
         walltime="24:00:00",
     )
     values.update(overrides)
@@ -29,7 +29,7 @@ def _spec(elements=("Si", "O"), counts=(1, 2), **overrides):
 
 @pytest.mark.parametrize(
     ("elements", "counts"),
-    [(("Si", "O"), (1, 2)), (("Mg", "Si", "O"), (2, 1, 4)), (("C",), (8,)), (("W", "O"), (1, 3))],
+    [(("Si", "O"), (1, 2)), (("Mg", "Si", "O"), (2, 1, 4)), (("C",), (8,)), (("Ga", "As"), (1, 1))],
 )
 def test_supported_searches_are_admitted(elements, counts):
     spec = _spec(elements, counts)
@@ -68,8 +68,8 @@ def test_elements_bmd_treats_as_spin_polarised_are_rejected(elements, counts):
 
 
 def test_compositions_bmd_applies_dft_u_to_are_rejected():
-    # W is not in the spin screen; WO2 (W4+, d2) triggers BMD's DFT+U rule,
-    # whereas WO3 (W6+, d0) is suppressed and admitted above.
+    # W is not in the spin screen; WO2 (W4+, d2) triggers BMD's DFT+U rule.
+    # (WO3, d0, is suppressed by that rule but now rejected by the SOC screen.)
     error = _code(_spec(("W", "O"), (1, 2)))
     assert error.code == admission.DFT_U_COMPOSITION_CODE
     assert error.diagnostic["elements"] == ["W"]
@@ -115,3 +115,84 @@ def test_potcar_symbols_match_the_executable_relax_generator():
     assert record["status"] == "resolved", record.get("reason")
     expected = {row["species"]: row["potcar_symbol"] for row in record["species"]}
     assert bmd_potcar_symbols(expected) == expected
+
+
+# --- v2 scope: ambient pressure, plain PBE, size limits, ladder ---------------
+
+@pytest.mark.parametrize("pressure", [10, 0.5, -1])
+def test_nonzero_pressure_rejected(pressure):
+    error = _code(_spec(external_pressure_gpa=pressure))
+    assert error.code == admission.PRESSURE_NOT_SUPPORTED_CODE
+
+
+def test_zero_pressure_admitted():
+    spec = _spec(external_pressure_gpa=0)
+    assert require_admissible_search(spec) is spec
+
+
+@pytest.mark.parametrize(
+    ("elements", "counts", "flagged"),
+    [
+        (("W", "O"), (1, 3), ["W"]),          # 5d transition metal
+        (("Zr", "O"), (1, 2), ["Zr"]),        # 4d transition metal
+        (("Bi", "Se"), (2, 3), ["Bi"]),       # heavy p-block
+        (("La", "N"), (1, 1), ["La"]),        # lanthanide (not in the spin screen)
+        (("Pb", "Te"), (1, 1), ["Pb"]),
+    ],
+)
+def test_elements_bmd_treats_with_soc_are_rejected(elements, counts, flagged):
+    error = _code(_spec(elements, counts))
+    assert error.code == admission.SOC_SCREEN_ELEMENT_CODE
+    assert error.diagnostic["elements"] == flagged
+
+
+def test_soc_screen_is_bmds_own_policy():
+    from backend.calculations.method_considerations import SOC_TRIGGER_ELEMENT_CLASSES
+
+    # Every element BMD treats with SOC is refused, and nothing else is.
+    for element in ("Sn", "Sb", "I", "Cs", "Ba", "Sr", "Te", "Se", "Ga", "In"):
+        assert element not in SOC_TRIGGER_ELEMENT_CLASSES
+        assert admission._soc_screen_elements([element]) == []
+    for element in SOC_TRIGGER_ELEMENT_CLASSES:
+        assert admission._soc_screen_elements([element]) == [element]
+
+
+def test_too_many_elements_rejected():
+    error = _code(_spec(("Li", "Na", "K", "Rb", "Cs"), (1, 1, 1, 1, 1)))
+    assert error.code == admission.TOO_MANY_ELEMENTS_CODE
+
+
+def test_cell_size_limit():
+    assert require_admissible_search(_spec(("Si",), (1,), min_atoms=1, max_atoms=admission.MAX_CELL_ATOMS))
+    error = _code(_spec(("Si",), (1,), min_atoms=1, max_atoms=admission.MAX_CELL_ATOMS + 1))
+    assert error.code == admission.CELL_TOO_LARGE_CODE
+
+
+def test_generation_limit():
+    error = _code(_spec(num_generations=admission.MAX_GENERATIONS + 1))
+    assert error.code == admission.TOO_MANY_GENERATIONS_CODE
+
+
+@pytest.mark.parametrize(
+    ("kresol", "code"),
+    [
+        ((0.1, 0.06), "step_count_mismatch"),
+        ((0.12, 0.10, 0.08, 0.06, 0.04), "kresol_coarser_than_bmd_policy"),
+        ((0.12, 0.10, 0.08, 0.04, 0.05), "kresol_coarser_than_bmd_policy"),
+    ],
+)
+def test_kpoints_must_match_the_ladder(kresol, code):
+    from backend.structure_search.incar_policy import IncarPolicyError
+
+    with pytest.raises(IncarPolicyError) as excinfo:
+        require_admissible_search(_spec(kresol_start=kresol))
+    assert excinfo.value.code == code
+
+
+def test_scope_record():
+    record = admission.admission_scope_record()
+    assert record["policy_version"] == admission.ADMISSION_POLICY_VERSION == 2
+    assert record["external_pressure_gpa"] == 0.0
+    assert record["spin_polarized"] is False
+    assert any("SOC" in screen for screen in record["composition_screens"])
+    assert record["limits"]["status"] == "provisional"

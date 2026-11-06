@@ -418,25 +418,50 @@ packages or input-altering atomate2 settings differ from preparation.
 Output-writing flags (for example `LCHARG`, `LWAVE`, `LVTOT`, `LAECHG`, `LELF`)
 are not part of the declared methodology.
 
-## 10. Structure searches (USPEX) — decided, not yet in use
+## 10. Structure searches (USPEX) — provisional, not yet in use
 
-Status: **INCAR ladder and KPAR decided by the BMD Lab on 5 Nov 2026 (#65,
-recorded on PR #74).** No structure search can be started from
-bmd-compute yet; the design is in `structure_search.md`. The values here are
-implemented in `backend/structure_search/incar_policy.py` and `potcar.py`
-and pinned by golden files in `tests/fixtures/structure_search/`.
+Status: **the five-step ladder is retained provisionally as the search's
+screening and ranking methodology (Lee Burton, 6 Nov 2026).** No structure
+search can be started from bmd-compute yet; the design is in
+`structure_search.md`. The values here are implemented in
+`backend/structure_search/incar_policy.py` and `potcar.py` and pinned by
+golden files in `tests/fixtures/structure_search/`.
 
-BMD scientific decision (5 Nov 2026):
+Scope (`backend/structure_search/admission.py`, policy
+`bmd_compute.structure_search_admission` v2): fixed-composition,
+ambient-pressure (`ExternalPressure = 0`), non-magnetic, plain-PBE searches.
+Compositions are refused by BMD's own composition screens of section 2: the
+spin-polarisation screen, the DFT+U rule and the heavy-element SOC screen.
+DFT-D3 depends on bonded connectivity and cannot be screened before a search.
+
+Role of the ladder: **search-grade screening and ranking only.** It is not
+the BMD Standard Geometry Relaxation of section 3 and its energies are never
+reported as BMD final energies. The five lowest-energy structurally distinct
+candidates are to be refined afterwards with that adaptive protocol and
+ranked by consistent plain-PBE static energies (not implemented yet).
+
+History: the ladder was proposed on 5 Nov 2026 (#65, PR #74) with the rule
 
 > The final relaxation step must be consistent with the accuracy of BMD's
 > Geometry Optimisation already implemented in bmd-compute. Before that,
 > follow the USPEX default recommendations (manual §3.1).
 
-The final relaxation is BMD Geometry Optimisation pass 1, unchanged, and a
-ranking single point follows it.
+so step 4 uses the INCAR settings of BMD Geometry Optimisation pass 1 and a
+ranking single point follows it. The 6 Nov decision keeps those settings but
+not the claim of equivalence.
 
-KPAR decision (5 Nov 2026): `KPAR = 1` on steps 1–3, `KPAR = 4` on steps
-4–5. Evidence from POWER (#59), on Si8 only:
+Validity of a step's result as a fitness evaluation (6 Nov 2026; to be
+enforced by the launch bridge, not yet implemented):
+
+| Step | Electronic convergence | Ionic convergence | Valid energy |
+| --- | --- | --- | --- |
+| 1–3 | required | not required (reaching `NSW` allowed) | required |
+| 4 | required | required | required |
+| 5 | required | — (single point) | required (the ranking energy) |
+
+KPAR (proposed 5 Nov 2026, retained provisionally with `NCORE = 4` on
+6 Nov 2026, subject to POWER validation): `KPAR = 1` on steps 1–3,
+`KPAR = 4` on steps 4–5. Evidence from POWER (#59), on Si8 only:
 - 6×6×6 mesh (20 irreducible k-points), 48 ranks: KPAR 1 took 12.5 s and
   KPAR 4 took 5.1 s (job 23367291).
 - KPAR 4 with fewer k-points than KPAR (Γ only, and 2×2×2 and 4×4×4 meshes)
@@ -456,18 +481,20 @@ depend only on the search's POTCARs, are set once per search.
 | 1 | USPEX manual INCAR_1 | 4 | 2 / 0.02 | 65 | early | 1e-2 | 0.1 | MP (`ISMEAR = 1`), `SIGMA = 0.10` | Low |
 | 2 | USPEX manual INCAR_2 | 4 | 1 / 0.30 | 55 | early | 1e-3 | 0.01 | MP, `SIGMA = 0.08` | Normal |
 | 3 | USPEX manual INCAR_3 | 3 | 2 / 0.02 | 65 | relaxation | 1e-3 | 0.01 | MP, `SIGMA = 0.07` | Normal |
-| 4 | BMD Geometry Optimisation pass 1 (`bmd_compute.geometry_relaxation/1`) | 3 | 2 | 99 | relaxation | 1e-6 | -0.01 | Gaussian, `SIGMA = 0.2` | Accurate |
-| 5 | ranking single point | 2 | -1 | 0 | ranking | 1e-6 | — | Gaussian, `SIGMA = 0.05` | Accurate |
+| 4 | screening relaxation with BMD Geometry Optimisation pass-1 INCAR settings | 3 | 2 | 99 | relaxation | 1e-6 | -0.01 | Gaussian, `SIGMA = 0.2` | Accurate |
+| 5 | search ranking single point | 2 | -1 | 0 | ranking | 1e-6 | — | Gaussian, `SIGMA = 0.05` | Accurate |
 
 - **Steps 1–3** set only the tags of the manual's example INCARs, plus the
   search-wide tags below. They set no `ALGO`, `LREAL`, `LASPH`, `NELM` or
   `ADDGRID`.
-- **Step 4** is BMD Geometry Optimisation pass 1 (section 3). Its INCAR is
-  the one BMD's own input generator writes for that stage for the search's
-  elements, not a copy: `ALGO = Fast`, `LREAL = False`, `LASPH = True`,
-  `NELM = 200`, no `ADDGRID`, and the values in the table. The provenance
-  record names the protocol and pass.
-- **Step 5** gives the energy USPEX ranks candidates by. USPEX ranks on VASP's
+- **Step 4** is a screening relaxation that uses the INCAR of BMD Geometry
+  Optimisation pass 1 (section 3): the one BMD's own input generator writes
+  for that stage for the search's elements, not a copy: `ALGO = Fast`,
+  `LREAL = False`, `LASPH = True`, `NELM = 200`, no `ADDGRID`, and the values
+  in the table. It is not the BMD protocol: no pass 2, no adaptive probe or
+  refinement, no Custodian, and USPEX's k-point mesh. The provenance record
+  (`step_4_incar_source`) says so.
+- **Step 5** gives the search-grade energy USPEX ranks candidates by. USPEX ranks on VASP's
   free energy F, not E0: in the Si8 pilot, individual 27 has
   F = −39.702683 eV and E0 = −39.702789 eV, and `Individuals_extended` shows
   −39.7027. With step 4's `SIGMA = 0.2`, the smearing-entropy term in F would
@@ -525,7 +552,8 @@ Safety checks:
   search's record (`bmd_stage_inputs_differ_from_search_record`).
 
 K-points: USPEX builds each mesh from `KresolStart` (one value per step,
-units 2π/Å). Steps 1–3 use the user's values. BMD's k-point policy
+units 2π/Å). A formula-only request uses the provisional defaults
+0.12, 0.10, 0.08, 0.04, 0.04 (`spec.DEFAULT_KRESOL_START`). BMD's k-point policy
 (reciprocal density 64, section 4) corresponds to a spacing of
 64^(−1/3) = 0.25 Å⁻¹, that is 0.0398 × 2π/Å; pymatgen's rounded meshes give
 0.040–0.042. Steps 4 and 5 must therefore use `KresolStart` ≤ 0.04. How

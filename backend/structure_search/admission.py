@@ -2,11 +2,17 @@
 
 ``spec.StructureSearchSpec`` checks that a search request is well formed.
 This module decides the narrower question of whether bmd-compute *supports*
-it. Version 1 of searches accepts only:
+it. The scope is the lab decision of 6 Nov 2026: fixed-composition,
+ambient-pressure, non-magnetic, plain-PBE searches. Version 2 accepts only:
 
 - ``calculationType = 300`` (fixed-composition 3D bulk crystal search);
 - PBE;
 - non-magnetic calculations (``ISPIN = 1`` on every step);
+- zero external pressure (``ExternalPressure = 0``);
+- at most ``MAX_ELEMENTS`` elements, ``MAX_CELL_ATOMS`` atoms per cell and
+  ``MAX_GENERATIONS`` generations (provisional v1 support limits);
+- exactly one ``KresolStart`` value per step of the screening ladder, with
+  steps 4 and 5 at BMD's k-point density (``incar_policy.require_spec_matches_ladder``);
 - elements that have a BMD POTCAR mapping (``potcar.bmd_potcar_symbol``).
 
 Non-magnetic is checked against the same composition screens the rest of
@@ -21,7 +27,14 @@ cannot switch treatments on per structure:
   from the one used afterwards;
 - a composition for which BMD's automatic DFT+U rule
   (``dft_u_policy.evaluate_dft_u``) decides "apply" is rejected for the same
-  reason.
+  reason;
+- an element in BMD's heavy-element spin-orbit screen
+  (``SOC_TRIGGER_ELEMENT_CLASSES``) is rejected: BMD evaluates the static
+  energy of such a material with SOC, which a plain-PBE search and its
+  plain-PBE finalist ranking cannot reproduce.
+
+These are BMD's own composition screens, the ones its automatic treatments
+use; admission adds no element list of its own.
 
 The DFT-D3 dispersion trigger depends on a structure's bonded
 connectivity, which a search does not have in advance; it is not evaluated
@@ -45,7 +58,14 @@ from backend.structure_search.spec import (
 
 
 ADMISSION_POLICY_ID = "bmd_compute.structure_search_admission"
-ADMISSION_POLICY_VERSION = 1
+# Version 2 (6 Nov 2026): adds the ambient-pressure, spin-orbit, size and
+# ladder checks. Version 1 was never used to run a search.
+ADMISSION_POLICY_VERSION = 2
+
+# Provisional v1 support limits (bmd-compute proposals, not lab decisions).
+MAX_ELEMENTS = 4
+MAX_CELL_ATOMS = 40
+MAX_GENERATIONS = 200
 
 UNSUPPORTED_CALCULATION_TYPE_CODE = "structure_search_calculation_type_not_supported"
 UNSUPPORTED_THEORY_CODE = "structure_search_theory_not_supported"
@@ -54,6 +74,11 @@ SPIN_SCREEN_ELEMENT_CODE = "structure_search_spin_screen_element"
 DFT_U_COMPOSITION_CODE = "structure_search_dft_u_composition"
 UNKNOWN_ELEMENT_CODE = "structure_search_unknown_element"
 NO_POTCAR_MAPPING_CODE = "structure_search_no_potcar_mapping"
+PRESSURE_NOT_SUPPORTED_CODE = "structure_search_pressure_not_supported"
+SOC_SCREEN_ELEMENT_CODE = "structure_search_soc_screen_element"
+TOO_MANY_ELEMENTS_CODE = "structure_search_too_many_elements"
+CELL_TOO_LARGE_CODE = "structure_search_cell_too_large"
+TOO_MANY_GENERATIONS_CODE = "structure_search_too_many_generations"
 
 
 class StructureSearchAdmissionError(CalculationValidationError):
@@ -102,6 +127,40 @@ def require_admissible_search(spec: StructureSearchSpec) -> StructureSearchSpec:
             code=SPIN_POLARIZED_NOT_SUPPORTED_CODE,
         )
 
+    if spec.external_pressure_gpa != 0:
+        raise StructureSearchAdmissionError(
+            f"Structure searches run at ambient pressure only; this search asks for "
+            f"{spec.external_pressure_gpa:g} GPa.",
+            code=PRESSURE_NOT_SUPPORTED_CODE,
+            external_pressure_gpa=spec.external_pressure_gpa,
+        )
+    if len(spec.elements) > MAX_ELEMENTS:
+        raise StructureSearchAdmissionError(
+            f"Structure searches support at most {MAX_ELEMENTS} elements; this one has "
+            f"{len(spec.elements)}.",
+            code=TOO_MANY_ELEMENTS_CODE,
+            elements=list(spec.elements),
+        )
+    if spec.max_atoms > MAX_CELL_ATOMS:
+        raise StructureSearchAdmissionError(
+            f"Structure searches support cells of at most {MAX_CELL_ATOMS} atoms; this one "
+            f"allows up to {spec.max_atoms}.",
+            code=CELL_TOO_LARGE_CODE,
+            suggestion="Lower the maximum atoms per cell.",
+            max_atoms=spec.max_atoms,
+        )
+    if spec.num_generations > MAX_GENERATIONS:
+        raise StructureSearchAdmissionError(
+            f"Structure searches support at most {MAX_GENERATIONS} generations.",
+            code=TOO_MANY_GENERATIONS_CODE,
+            num_generations=spec.num_generations,
+        )
+
+    from backend.structure_search.incar_policy import require_spec_matches_ladder
+
+    # One KresolStart value per ladder step; steps 4-5 at BMD's k-point density.
+    require_spec_matches_ladder(spec)
+
     unknown = _unknown_elements(spec.elements)
     if unknown:
         raise StructureSearchAdmissionError(
@@ -139,6 +198,16 @@ def require_admissible_search(spec: StructureSearchSpec) -> StructureSearchSpec:
             elements=triggering,
             gate=dft_u.get("gate"),
         )
+    soc_elements = _soc_screen_elements(spec.elements)
+    if soc_elements:
+        raise StructureSearchAdmissionError(
+            "Structure searches are plain PBE, but BMD evaluates the energy of materials "
+            f"containing {', '.join(soc_elements)} with spin-orbit coupling. "
+            "Searches containing these elements are not supported yet.",
+            code=SOC_SCREEN_ELEMENT_CODE,
+            elements=soc_elements,
+        )
+
     return spec
 
 
@@ -160,6 +229,37 @@ def _spin_screen_elements(elements) -> list[str]:
     return [symbol for symbol in elements if symbol in SPIN_TRIGGER_ELEMENT_CLASSES]
 
 
+def _soc_screen_elements(elements) -> list[str]:
+    from backend.calculations.method_considerations import SOC_TRIGGER_ELEMENT_CLASSES
+
+    return [symbol for symbol in elements if symbol in SOC_TRIGGER_ELEMENT_CLASSES]
+
+
+def admission_scope_record() -> dict:
+    """JSON-safe description of what this admission policy accepts."""
+
+    return {
+        "policy_id": ADMISSION_POLICY_ID,
+        "policy_version": ADMISSION_POLICY_VERSION,
+        "calculation_type": FIXED_COMPOSITION_BULK,
+        "theory": THEORY_PBE,
+        "spin_polarized": False,
+        "external_pressure_gpa": 0.0,
+        "composition_screens": [
+            "bmd_compute spin-polarisation screen (method_considerations.SPIN_TRIGGER_ELEMENT_CLASSES)",
+            "bmd_compute heavy-element SOC screen (method_considerations.SOC_TRIGGER_ELEMENT_CLASSES)",
+            "bmd_compute.dft_u policy (dft_u_policy.evaluate_dft_u)",
+        ],
+        "not_screened": ["DFT-D3 dispersion (depends on a structure's bonded connectivity)"],
+        "limits": {
+            "max_elements": MAX_ELEMENTS,
+            "max_cell_atoms": MAX_CELL_ATOMS,
+            "max_generations": MAX_GENERATIONS,
+            "status": "provisional",
+        },
+    }
+
+
 def _dft_u_record(spec: StructureSearchSpec) -> dict:
     from pymatgen.core import Composition
 
@@ -173,6 +273,15 @@ def _dft_u_record(spec: StructureSearchSpec) -> dict:
 __all__ = [
     "ADMISSION_POLICY_ID",
     "ADMISSION_POLICY_VERSION",
+    "CELL_TOO_LARGE_CODE",
+    "MAX_CELL_ATOMS",
+    "MAX_ELEMENTS",
+    "MAX_GENERATIONS",
+    "PRESSURE_NOT_SUPPORTED_CODE",
+    "SOC_SCREEN_ELEMENT_CODE",
+    "TOO_MANY_ELEMENTS_CODE",
+    "TOO_MANY_GENERATIONS_CODE",
+    "admission_scope_record",
     "DFT_U_COMPOSITION_CODE",
     "NO_POTCAR_MAPPING_CODE",
     "SPIN_POLARIZED_NOT_SUPPORTED_CODE",

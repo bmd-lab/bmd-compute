@@ -19,7 +19,7 @@ def _spec(**overrides):
         max_atoms=14,
         num_generations=40,
         stop_criterion=15,
-        kresol_start=(0.12, 0.10, 0.08, 0.06, 0.04),
+        kresol_start=(0.12, 0.10, 0.08, 0.04, 0.04),
         walltime="120:00:00",
     )
     values.update(overrides)
@@ -100,7 +100,7 @@ def test_from_mapping_round_trip_and_composition_forms():
         "max_atoms": 14,
         "num_generations": 40,
         "stop_criterion": 15,
-        "kresol_start": [0.12, 0.10, 0.08, 0.06, 0.04],
+        "kresol_start": [0.12, 0.10, 0.08, 0.04, 0.04],
         "walltime": "120:00:00",
         "external_pressure_gpa": 10,
     }
@@ -123,3 +123,56 @@ def test_from_mapping_rejects_unknown_and_missing_fields():
     with pytest.raises(StructureSearchSpecError) as excinfo:
         StructureSearchSpec.from_mapping(missing)
     assert excinfo.value.code == "missing_field"
+
+
+# --- formula-only defaults (single source for the preview) --------------------
+
+from backend.structure_search import spec as spec_module  # noqa: E402
+
+
+def test_default_search_spec_from_a_composition():
+    spec = spec_module.default_search_spec({"Mg": 2, "Si": 1, "O": 4})
+    assert (spec.elements, spec.counts) == (("Mg", "Si", "O"), (2, 1, 4))
+    assert (spec.min_atoms, spec.max_atoms) == (7, 14)
+    assert spec.stop_criterion == spec.max_atoms
+    assert spec.num_generations == spec_module.DEFAULT_NUM_GENERATIONS
+    assert spec.kresol_start == spec_module.DEFAULT_KRESOL_START
+    assert spec.walltime == spec_module.DEFAULT_SEARCH_WALLTIME
+    assert spec.external_pressure_gpa == 0.0
+    assert spec.resolved_population_size == default_population_size(14)
+
+
+@pytest.mark.parametrize(
+    ("formula_atoms", "expected"),
+    [(1, (1, 20)), (2, (2, 20)), (5, (5, 20)), (7, (7, 14)), (17, (17, 17)), (25, (25, 25))],
+)
+def test_default_cell_range(formula_atoms, expected):
+    assert spec_module.default_cell_range(formula_atoms) == expected
+
+
+def test_default_search_spec_overrides_and_blanks():
+    spec = spec_module.default_search_spec(
+        {"Si": 1}, min_atoms="8", max_atoms="16", num_generations="", walltime="72:00:00"
+    )
+    assert (spec.min_atoms, spec.max_atoms, spec.stop_criterion) == (8, 16, 16)
+    assert spec.num_generations == spec_module.DEFAULT_NUM_GENERATIONS
+    assert spec.walltime == "72:00:00"
+
+
+def test_default_kpoints_match_the_ladder():
+    from backend.structure_search.incar_policy import (
+        BMD_STANDARD_MAX_KRESOL,
+        BMD_STANDARD_STEPS,
+        NUM_STEPS,
+    )
+
+    assert len(spec_module.DEFAULT_KRESOL_START) == NUM_STEPS
+    for step in BMD_STANDARD_STEPS:
+        assert spec_module.DEFAULT_KRESOL_START[step - 1] <= BMD_STANDARD_MAX_KRESOL
+
+
+def test_defaults_are_recorded_as_provisional():
+    record = spec_module.search_defaults_record()
+    assert record["status"] == "provisional"
+    assert record["planned_finalist_count"] == spec_module.PLANNED_FINALIST_COUNT == 5
+    assert set(record["provisional_fields"]) == set(spec_module.PROVISIONAL_DEFAULTS)

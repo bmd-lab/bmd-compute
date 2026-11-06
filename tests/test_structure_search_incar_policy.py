@@ -124,9 +124,9 @@ def test_manual_steps_set_only_the_manual_tags_and_search_wide_tags(si_record, s
         assert key not in settings
 
 
-# --- Step 4: BMD Geometry Optimisation pass 1, unchanged ----------------------
+# --- Step 4: screening relaxation with BMD pass-1 INCAR settings -------------
 
-def test_step_4_is_bmd_geometry_optimisation_pass_1(si_record):
+def test_step_4_uses_bmd_pass_1_incar_settings(si_record):
     settings = _settings(si_record, 4)
     pass_1, _ = bmd_stage_settings(si_record)
     # Every tag BMD's generator writes for pass 1, unchanged; the search adds only KPAR.
@@ -142,9 +142,38 @@ def test_step_4_is_bmd_geometry_optimisation_pass_1(si_record):
     assert settings["ENCUT"] == si_record["ENCUT"] == 350
     assert (settings["ALGO"], settings["NSW"], settings["NELM"]) == ("Fast", 99, 200)
     assert (settings["ISMEAR"], settings["SIGMA"]) == (0, 0.2)
-    assert incar_policy_record(si_record)["step_4_protocol"] == {
-        "id": PROTOCOL_ID, "version": 1, "pass": 1, "search_wide_additions": {"KPAR": 4},
-    }
+    source = incar_policy_record(si_record)["step_4_incar_source"]
+    assert source["id"] == PROTOCOL_ID and source["version"] == 1 and source["pass"] == 1
+    assert source["search_wide_additions"] == {"KPAR": 4}
+    assert "not the BMD protocol" in source["use"]
+
+
+def test_ladder_is_labelled_search_grade_screening_not_bmd_relaxation(si_record):
+    record = incar_policy_record(si_record)
+    assert record["energy_grade"] == "search-grade"
+    assert record["equivalent_to_bmd_adaptive_relaxation"] is False
+    assert "step_4_protocol" not in record
+    roles = [row["role"] for row in record["steps"]]
+    assert roles == ["screening relaxation"] * 4 + ["search ranking single point"]
+    for row in record["steps"]:
+        # No step is labelled as the BMD protocol itself.
+        assert not row["source"].startswith("BMD Geometry Optimisation pass 1 (")
+    assert "screening only" in record["steps"][3]["source"]
+    assert "search ranking only" in record["steps"][4]["source"]
+
+
+def test_step_validity_follows_the_lab_decision(si_record):
+    validity = {row["step"]: row for row in incar_policy.STEP_VALIDITY}
+    assert set(validity) == {1, 2, 3, 4, 5}
+    for step in (1, 2, 3):
+        assert validity[step]["electronic_convergence"] is True
+        assert validity[step]["ionic_convergence"] is False  # reaching NSW is allowed
+    assert validity[4]["electronic_convergence"] and validity[4]["ionic_convergence"]
+    assert validity[5]["electronic_convergence"] and validity[5]["valid_energy"]
+    record = incar_policy_record(si_record)["step_validity"]
+    assert record["criteria"] == [dict(row) for row in incar_policy.STEP_VALIDITY]
+    # Recorded policy only: the launch bridge does not enforce it yet.
+    assert record["enforced"] is False
 
 
 # --- Step 5: ranking single point --------------------------------------------
@@ -288,8 +317,14 @@ def test_policy_record(si_record):
     assert record["plane_wave_cutoff"] == si_record
     assert record["cutoffs"] == {"early": 250, "relaxation": 350, "ranking": 620}
     decisions = {decision["topic"]: decision for decision in record["lab_decisions"]}
-    assert set(decisions) == {"INCAR ladder", "KPAR"}
-    assert all(decision["date"] == "2026-11-05" for decision in decisions.values())
+    assert set(decisions) == {
+        "INCAR ladder", "KPAR", "Role of the ladder", "Validity of a search step", "KPAR and NCORE",
+    }
+    assert decisions["INCAR ladder"]["date"] == decisions["KPAR"]["date"] == "2026-11-05"
+    for topic in ("Role of the ladder", "Validity of a search step", "KPAR and NCORE"):
+        assert decisions[topic]["date"] == "2026-11-06"
+        assert decisions[topic]["decided_by"] == "Lee Burton"
+    assert "must not be described as equivalent" in decisions["Role of the ladder"]["rule"]
     assert "final relaxation step must be consistent" in decisions["INCAR ladder"]["rule"]
     assert decisions["KPAR"]["rule"] == "KPAR = 1 on steps 1-3, KPAR = 4 on steps 4-5."
     assert record["values_needing_lab_decision"] == incar_policy.VALUES_NEEDING_LAB_DECISION

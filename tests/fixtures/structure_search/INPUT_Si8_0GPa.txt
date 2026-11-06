@@ -18,11 +18,11 @@ Si
 8 : stopCrit
 
 % abinitioCode
-1 1 1 1
+1 1 1 1 1
 % ENDabinit
 
 % KresolStart
-0.1 0.08 0.06 0.04
+0.1 0.08 0.06 0.04 0.04
 % Kresolend
 
 % commandExecutable
@@ -30,6 +30,7 @@ sh /bmd/placeholder/bmd_bridge.sh 1
 sh /bmd/placeholder/bmd_bridge.sh 2
 sh /bmd/placeholder/bmd_bridge.sh 3
 sh /bmd/placeholder/bmd_bridge.sh 4
+sh /bmd/placeholder/bmd_bridge.sh 5
 % EndExecutable
 
 -1 : whichCluster

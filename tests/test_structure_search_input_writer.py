@@ -35,22 +35,21 @@ def _mg2sio4():
     return StructureSearchSpec(
         elements=("Mg", "Si", "O"), counts=(2, 1, 4), min_atoms=7, max_atoms=14,
         num_generations=40, stop_criterion=15,
-        kresol_start=(0.12, 0.10, 0.08, 0.06, 0.04), walltime="120:00:00",
-        external_pressure_gpa=10,
+        kresol_start=(0.12, 0.10, 0.08, 0.04, 0.04), walltime="120:00:00",
     )
 
 
 def _si8():
     return StructureSearchSpec(
         elements=("Si",), counts=(8,), min_atoms=8, max_atoms=8,
-        num_generations=20, stop_criterion=8, kresol_start=(0.1, 0.08, 0.06, 0.04),
+        num_generations=20, stop_criterion=8, kresol_start=(0.1, 0.08, 0.06, 0.04, 0.04),
         walltime="48:00:00", population_size=12, initial_population_size=24,
     )
 
 
 @pytest.mark.parametrize(
     ("spec", "golden"),
-    [(_mg2sio4, "INPUT_Mg2SiO4_10GPa.txt"), (_si8, "INPUT_Si8_0GPa.txt")],
+    [(_mg2sio4, "INPUT_Mg2SiO4_0GPa.txt"), (_si8, "INPUT_Si8_0GPa.txt")],
 )
 def test_input_matches_golden_file(spec, golden):
     assert render_input_text(spec(), SETTINGS) == (FIXTURES / golden).read_text(encoding="utf-8")
@@ -68,21 +67,47 @@ def test_input_is_complete_and_uses_fixed_execution_settings():
     assert keywords["commandExecutable"] == [f"sh {BRIDGE} {n}" for n in range(1, 6)]
     assert keywords["atomType"] == ["Mg Si O"]
     assert keywords["numSpecies"] == ["2 1 4"]
-    assert keywords["ExternalPressure"] == ["10"]
+    assert keywords["ExternalPressure"] == ["0"]
     assert keywords["populationSize"] == keywords["initialPopSize"] == ["30"]
 
 
-def test_one_entry_per_step_for_every_per_step_keyword():
-    for steps in (1, 3, 6):
-        spec = StructureSearchSpec(
-            elements=("C",), counts=(4,), min_atoms=4, max_atoms=8, num_generations=5,
-            stop_criterion=3, kresol_start=tuple(0.1 - 0.01 * i for i in range(steps)),
-            walltime="1:00:00",
-        )
+def test_one_entry_per_ladder_step_for_every_per_step_keyword():
+    from backend.structure_search.incar_policy import NUM_STEPS
+
+    for spec in (_mg2sio4(), _si8()):
         keywords = read_input_keywords(render_input_text(spec, SETTINGS))
-        assert len(keywords["abinitioCode"][0].split()) == steps
-        assert len(keywords["KresolStart"][0].split()) == steps
-        assert len(keywords["commandExecutable"]) == steps
+        assert len(keywords["abinitioCode"][0].split()) == NUM_STEPS == 5
+        assert len(keywords["KresolStart"][0].split()) == NUM_STEPS
+        assert len(keywords["commandExecutable"]) == NUM_STEPS
+
+
+@pytest.mark.parametrize("steps", [1, 3, 4, 6])
+def test_spec_with_a_different_step_count_is_never_written(steps, tmp_path):
+    from backend.structure_search.incar_policy import IncarPolicyError
+
+    spec = StructureSearchSpec(
+        elements=("C",), counts=(4,), min_atoms=4, max_atoms=8, num_generations=5,
+        stop_criterion=3, kresol_start=tuple([0.04] * steps), walltime="1:00:00",
+    )
+    with pytest.raises(IncarPolicyError) as excinfo:
+        write_input_file(tmp_path, spec, SETTINGS)
+    assert excinfo.value.code == "step_count_mismatch"
+    assert not (tmp_path / INPUT_FILENAME).exists()
+
+
+@pytest.mark.parametrize(
+    "fixture", sorted(path.name for path in FIXTURES.glob("INPUT_*.txt"))
+)
+def test_every_golden_input_matches_the_ladder(fixture):
+    from backend.structure_search.incar_policy import BMD_STANDARD_MAX_KRESOL, NUM_STEPS
+
+    keywords = read_input_keywords((FIXTURES / fixture).read_text(encoding="utf-8"))
+    assert keywords["abinitioCode"] == [" ".join(["1"] * NUM_STEPS)]
+    kresol = [float(value) for value in keywords["KresolStart"][0].split()]
+    assert len(kresol) == NUM_STEPS
+    assert max(kresol[3:]) <= BMD_STANDARD_MAX_KRESOL
+    assert len(keywords["commandExecutable"]) == NUM_STEPS
+    assert keywords["ExternalPressure"] == ["0"]
 
 
 def test_block_markers_are_the_manual_spellings():
@@ -97,16 +122,29 @@ def test_block_markers_are_the_manual_spellings():
         assert lines.index(f"% {closing}") > lines.index(f"% {opening}")
 
 
-def test_pressure_only_as_external_pressure():
+def test_pressure_only_as_external_pressure_and_only_ambient():
     text = render_input_text(_mg2sio4(), SETTINGS)
     assert "PSTRESS" not in text.upper()
-    assert "10 : ExternalPressure" in text.splitlines()
+    assert "0 : ExternalPressure" in text.splitlines()
+
+
+def test_nonzero_pressure_is_never_written(tmp_path):
+    spec = StructureSearchSpec(
+        elements=("Mg", "Si", "O"), counts=(2, 1, 4), min_atoms=7, max_atoms=14,
+        num_generations=40, stop_criterion=15,
+        kresol_start=(0.12, 0.10, 0.08, 0.04, 0.04), walltime="120:00:00",
+        external_pressure_gpa=10,
+    )
+    with pytest.raises(StructureSearchAdmissionError) as excinfo:
+        write_input_file(tmp_path, spec, SETTINGS)
+    assert excinfo.value.code == "structure_search_pressure_not_supported"
+    assert not (tmp_path / INPUT_FILENAME).exists()
 
 
 def test_inadmissible_spec_is_never_written(tmp_path):
     spec = StructureSearchSpec(
         elements=("Fe", "O"), counts=(2, 3), min_atoms=5, max_atoms=10, num_generations=5,
-        stop_criterion=3, kresol_start=(0.1,), walltime="1:00:00",
+        stop_criterion=3, kresol_start=(0.12, 0.10, 0.08, 0.04, 0.04), walltime="1:00:00",
     )
     with pytest.raises(StructureSearchAdmissionError):
         write_input_file(tmp_path, spec, SETTINGS)

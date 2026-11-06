@@ -8,7 +8,7 @@ Mg Si O
 2 1 4
 % EndNumSpecies
 
-10 : ExternalPressure
+0 : ExternalPressure
 7 : minAt
 14 : maxAt
 
@@ -22,7 +22,7 @@ Mg Si O
 % ENDabinit
 
 % KresolStart
-0.12 0.1 0.08 0.06 0.04
+0.12 0.1 0.08 0.04 0.04
 % Kresolend
 
 % commandExecutable
