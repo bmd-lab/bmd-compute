@@ -1,28 +1,28 @@
 """Browser preview of a "New structure" request: formula in, search plan out.
 
 The front page's **New structure** option asks only for a chemical formula.
-This module turns that formula into the plan BMD Compute would run, and is
-used only to *show* that plan; it submits nothing (search submission is
-#68/#70 and is not wired yet).
+This module parses the formula and shows the plan BMD Compute would run. It
+submits nothing (search submission is not implemented yet).
 
-What a New structure request returns: one ground-state structure, relaxed to
-the same accuracy as the **Relaxed structure** Desired Output. The plan is
+Every default, limit and policy shown here comes from the authoritative
+search specification, never from this module:
 
-1. a USPEX evolutionary search (fixed composition, PBE, non-magnetic), whose
-   relaxations use the loose-to-tight INCAR ladder of
-   ``docs/structure_search.md`` §6, and then
-2. the BMD Standard Geometry Relaxation of the best distinct candidates,
-   exactly the stages of the Relaxed structure Desired Output. The candidate
-   with the lowest final PBE energy per atom from those relaxations is the
-   result. USPEX's own (search-grade) energies only choose the candidates.
+* defaults: :func:`backend.structure_search.spec.default_search_spec` and
+  :func:`~backend.structure_search.spec.search_defaults_record`;
+* scope and limits: :func:`backend.structure_search.admission.require_admissible_search`;
+* the screening ladder: ``backend.structure_search.incar_policy``;
+* search resources: ``backend.calculations.resources.structure_search_resources``.
 
-Every default below that is marked *proposed* still needs BMD Lab sign-off
-(see ``PROPOSED_DEFAULTS_NOTE``). They live here, in one place, so that the
-later search spec (``backend.structure_search.spec`` on the
-``structure-search-spec`` branch) can take its values from them.
+This module only owns how a formula is *read* (:func:`parse_formula`).
 
-Standard library and pymatgen's periodic table only; nothing here touches
-POWER.
+What the plan shows (lab decision, 6 Nov 2026):
+
+1. a USPEX search whose candidates are screened by a five-step relaxation
+   ladder and ranked by a *search-grade* single-point energy, and
+2. (planned, not yet available) the five lowest-energy structurally distinct
+   candidates refined with BMD's adaptive geometry relaxation and ranked by
+   plain-PBE static energies. Search-grade energies are never reported as
+   BMD final energies.
 """
 
 from __future__ import annotations
@@ -33,43 +33,15 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from backend.calculations.registry import CalculationValidationError
-from backend.calculations.resources import (
-    structure_search_resources,
-    validate_walltime,
-    walltime_seconds,
-)
+from backend.calculations.resources import structure_search_resources, walltime_seconds
 
 PLAN_SCHEMA = "bmd_compute.structure_prediction_preview"
-PLAN_SCHEMA_VERSION = 1
+PLAN_SCHEMA_VERSION = 2
 
 NEW_STRUCTURE_OUTPUT = "new_structure"
-GROUND_STATE_REFINEMENT_OUTPUT = "relaxed_structure"
 
-# --- proposed defaults (BMD Lab sign-off pending) -------------------------------------------
-
-PROPOSED_DEFAULTS_NOTE = (
-    "Proposed defaults, pending BMD Lab sign-off: pressure, cell-size range, "
-    "generations, stopping rule, walltime and the number of candidates refined."
-)
-DEFAULT_PRESSURE_GPA = 0.0
-# Cells of 1 .. floor(DEFAULT_MAX_CELL_ATOMS / atoms per formula unit) formula units.
-DEFAULT_MAX_CELL_ATOMS = 20
-DEFAULT_NUM_GENERATIONS = 50
-DEFAULT_SEARCH_WALLTIME = "168:00:00"  # 7 days
-# Distinct best USPEX candidates given the BMD Standard Geometry Relaxation.
-DEFAULT_REFINED_CANDIDATES = 5
-# USPEX 25.0 manual §4.2: populationSize defaults to 2 x N rounded to the
-# closest 10, at most 60. bmd-compute writes it explicitly.
-POPULATION_SIZE_MAX = 60
-
-# --- hard limits (what this entry point accepts at all) -------------------------------------
-
-MAX_ELEMENTS = 4
-MAX_FORMULA_ATOMS = 20
-MAX_CELL_ATOMS = 40
+# How long a typed formula may be (input handling only, not a scientific limit).
 MAX_FORMULA_LENGTH = 64
-MAX_PRESSURE_GPA = 500.0
-MAX_GENERATIONS = 200
 
 _TOKEN = re.compile(r"([A-Z][a-z]?)|(\()|(\))|(\d+)")
 
@@ -153,14 +125,7 @@ def parse_formula(text: str) -> dict[str, int]:
                 raise FormulaError("A count must follow an element or ')'.", code="unreadable_formula")
     if len(stack) != 1:
         raise FormulaError("The formula has an unmatched '('.", code="unbalanced_parentheses")
-    composition = stack[0]
-    if len(composition) > MAX_ELEMENTS:
-        raise FormulaError(
-            f"Structure prediction supports at most {MAX_ELEMENTS} elements; "
-            f"{formula} has {len(composition)}.",
-            code="too_many_elements",
-        )
-    return composition
+    return stack[0]
 
 
 def reduce_composition(composition: Mapping[str, int]) -> dict[str, int]:
@@ -190,42 +155,24 @@ def walltime_display(walltime: str) -> str:
     return " ".join(words) or "0 min"
 
 
-def default_population_size(max_atoms: int) -> int:
-    rounded = int(math.floor(2 * max_atoms / 10 + 0.5)) * 10
-    return min(POPULATION_SIZE_MAX, max(10, rounded))
+def reduce_composition(composition: Mapping[str, int]) -> dict[str, int]:
+    divisor = 0
+    for count in composition.values():
+        divisor = math.gcd(divisor, count)
+    return {element: count // divisor for element, count in composition.items()}
 
 
-def _optional_int(value: Any, name: str, *, minimum: int, maximum: int) -> int | None:
-    text = "" if value is None else str(value).strip()
-    if not text:
-        return None
-    try:
-        number = int(text)
-    except ValueError:
-        raise FormulaError(f"{name} must be a whole number.", code="invalid_number") from None
-    if not minimum <= number <= maximum:
-        raise FormulaError(f"{name} must be between {minimum} and {maximum}.", code="out_of_range")
-    return number
-
-
-def _optional_pressure(value: Any) -> float | None:
-    text = "" if value is None else str(value).strip()
-    if not text:
-        return None
-    try:
-        number = float(text)
-    except ValueError:
-        raise FormulaError("Pressure must be a number in GPa.", code="invalid_number") from None
-    if not math.isfinite(number) or not 0 <= number <= MAX_PRESSURE_GPA:
-        raise FormulaError(f"Pressure must be between 0 and {MAX_PRESSURE_GPA:g} GPa.", code="out_of_range")
-    return number
+def formula_text(composition: Mapping[str, int]) -> str:
+    return "".join(f"{e}{n if n != 1 else ''}" for e, n in composition.items())
 
 
 @dataclass(frozen=True)
 class AdvancedSettings:
-    """Optional overrides from the collapsed Advanced panel (blank = default)."""
+    """Optional overrides from the collapsed Advanced panel (blank = default).
 
-    pressure_gpa: Any = None
+    Pressure is not offered: searches run at ambient pressure only.
+    """
+
     min_atoms: Any = None
     max_atoms: Any = None
     num_generations: Any = None
@@ -235,82 +182,100 @@ class AdvancedSettings:
         return all(str(v or "").strip() == "" for v in self.__dict__.values())
 
 
+def preview_defaults() -> dict[str, Any]:
+    """The defaults the Advanced panel shows as placeholders (from the spec)."""
+
+    from backend.structure_search.spec import search_defaults_record
+
+    record = search_defaults_record()
+    return {**record, "walltime_display": walltime_display(record["walltime"])}
+
+
 def build_prediction_plan(formula: str, advanced: AdvancedSettings | None = None) -> dict[str, Any]:
-    """The plan a New structure request for ``formula`` would run (preview only)."""
+    """The plan a New structure request for ``formula`` would run (preview only).
+
+    Raises :class:`FormulaError` for an unreadable formula and the spec's or
+    admission's validation error for a request outside the search scope.
+    """
+
+    from backend.structure_search import admission, incar_policy, spec as spec_module
 
     advanced = advanced or AdvancedSettings()
     entered = parse_formula(formula)
     composition = reduce_composition(entered)
-    formula_atoms = sum(composition.values())
-    if formula_atoms > MAX_FORMULA_ATOMS:
+    if len(composition) > admission.MAX_ELEMENTS:
+        # Checked before building a spec so the message names the formula.
         raise FormulaError(
-            f"{formula_text(composition)} has {formula_atoms} atoms per formula unit; "
-            f"structure prediction supports at most {MAX_FORMULA_ATOMS}.",
-            code="formula_too_large",
+            f"Structure prediction supports at most {admission.MAX_ELEMENTS} elements; "
+            f"{formula_text(composition)} has {len(composition)}.",
+            code=admission.TOO_MANY_ELEMENTS_CODE,
         )
+    spec = spec_module.default_search_spec(
+        composition,
+        min_atoms=advanced.min_atoms,
+        max_atoms=advanced.max_atoms,
+        num_generations=advanced.num_generations,
+        walltime=advanced.walltime,
+    )
+    admission.require_admissible_search(spec)
 
-    default_max = max(formula_atoms, (DEFAULT_MAX_CELL_ATOMS // formula_atoms) * formula_atoms)
-    min_atoms = _optional_int(advanced.min_atoms, "Minimum atoms per cell", minimum=1, maximum=MAX_CELL_ATOMS)
-    max_atoms = _optional_int(advanced.max_atoms, "Maximum atoms per cell", minimum=1, maximum=MAX_CELL_ATOMS)
-    min_atoms = formula_atoms if min_atoms is None else min_atoms
-    max_atoms = default_max if max_atoms is None else max_atoms
-    if min_atoms > max_atoms:
-        raise FormulaError("The minimum atoms per cell is larger than the maximum.", code="atom_range_inverted")
-    cell_sizes = [n for n in range(min_atoms, max_atoms + 1) if n % formula_atoms == 0]
-    if not cell_sizes:
-        raise FormulaError(
-            f"No cell between {min_atoms} and {max_atoms} atoms holds a whole number of "
-            f"{formula_text(composition)} formula units ({formula_atoms} atoms each).",
-            code="atom_range_excludes_composition",
-            suggestion="Widen the atoms-per-cell range.",
-        )
-
-    pressure = _optional_pressure(advanced.pressure_gpa)
-    pressure = DEFAULT_PRESSURE_GPA if pressure is None else pressure
-    generations = _optional_int(advanced.num_generations, "Generations", minimum=1, maximum=MAX_GENERATIONS)
-    generations = DEFAULT_NUM_GENERATIONS if generations is None else generations
-    walltime_text = str(advanced.walltime or "").strip() or DEFAULT_SEARCH_WALLTIME
-    walltime = validate_walltime(walltime_text)
-    resources = structure_search_resources(walltime)
-
-    population = default_population_size(max_atoms)
+    cutoffs = incar_policy.ladder_cutoffs(incar_policy.search_cutoff_record(spec.elements))
+    step_cutoff = ("early", "early", "relaxation", "relaxation", "ranking")
+    ladder = [
+        {
+            "step": step,
+            "role": incar_policy.STEP_ROLES[step - 1],
+            "source": incar_policy.STEP_SOURCES[step - 1],
+            "encut_ev": cutoffs[step_cutoff[step - 1]],
+            "kresol": spec.kresol_start[step - 1],
+            "validity": dict(incar_policy.STEP_VALIDITY[step - 1]),
+        }
+        for step in range(1, incar_policy.NUM_STEPS + 1)
+    ]
+    formula_atoms = sum(spec.counts)
+    cell_sizes = [n for n in range(spec.min_atoms, spec.max_atoms + 1) if n % formula_atoms == 0]
+    record = spec.to_record()
+    resources = structure_search_resources(spec.walltime)
     return {
         "schema": PLAN_SCHEMA,
         "schema_version": PLAN_SCHEMA_VERSION,
         "desired_output": NEW_STRUCTURE_OUTPUT,
         "entered_formula": formula.strip(),
         "formula": formula_text(composition),
-        "composition": [{"element": e, "count": n} for e, n in composition.items()],
         "formula_atoms": formula_atoms,
         "reduced_from_entered": composition != entered,
-        "defaults_note": PROPOSED_DEFAULTS_NOTE,
         "advanced_overrides": not advanced.is_empty(),
+        "spec": record,
+        "defaults": spec_module.search_defaults_record(),
+        "scope": admission.admission_scope_record(),
         "search": {
             "method": "USPEX 25.0 evolutionary search, fixed composition (calculationType 300)",
-            "theory": "PBE, non-magnetic",
-            "pressure_gpa": pressure,
-            "min_atoms": min_atoms,
-            "max_atoms": max_atoms,
+            "theory": "plain PBE, non-magnetic",
+            "pressure_gpa": spec.external_pressure_gpa,
+            "min_atoms": spec.min_atoms,
+            "max_atoms": spec.max_atoms,
             "cell_sizes": cell_sizes,
             "formula_units": [n // formula_atoms for n in cell_sizes],
-            "population_size": population,
-            "initial_population_size": population,
-            "num_generations": generations,
-            "stop_criterion": max_atoms,
-            "relaxation_ladder": (
-                "Loose-to-tight INCAR ladder; the last step uses BMD standards "
-                "(docs/structure_search.md §6, sign-off pending, #65)."
-            ),
-            "walltime": walltime,
-            "walltime_display": walltime_display(walltime),
+            "population_size": spec.resolved_population_size,
+            "initial_population_size": spec.resolved_initial_population_size,
+            "num_generations": spec.num_generations,
+            "stop_criterion": spec.stop_criterion,
+            "energy_grade": incar_policy.SEARCH_ENERGY_GRADE,
+            "equivalent_to_bmd_adaptive_relaxation": incar_policy.EQUIVALENT_TO_BMD_ADAPTIVE_RELAXATION,
+            "ladder": ladder,
+            "cutoffs_ev": cutoffs,
+            "validity_enforced": incar_policy.STEP_VALIDITY_ENFORCED,
+            "walltime": spec.walltime,
+            "walltime_display": walltime_display(spec.walltime),
             "resources": resources.to_dict(),
         },
         "refinement": {
-            "desired_output": GROUND_STATE_REFINEMENT_OUTPUT,
-            "candidates": DEFAULT_REFINED_CANDIDATES,
-            "method": "BMD Standard Geometry Relaxation (two PBE passes), as for Relaxed structure",
-            "selection": "lowest final PBE energy per atom",
-            "resources": "automatic, as for any Relaxed structure calculation",
+            "status": "planned, not yet available",
+            "candidates": spec_module.PLANNED_FINALIST_COUNT,
+            "selection": "lowest search-grade energy per atom, structurally distinct",
+            "method": "BMD adaptive geometry relaxation, then a plain-PBE static energy",
+            "protocols": ["bmd_compute.geometry_relaxation/1", "bmd_compute.geometry_convergence/1"],
+            "ranking": "final plain-PBE static energy per atom",
         },
         "submission_available": False,
     }
@@ -318,18 +283,13 @@ def build_prediction_plan(formula: str, advanced: AdvancedSettings | None = None
 
 __all__ = [
     "AdvancedSettings",
-    "DEFAULT_MAX_CELL_ATOMS",
-    "DEFAULT_NUM_GENERATIONS",
-    "DEFAULT_PRESSURE_GPA",
-    "DEFAULT_REFINED_CANDIDATES",
-    "DEFAULT_SEARCH_WALLTIME",
     "FormulaError",
-    "GROUND_STATE_REFINEMENT_OUTPUT",
+    "MAX_FORMULA_LENGTH",
     "NEW_STRUCTURE_OUTPUT",
-    "PROPOSED_DEFAULTS_NOTE",
     "build_prediction_plan",
-    "default_population_size",
     "formula_text",
     "parse_formula",
+    "preview_defaults",
     "reduce_composition",
+    "walltime_display",
 ]

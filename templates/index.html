@@ -1249,7 +1249,8 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                         <span class="stage-number">1</span>
                         <h2>New Structure</h2>
                     </div>
-                    <div class="summary-line">Predict the ground-state crystal structure of a composition. Only the formula is needed.</div>
+                    <div class="summary-line">Search for low-energy crystal structures of a composition. Only the formula is needed.</div>
+                    <div class="summary-line" data-prediction-scope>Ambient pressure, non-magnetic, plain PBE. Compositions BMD would treat with spin polarisation, DFT+U or spin-orbit coupling are not supported yet.</div>
                 </div>
                 <div class="stage-status">
                     {% if prediction.error %}<span class="pill failed">Failed</span>{% elif prediction.plan %}<span class="pill ready">Planned</span>{% else %}<span class="pill">Pending</span>{% endif %}
@@ -1273,24 +1274,20 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                     <div class="summary-line">Leave blank to use BMD Compute's defaults.</div>
                     <div class="form-grid">
                         <div class="form-row">
-                            <label>Pressure (GPa)</label>
-                            <input name="pressure_gpa" inputmode="decimal" placeholder="0" value="{{ prediction.advanced.pressure_gpa or '' }}">
-                        </div>
-                        <div class="form-row">
                             <label>Minimum atoms per cell</label>
                             <input name="min_atoms" inputmode="numeric" placeholder="one formula unit" value="{{ prediction.advanced.min_atoms or '' }}">
                         </div>
                         <div class="form-row">
                             <label>Maximum atoms per cell</label>
-                            <input name="max_atoms" inputmode="numeric" placeholder="up to 20" value="{{ prediction.advanced.max_atoms or '' }}">
+                            <input name="max_atoms" inputmode="numeric" placeholder="up to {{ prediction.defaults.max_cell_atoms }}" value="{{ prediction.advanced.max_atoms or '' }}">
                         </div>
                         <div class="form-row">
                             <label>Generations</label>
-                            <input name="num_generations" inputmode="numeric" placeholder="50" value="{{ prediction.advanced.num_generations or '' }}">
+                            <input name="num_generations" inputmode="numeric" placeholder="{{ prediction.defaults.num_generations }}" value="{{ prediction.advanced.num_generations or '' }}">
                         </div>
                         <div class="form-row">
                             <label>Search walltime (H:MM:SS)</label>
-                            <input name="search_walltime" placeholder="168:00:00" value="{{ prediction.advanced.walltime or '' }}">
+                            <input name="search_walltime" placeholder="{{ prediction.defaults.walltime }}" value="{{ prediction.advanced.walltime or '' }}">
                         </div>
                     </div>
                 </details>
@@ -1340,9 +1337,9 @@ button.hardware-custom-toggle[aria-expanded="true"] {
             {% endif %}
 
             <ol class="prediction-steps">
-                <li><strong>Search.</strong> {{ plan.search.method }}, {{ plan.search.theory }}. Candidates are relaxed with a loose-to-tight ladder whose last step uses BMD standards.</li>
-                <li><strong>Refine.</strong> The {{ plan.refinement.candidates }} best distinct candidates get the {{ plan.refinement.method }}.</li>
-                <li><strong>Result.</strong> The candidate with the {{ plan.refinement.selection }} is returned as the ground-state structure.</li>
+                <li data-prediction-step="search"><strong>Search (search-grade).</strong> {{ plan.search.method }}, {{ plan.search.theory }}. Each candidate is screened by a five-step relaxation ladder, and USPEX ranks candidates by a search-grade single-point energy. This ladder is not BMD's geometry relaxation, and its energies are used only to rank candidates within the search.</li>
+                <li data-prediction-step="refinement"><strong>Finalist refinement (planned, not yet available).</strong> The {{ plan.refinement.candidates }} lowest-energy structurally distinct candidates will be relaxed with BMD's adaptive geometry relaxation and given a plain-PBE static energy.</li>
+                <li data-prediction-step="result"><strong>Result.</strong> The finalist with the lowest final static energy per atom, alongside the other ranked structures. A search cannot guarantee the global minimum.</li>
             </ol>
 
             <div class="metric-strip">
@@ -1368,11 +1365,10 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                 <details class="disclosure">
                     <summary>Search Settings</summary>
                     <table class="compact-table">
-                        <tr><td>Composition</td><td>{% for item in plan.composition %}{{ item.element }} {{ item.count }}{% if not loop.last %}, {% endif %}{% endfor %} per formula unit</td></tr>
+                        <tr><td>Composition</td><td>{% for item in plan.spec.composition %}{{ item.element }} {{ item.count }}{% if not loop.last %}, {% endif %}{% endfor %} per formula unit</td></tr>
                         <tr><td>Cells searched</td><td>{% for n in plan.search.cell_sizes %}{{ n }} atoms ({{ plan.search.formula_units[loop.index0] }} f.u.){% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
                         <tr><td>Initial population</td><td>{{ plan.search.initial_population_size }}</td></tr>
                         <tr><td>Stop after</td><td>{{ plan.search.stop_criterion }} generations without a better structure</td></tr>
-                        <tr><td>Relaxation steps</td><td>{{ plan.search.relaxation_ladder }}</td></tr>
                     </table>
                 </details>
                 <details class="disclosure">
@@ -1382,12 +1378,20 @@ button.hardware-custom-toggle[aria-expanded="true"] {
                         <tr><td>MPI ranks</td><td>{{ plan.search.resources.ntasks }}</td></tr>
                         <tr><td>Partition / QOS</td><td>{{ plan.search.resources.partition }} / {{ plan.search.resources.qos }}</td></tr>
                         {% if plan.search.resources.exclude %}<tr><td>Excluded nodes</td><td>{{ plan.search.resources.exclude }}</td></tr>{% endif %}
-                        <tr><td>Refinement</td><td>{{ plan.refinement.resources }}</td></tr>
                     </table>
                 </details>
             </div>
 
-            <div class="preview-note" data-prediction-defaults-note>{{ plan.defaults_note }}</div>
+            <details class="disclosure details-wide prediction-advanced" data-prediction-ladder>
+                <summary>Screening Ladder (search-grade)</summary>
+                <table class="compact-table">
+                    {% for row in plan.search.ladder %}
+                    <tr><td>Step {{ row.step }}: {{ row.role }}</td><td>ENCUT {{ row.encut_ev }} eV, k-point resolution {{ row.kresol }} &times; 2&pi;/&Aring;</td></tr>
+                    {% endfor %}
+                </table>
+            </details>
+
+            <div class="preview-note" data-prediction-defaults-note>Default search settings are provisional and await BMD Lab sign-off: {{ plan.defaults.provisional_fields | join(", ") }}.</div>
 
             <button type="button" disabled data-prediction-submit>Submit Structure Search (not yet available)</button>
             <div class="summary-line">Structure search submission is still being built. Nothing has been sent to POWER.</div>

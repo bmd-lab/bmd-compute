@@ -92,6 +92,7 @@ from backend.structure_search.prediction_plan import (
     NEW_STRUCTURE_OUTPUT,
     AdvancedSettings,
     build_prediction_plan,
+    preview_defaults,
 )
 from backend.summary import summarize_structure
 from backend.workflow_summary import (
@@ -115,8 +116,8 @@ FRONT_PAGE_CHOICES = (
         "value": NEW_STRUCTURE_OUTPUT,
         "label": "New structure",
         "description": (
-            "Predict the ground-state crystal structure from a chemical formula, "
-            "relaxed to the same accuracy as Relaxed structure."
+            "Search for low-energy crystal structures of a chemical formula with USPEX. "
+            "Preview only: submission is not available yet."
         ),
         "needs": "Chemical formula",
         "href": "/predict",
@@ -1666,6 +1667,8 @@ def _prediction_response(request: Request, *, formula: str = "", advanced=None, 
                 "formula": formula,
                 "advanced": dataclasses.asdict(advanced),
                 "advanced_open": not advanced.is_empty(),
+                # Placeholders come from the authoritative search spec.
+                "defaults": preview_defaults(),
                 "plan": plan,
                 "error": calculation_error_context(error) if error is not None else None,
             },
@@ -1683,7 +1686,6 @@ def predict_form(request: Request):
 def predict_preview(
     request: Request,
     formula: str = Form(""),
-    pressure_gpa: str | None = Form(None),
     min_atoms: str | None = Form(None),
     max_atoms: str | None = Form(None),
     num_generations: str | None = Form(None),
@@ -1691,7 +1693,6 @@ def predict_preview(
 ):
     # Preview only: nothing is prepared on or submitted to POWER.
     advanced = AdvancedSettings(
-        pressure_gpa=pressure_gpa,
         min_atoms=min_atoms,
         max_atoms=max_atoms,
         num_generations=num_generations,
