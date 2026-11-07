@@ -55,9 +55,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import posixpath
 import stat
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
@@ -83,7 +85,13 @@ STATE_STAGING = "STAGING"
 STATE_STAGED = "STAGED"
 REMOTE_STATE_STAGING = "STAGING"
 REMOTE_STATE_STAGED = "STAGED"
-STAGED_REMOTE_INTEGRITY = "last_verified"  # same as backend.structure_search.staging
+STAGED_REMOTE_INTEGRITY = "last_verified"
+# Finalization verifies the runtime package, the POTCAR identities and every
+# staged input on the POWER login node in one command, and prints only when it
+# is done. Ordinary remote commands keep the runner's default timeout (60 s).
+FINALIZE_TIMEOUT_S = 300
+TIMINGS_MARKER = "BMD_SEARCH_STAGING_TIMINGS="
+LOGGER = logging.getLogger(__name__)  # same as backend.structure_search.staging
 PREPARATIONS_DIRNAME = "preparations"
 PREPARATION_PREFIX = "preparation-"
 RESPONSE_SCHEMA = "bmd_compute.api_structure_search_attempt"
@@ -451,6 +459,98 @@ def _uploads(spec: Mapping[str, Any], staged_files: Mapping[str, bytes], sources
     return uploads
 
 
+# -- finalization timing (diagnostics only) ---------------------------------------------
+#
+# The finalize script is built by backend.structure_search.staging, which is part
+# of the runtime package uploaded with the attempt; changing that file would change
+# the package digest an interrupted attempt is bound to. The service therefore adds
+# its timing around the script when sending it: the wrappers below time functions of
+# the already verified package in the remote process and call them unchanged.
+
+_TIMED_FUNCTIONS = (
+    ("_bmd_guard_module", "bmd_runtime_package_problems", "package_recheck"),
+    ("_bmd_search_plan", "load_plan_text", "plan_load"),
+    ("_bmd_search_plan", "default_potcar_identity", "potcar_identity"),
+    ("_bmd_search_plan", "potcar_identity_problems", "potcar_compare"),
+    ("_bmd_search_plan", "verify_execution_binding", "verify_staged_inputs"),
+    ("_bmd_staging", "_copy_exclusive", "potcar_copy"),
+    ("_bmd_staging", "finalize_staged_search", "finalize"),
+)
+_INSTALL_LINE = "bmd_install_verified_runtime_package(REQUEST['package_dir'], REQUEST['manifest'])"
+_MAIN_LINE = "finalize_staged_search_main(REQUEST)"
+
+
+def instrument_finalize_script(script: str) -> str:
+    """The finalize script with phase timings printed on a separate line. Same result line."""
+
+    lines = script.split("\n")
+    if lines.count(_INSTALL_LINE) != 1 or lines.count(_MAIN_LINE) != 1 or lines.index(_MAIN_LINE) < lines.index(
+            _INSTALL_LINE):
+        raise RuntimeError("The finalize script does not have the expected shape; it is not instrumented.")
+    timed = "\n".join(f"_bmd_timed({module}, {name!r}, {key!r})" for module, name, key in _TIMED_FUNCTIONS)
+    block = f"""_BMD_TIMINGS = {{"guard_verify_and_install_s": round(_bmd_time.monotonic() - _BMD_T0, 3)}}
+_bmd_t = _bmd_time.monotonic()
+import backend.runtime_package_guard as _bmd_guard_module
+import backend.structure_search.search_plan as _bmd_search_plan
+import backend.structure_search.staging as _bmd_staging
+_BMD_TIMINGS["imports_s"] = round(_bmd_time.monotonic() - _bmd_t, 3)
+def _bmd_timed(module, name, key):
+    original = getattr(module, name)
+    def timed(*args, **kwargs):
+        start = _bmd_time.monotonic()
+        try:
+            return original(*args, **kwargs)
+        finally:
+            _BMD_TIMINGS[key + "_s"] = round(_BMD_TIMINGS.get(key + "_s", 0.0) + _bmd_time.monotonic() - start, 3)
+            _BMD_TIMINGS[key + "_calls"] = _BMD_TIMINGS.get(key + "_calls", 0) + 1
+    setattr(module, name, timed)
+{timed}
+try:
+    {_MAIN_LINE}
+finally:
+    _BMD_TIMINGS["total_s"] = round(_bmd_time.monotonic() - _BMD_T0, 3)
+    print({TIMINGS_MARKER!r} + json.dumps(_BMD_TIMINGS, sort_keys=True), flush=True)"""
+    index = lines.index(_MAIN_LINE)
+    lines[index] = block
+    return "import time as _bmd_time\n_BMD_T0 = _bmd_time.monotonic()\n" + "\n".join(lines)
+
+
+def parse_finalize_timings(output: str) -> dict[str, Any] | None:
+    for line in (output or "").splitlines():
+        if line.startswith(TIMINGS_MARKER):
+            try:
+                timings = json.loads(line[len(TIMINGS_MARKER):])
+            except ValueError:
+                return None
+            return timings if isinstance(timings, dict) else None
+    return None
+
+
+class _PhaseTimer:
+    """Wall-clock time of each staging phase, logged per attempt (diagnostics only)."""
+
+    def __init__(self, attempt_id: str):
+        self.attempt_id = attempt_id
+        self.started = time.monotonic()
+        self.phases: dict[str, float] = {}
+
+    @contextmanager
+    def __call__(self, name: str):
+        start = time.monotonic()
+        status = "failed"
+        try:
+            yield
+            status = "done"
+        finally:
+            elapsed = time.monotonic() - start
+            self.phases[name] = round(elapsed, 3)
+            LOGGER.info("structure-search staging %s: %s %s after %.1f s", self.attempt_id, name, status, elapsed)
+
+    def summary(self, outcome: str) -> None:
+        LOGGER.info("structure-search staging %s: %s after %.1f s; phases %s", self.attempt_id, outcome,
+                    time.monotonic() - self.started, json.dumps(self.phases, sort_keys=True))
+
+
 class _RemoteStaging:
     """One attempt's staging on POWER: what it uploads and how POWER verifies it.
 
@@ -533,10 +633,25 @@ class _RemoteStaging:
         from backend.submission import RUNTIME_PACKAGE_GUARD_MODULE
         import shlex
 
-        script = build_finalize_script({**self.request, "copy_potcars": copy_potcars},
-                                       runtime_sources=self.sources, guard_module=RUNTIME_PACKAGE_GUARD_MODULE)
+        script = instrument_finalize_script(build_finalize_script(
+            {**self.request, "copy_potcars": copy_potcars},
+            runtime_sources=self.sources, guard_module=RUNTIME_PACKAGE_GUARD_MODULE,
+        ))
         command = f"cd {shlex.quote(self.layout['run_dir'])}\n{self._python()} - <<'PY'\n{script}PY"
-        output = runner.run(command, check=False, modules=False, export_env=False)
+        started = time.monotonic()
+        try:
+            output = runner.run(command, check=False, modules=False, export_env=False,
+                                timeout_s=FINALIZE_TIMEOUT_S)
+        except Exception as exc:
+            LOGGER.warning("structure-search staging %s: finalize (copy_potcars=%s) gave no answer: %s after "
+                           "%.1f s (timeout %d s)", self.attempt_id, copy_potcars, type(exc).__name__,
+                           time.monotonic() - started, FINALIZE_TIMEOUT_S)
+            raise
+        timings = parse_finalize_timings(output.stdout)
+        LOGGER.info("structure-search staging %s: finalize (copy_potcars=%s) answered after %.1f s "
+                    "(timeout %d s); on POWER %s", self.attempt_id, copy_potcars, time.monotonic() - started,
+                    FINALIZE_TIMEOUT_S, json.dumps(timings, sort_keys=True) if timings else "no timings")
+        self.last_finalize_timings = timings
         result = parse_finalize_output(output.stdout)
         if not result.get("ok"):
             raise _staging_failed(str(result.get("code") or "staging_failed"),
@@ -608,32 +723,47 @@ def _stage_remote(*, spec, plan, local_manifest, sources, manifest) -> dict[str,
 
     staging = _RemoteStaging(spec=spec, plan=plan, local_manifest=local_manifest, sources=sources,
                              manifest=manifest)
-    with _claimed_runner(spec) as runner:
-        state = runner._read_submission_attempt_state(spec)
-        if state:
-            runner._ensure_submission_attempt_matches(spec, state)
-            if state.get("state") == REMOTE_STATE_STAGED:
-                result = staging.verify(runner)  # adopted only after a read-only re-verification
-                return {**result, "remote_state": REMOTE_STATE_STAGED}
-            if state.get("state") != REMOTE_STATE_STAGING:
-                raise _staging_failed("remote_state_invalid",
-                                      f"The remote attempt is in state {state.get('state')!r}.")
-            if not runner.is_dir(staging.layout["run_dir"]):
-                staging.create_run_directory(runner)  # interrupted after reserving the run name
-        else:
-            staging.reserve_run_directory(runner)
+    phase = _PhaseTimer(staging.attempt_id)
+    outcome = "failed"
+    try:
+        with _claimed_runner(spec) as runner:
+            phase.phases["connect_and_claim"] = round(time.monotonic() - phase.started, 3)
+            state = runner._read_submission_attempt_state(spec)
+            if state:
+                runner._ensure_submission_attempt_matches(spec, state)
+                if state.get("state") == REMOTE_STATE_STAGED:
+                    with phase("reverify"):
+                        result = staging.verify(runner)  # adopted only after a read-only re-verification
+                    outcome = "adopted after re-verification"
+                    return {**result, "remote_state": REMOTE_STATE_STAGED}
+                if state.get("state") != REMOTE_STATE_STAGING:
+                    raise _staging_failed("remote_state_invalid",
+                                          f"The remote attempt is in state {state.get('state')!r}.")
+                if not runner.is_dir(staging.layout["run_dir"]):
+                    staging.create_run_directory(runner)  # interrupted after reserving the run name
+            else:
+                staging.reserve_run_directory(runner)
 
-        staging.upload_missing(runner, staging.reconcile(runner))
-        result = staging.finalize(runner, copy_potcars=True)
-        staging.reconcile(runner, complete=True)
-        summary = {
-            "plan_digest": result["plan_digest"],
-            "files": result["files"],
-            "potcars": result["potcars"],
-            "bridge_path_bound": True,
-        }
-        runner._write_submission_attempt_state(spec, REMOTE_STATE_STAGED, output=json.dumps(summary, sort_keys=True))
-        return {**result, "remote_state": REMOTE_STATE_STAGED}
+            with phase("inventory"):
+                uploads = staging.reconcile(runner)
+            with phase(f"uploads ({len(uploads['missing'])} file(s))"):
+                staging.upload_missing(runner, uploads)
+            with phase("finalize"):
+                result = staging.finalize(runner, copy_potcars=True)
+            with phase("final_inventory"):
+                staging.reconcile(runner, complete=True)
+            summary = {
+                "plan_digest": result["plan_digest"],
+                "files": result["files"],
+                "potcars": result["potcars"],
+                "bridge_path_bound": True,
+            }
+            runner._write_submission_attempt_state(spec, REMOTE_STATE_STAGED,
+                                                   output=json.dumps(summary, sort_keys=True))
+            outcome = "staged"
+            return {**result, "remote_state": REMOTE_STATE_STAGED}
+    finally:
+        phase.summary(outcome)
 
 
 def _staging_inputs(ledger, record):

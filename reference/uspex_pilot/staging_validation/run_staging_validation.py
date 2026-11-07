@@ -181,6 +181,20 @@ def check_isolation(root: Path, *, proc: Path = Path("/proc")) -> dict:
 # -- run ---------------------------------------------------------------------------------------
 
 
+def _log_staging_diagnostics() -> None:
+    """Show the service's staging timings (phases, finalize on POWER) on stderr, once per process."""
+
+    import logging
+
+    logger = logging.getLogger("compute_api.structure_search_execution")
+    if not any(getattr(handler, "_bmd_validation", False) for handler in logger.handlers):
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%dT%H:%M:%S"))
+        handler._bmd_validation = True
+        logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+
 def _git(*args: str) -> str:
     return subprocess.run(["git", "-C", str(REPO), *args], check=True, capture_output=True, text=True).stdout.strip()
 
@@ -257,6 +271,7 @@ def run(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc: Pat
     from compute_api.structure_search_execution import reverify_staged_search
 
     _require(os.environ[STATE_DIR_ENV] == str(state), "the ledger is not the validation's own.")
+    _log_staging_diagnostics()
     if runner_factory is not None:
         execution.RUNNER_FACTORY = runner_factory
     with warnings.catch_warnings():

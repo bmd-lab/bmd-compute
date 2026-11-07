@@ -17,6 +17,7 @@ import os
 import posixpath
 import shlex
 import stat
+import sys
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -79,6 +80,8 @@ class FakePower:
         self.sbatch_calls = 0
         self.fail_finalize = 0
         self.fail_inventory = 0
+        self.finalize_timeout = None  # "before" or "after": the finalize command times out (once)
+        self.timeouts: list[tuple[str, object]] = []  # (command kind, timeout_s) of every command
         self.fail_put = None  # (target suffix, "partial" | "before_chmod" | "before_rename")
         self.after_uploads = None
 
@@ -125,6 +128,9 @@ class FakePowerRunner(ParamikoRemoteRunner):
 
     def run(self, command, *, check=False, modules=False, export_env=False, timeout_s=None):
         self.power.commands.append(command)
+        kind = ("finalize" if staging.REQUEST_MARKER in command else
+                "inventory" if staging.INVENTORY_DIR_MARKER in command else command.split()[0])
+        self.power.timeouts.append((kind, timeout_s))
         parts = shlex.split(command) if "\n" not in command else []
         if len(parts) == 2 and parts[0] in {"mkdir", "rmdir"}:
             try:
@@ -143,9 +149,15 @@ class FakePowerRunner(ParamikoRemoteRunner):
                 self.power.fail_finalize -= 1
                 raise ConnectionError("connection lost during staging")
             request = staging.request_from_script(command)
+            if self.power.finalize_timeout == "before":
+                self.power.finalize_timeout = None
+                raise TimeoutError("timed out")  # as Paramiko's stdout.read() on POWER
             result = staging.finalize_staged_search(
                 request, filesystem_root=str(self.power.root), potcar_identity=fake_identity
             )
+            if self.power.finalize_timeout == "after":  # POWER finished, but after the client gave up
+                self.power.finalize_timeout = None
+                raise TimeoutError("timed out")
             return RemoteCommandResult(command=command, returncode=0,
                                        stdout=staging.RESULT_MARKER + json.dumps(result) + "\n")
         raise AssertionError(f"unexpected remote command: {command[:80]}")
@@ -872,3 +884,162 @@ def test_inventory_script_is_self_contained_and_returns_no_contents(tmp_path):
     assert staging.parse_staging_temporary(name) == {"target": "INPUT.txt", "attempt": OTHER_ATTEMPT,
                                                      "tag": "ab" * 8}
     assert staging.parse_staging_temporary(".INPUT.txt." + "c" * 32 + ".tmp") is None
+
+
+# --- finalization timeout and diagnostics ----------------------------------------------------
+
+
+def test_only_finalization_gets_the_longer_timeout(client, tokens, state_dir, cluster):
+    from backend.paramiko_remote import DEFAULT_REMOTE_COMMAND_TIMEOUT_S
+    from compute_api.structure_search_execution import FINALIZE_TIMEOUT_S, reverify_staged_search
+
+    assert (DEFAULT_REMOTE_COMMAND_TIMEOUT_S, FINALIZE_TIMEOUT_S) == (60, 300)
+    attempt, digest = prepared_attempt(client, tokens)
+    assert stage(client, tokens["preparer"], attempt, digest).status_code == 200
+    reverify_staged_search(principal="preparer", attempt_id=attempt)
+    finalize = [timeout for kind, timeout in cluster.timeouts if kind == "finalize"]
+    assert finalize == [300, 300]  # staging, then the fresh re-verification
+    assert {timeout for kind, timeout in cluster.timeouts if kind != "finalize"} == {None}  # runner default
+
+
+class _TimingOutClient:
+    """A Paramiko client whose command produces no output before the channel timeout."""
+
+    def __init__(self):
+        self.timeouts = []
+
+    def get_transport(self):
+        class _Transport:
+            def is_active(self):
+                return True
+
+        return _Transport()
+
+    def exec_command(self, command, get_pty=False, timeout=None):
+        self.timeouts.append(timeout)
+
+        class _Stream:
+            channel = None
+
+            def read(self):
+                raise TimeoutError("timed out")
+
+            def close(self):
+                pass
+
+        return _Stream(), _Stream(), _Stream()
+
+
+def _remote_staging_for(state_dir, attempt):
+    from backend.runtime_package import runtime_package_manifest_for_sources
+    from backend.submission import build_backend_module_sources
+    from compute_api.structure_search_execution import _RemoteStaging
+
+    record = search_record(state_dir, attempt)
+    local = attempt_dir(state_dir, attempt) / "preparation-1"
+    sources = build_backend_module_sources()
+    return _RemoteStaging(spec=record["staging"]["spec"], plan=load_plan_text((local / PLAN_FILE).read_text()),
+                          local_manifest=json.loads((local / "prepared_inputs.json").read_text()),
+                          sources=sources, manifest=runtime_package_manifest_for_sources(sources))
+
+
+def test_the_finalize_timeout_reaches_paramiko_and_the_default_is_unchanged(client, tokens, state_dir, cluster,
+                                                                          caplog):
+    attempt, digest = prepared_attempt(client, tokens)
+    cluster.fail_finalize = 1
+    stage(client, tokens["preparer"], attempt, digest)  # leaves a STAGING attempt with its spec
+    fake = _TimingOutClient()
+    runner = ParamikoRemoteRunner(client=fake)
+    remote = _remote_staging_for(state_dir, attempt)
+    with caplog.at_level("INFO", logger="compute_api.structure_search_execution"):
+        with pytest.raises(TimeoutError):
+            remote.finalize(runner, copy_potcars=True)
+    with pytest.raises(TimeoutError):
+        runner.run("true")  # an ordinary command
+    assert fake.timeouts == [300, 60]
+    assert "finalize (copy_potcars=True) gave no answer: TimeoutError" in caplog.text
+    assert "(timeout 300 s)" in caplog.text
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_a_finalize_timeout_is_recovered_by_retrying_the_same_attempt(client, tokens, state_dir, cluster, when):
+    attempt, digest = prepared_attempt(client, tokens, "GaAs")
+    cluster.finalize_timeout = when
+    failed = stage(client, tokens["preparer"], attempt, digest)
+    assert failed.status_code == 503 and failed.json()["error"]["code"] == "staging_unavailable"
+    assert search_record(state_dir, attempt)["state"] == "STAGING"
+    state = json.loads(cluster.at(f"{SEARCH_LOGS}/submission_attempts/{attempt}.json").read_text())
+    assert state["state"] == "STAGING"  # never claimed as staged
+    assert not cluster.at(f"{SEARCH_LOGS}/submission_attempts/{attempt}.lock").exists()
+    run_dir, run_name = staged_run(cluster, state_dir, attempt)
+    potcars = sorted(p.name for p in (run_dir / "search" / "Specific").glob("POTCAR_*"))
+    assert potcars == ([] if when == "before" else ["POTCAR_As", "POTCAR_Ga"])
+    before = tree(run_dir)
+
+    response = stage(client, tokens["preparer"], attempt, digest)
+    assert response.status_code == 200 and response.json()["state"] == "STAGED", response.text
+    after = tree(run_dir)
+    assert {name: after[name] for name in before} == before  # nothing completed is rewritten
+    assert sorted(p.name for p in cluster.at(WORKSPACE).iterdir()) == [run_name]
+    assert hidden(run_dir) == []
+
+
+def test_staging_logs_its_phases(client, tokens, state_dir, cluster, caplog):
+    attempt, digest = prepared_attempt(client, tokens)
+    with caplog.at_level("INFO", logger="compute_api.structure_search_execution"):
+        assert stage(client, tokens["preparer"], attempt, digest).status_code == 200
+    text = caplog.text
+    for phase in ("inventory done", "finalize done", "final_inventory done", "uploads ("):
+        assert phase in text, phase
+    assert f"structure-search staging {attempt}: staged after" in text
+    assert "finalize (copy_potcars=True) answered after" in text
+    assert "synthetic:" not in text and "Bearer" not in text
+
+
+def test_instrumented_finalize_script_returns_the_same_result_with_timings(client, tokens, state_dir, cluster,
+                                                                         tmp_path):
+    import subprocess
+
+    from compute_api.structure_search_execution import (
+        TIMINGS_MARKER,
+        instrument_finalize_script,
+        parse_finalize_timings,
+    )
+    from backend.submission import RUNTIME_PACKAGE_GUARD_MODULE
+
+    attempt, digest = prepared_attempt(client, tokens)
+    cluster.fail_finalize = 1
+    stage(client, tokens["preparer"], attempt, digest)
+    remote = _remote_staging_for(state_dir, attempt)
+    request = dict(remote.request)
+    for key in ("run_dir", "package_dir", "search_dir", "bridge_path", "potcar_library", "cache_ready_marker"):
+        request[key] = str(cluster.at(request[key]))
+    run_dir = Path(request["run_dir"])
+    before = tree(run_dir)
+    plain = staging.build_finalize_script(request, runtime_sources=remote.sources,
+                                          guard_module=RUNTIME_PACKAGE_GUARD_MODULE)
+    instrumented = instrument_finalize_script(plain)
+    assert plain.replace("finalize_staged_search_main(REQUEST)", "") in instrumented.replace("\n    finalize", "\nfinalize")        or plain.splitlines()[:-1] == instrumented.splitlines()[2:len(plain.splitlines()) + 1]
+
+    def remote_run(script):
+        out = subprocess.run([sys.executable, "-"], input=script, capture_output=True, text=True, cwd=run_dir)
+        assert out.returncode == 0, out.stderr[-2000:]
+        return out.stdout
+
+    plain_out, timed_out = remote_run(plain), remote_run(instrumented)
+    assert staging.parse_finalize_output(timed_out) == staging.parse_finalize_output(plain_out)
+    assert TIMINGS_MARKER not in plain_out
+    timings = parse_finalize_timings(timed_out)
+    assert timings["finalize_calls"] == 1 and timings["package_recheck_calls"] == 1
+    assert timings["plan_load_calls"] == 1 and timings["potcar_identity_calls"] >= 1
+    for key in ("guard_verify_and_install_s", "imports_s", "finalize_s", "total_s"):
+        assert isinstance(timings[key], float), key
+    assert tree(run_dir) == before
+    assert "synthetic:" not in timed_out
+
+
+def test_unexpected_finalize_script_shape_is_not_instrumented():
+    from compute_api.structure_search_execution import instrument_finalize_script
+
+    with pytest.raises(RuntimeError):
+        instrument_finalize_script("print('hello')\n")
