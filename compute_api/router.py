@@ -8,7 +8,11 @@ Every route runs the same fixed sequence before doing any work:
 3. authenticate the bearer token and check the route's scope;
 4. only then read and validate the request body.
 
-``/identity`` and ``/plans`` never contact POWER. ``PUT /attempts/{id}``
+``/identity``, ``/plans`` and ``/structure-search-plans`` never contact POWER.
+``/structure-search-plans`` plans a formula-based USPEX structure search
+(New structure); it is read-only, uses the same planning entry point as the
+browser's New structure preview (``backend.structure_search.planning``), and
+has no preparation or submission counterpart. ``PUT /attempts/{id}``
 prepares, or prepares and submits, one calculation and ``GET /attempts/{id}``
 reads its state, both through Compute's existing remote machinery and
 server-owned connection profiles (see ``compute_api.execution``). The planner
@@ -55,6 +59,7 @@ from compute_api.schemas import (
     PlanRequestError,
     parse_execution_request,
     parse_plan_request,
+    parse_structure_search_plan_request,
 )
 
 
@@ -140,7 +145,13 @@ async def _read_json_body(request: Request) -> Any:
         raise _ApiError(400, "invalid_json", "The request body is not valid UTF-8 JSON.") from None
 
 
-def build_machine_api_router(*, planner: Planner) -> APIRouter:
+def _default_search_planner():
+    from backend.structure_search.planning import plan_structure_search
+
+    return plan_structure_search
+
+
+def build_machine_api_router(*, planner: Planner, search_planner: Planner | None = None) -> APIRouter:
     # The machine API is deliberately left out of /openapi.json: it is not
     # advertised on the browser service, and the browser surface stays unchanged.
     router = APIRouter(prefix="/api/v1", include_in_schema=False)
@@ -198,6 +209,54 @@ def build_machine_api_router(*, planner: Planner) -> APIRouter:
             response = await run_in_threadpool(build_plan)
         except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
             return _error_response(_scientific_error(exc, "plan generation", "plan_failed", "BMD Compute could not generate this plan."))
+        return _json(200, response)
+
+    @router.post("/structure-search-plans")
+    async def structure_search_plans(request: Request):
+        from backend.structure_search.planning import StructureSearchPlanRequest
+        from backend.structure_search.search_plan import STALE_PLAN_CODE, SearchPlanError
+
+        try:
+            _authorize(request, scope=SCOPE_PLAN)
+            document = await _read_json_body(request)
+            try:
+                shape = parse_structure_search_plan_request(document)
+            except PlanRequestError as exc:
+                raise _ApiError(
+                    422, "invalid_request", "The structure-search plan request is invalid.", fields=exc.errors
+                ) from None
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+
+        plan_search = search_planner or _default_search_planner()
+
+        def build_search_plan() -> dict:
+            result = plan_search(
+                StructureSearchPlanRequest(
+                    formula=shape.formula,
+                    expected_plan_digest=shape.expected_plan_digest,
+                    **shape.search,
+                )
+            )
+            return {"api_version": API_VERSION, **result.response()}
+
+        try:
+            response = await run_in_threadpool(build_search_plan)
+        except SearchPlanError as exc:
+            if exc.code == STALE_PLAN_CODE:
+                diagnostic = exc.diagnostic or {}
+                return _error_response(
+                    _ApiError(
+                        409,
+                        "plan_changed",
+                        _bounded(exc.message),
+                        suggestion=_bounded(exc.suggestion),
+                        plan_digest=diagnostic.get("plan_digest"),
+                    )
+                )
+            return _error_response(_scientific_error(exc, "search planning", "plan_failed", "BMD Compute could not plan this search."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            return _error_response(_scientific_error(exc, "search planning", "plan_failed", "BMD Compute could not plan this search."))
         return _json(200, response)
 
     @router.put("/attempts/{attempt_id}")

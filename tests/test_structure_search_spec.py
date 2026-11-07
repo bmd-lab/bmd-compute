@@ -176,3 +176,19 @@ def test_defaults_are_recorded_as_provisional():
     assert record["status"] == "provisional"
     assert record["planned_finalist_count"] == spec_module.PLANNED_FINALIST_COUNT == 5
     assert set(record["provisional_fields"]) == set(spec_module.PROVISIONAL_DEFAULTS)
+
+
+@pytest.mark.parametrize(("entered", "canonical"), [("48:00:00", "48:00:00"), ("048:00:00", "48:00:00"),
+                                                    ("5:00:00", "05:00:00"), ("2400:00:00", "2400:00:00")])
+def test_spec_walltime_is_canonical_with_the_same_duration(entered, canonical):
+    from backend.calculations.resources import walltime_seconds
+
+    spec = _spec(walltime=entered)
+    assert spec.walltime == canonical
+    assert walltime_seconds(spec.walltime) == walltime_seconds(entered)
+
+
+def test_day_prefixed_walltime_is_not_a_search_walltime():
+    # BMD's walltime parser accepts only H:MM:SS, so D-HH:MM:SS is refused, not converted.
+    with pytest.raises(CalculationValidationError):
+        _spec(walltime="2-00:00:00")

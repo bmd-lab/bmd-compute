@@ -388,7 +388,17 @@ def build_search_plan_from_formula(
         for name in ("min_atoms", "max_atoms", "num_generations", "walltime")
     }
     spec = default_search_spec(composition, **overrides)
-    request = {"kind": "formula", "advanced_overrides": overrides}
+    # The plan records each override as the spec resolved it (for example
+    # "048:00:00" as "48:00:00", "08" as 8), so equivalent spellings give one
+    # plan; the text as entered is kept in provenance.
+    resolved = {"min_atoms": spec.min_atoms, "max_atoms": spec.max_atoms,
+                "num_generations": spec.num_generations, "walltime": spec.walltime}
+    request = {
+        "kind": "formula",
+        "advanced_overrides": {
+            name: (None if value is None else resolved[name]) for name, value in overrides.items()
+        },
+    }
     provenance_request = {
         "kind": "formula",
         "entered_formula": str(formula).strip(),

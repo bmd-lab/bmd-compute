@@ -476,9 +476,18 @@ unit (`Si8` searches `Si`, `Si2O4` searches `SiO2`); reordering changes
 neither counts nor the cell-size range. The formula or spec as entered and
 the generating Git commit are kept in the plan's `provenance`, beside the
 record and outside the digest; a provenance that does not reduce to the
-planned composition is refused.
+planned composition is refused. Equivalent override spellings also give one
+plan: the spec writes the walltime canonically (`spec.canonical_walltime`,
+BMD's `H:MM:SS` parser and `format_walltime`: `048:00:00` and `48:00:00` are
+both `48:00:00`, `5:00:00` is `05:00:00`, the duration unchanged; `D-HH:MM:SS`
+is not accepted by that parser and is refused), and the plan records each
+override as resolved (`08` as 8); the text as entered stays in provenance.
 
-The preview (`/predict`) is a view of this plan and shows its digest.
+The preview (`/predict`) is a view of this plan and shows its digest. It
+and the machine API's read-only `POST /api/v1/structure-search-plans`
+(`docs/machine_api.md`) plan through one entry point,
+`backend.structure_search.planning.plan_structure_search` (step 4A), so both
+give the same plan and digest.
 `prepare_search_directory(plan, new_dir, bridge_path=...)` writes `INPUT.txt`,
 `Specific/INCAR_1..5`, `POTCAR.spec`, `search_plan.json` and
 `prepared_inputs.json` into a directory that must not exist yet, after

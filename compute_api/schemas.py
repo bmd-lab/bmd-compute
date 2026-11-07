@@ -33,6 +33,8 @@ MAX_CUSTOM_STAGES = 16
 MAX_MODIFIERS = 8
 MAX_IDENTIFIER_CHARS = 64
 STRUCTURE_FORMATS = ("poscar", "cif")
+# The New structure (USPEX) choice; see parse_structure_search_plan_request.
+STRUCTURE_SEARCH_OUTPUT = "new_structure"
 
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 _WALLTIME = re.compile(r"^[0-9]{1,4}:[0-5][0-9]:[0-5][0-9]$")
@@ -121,6 +123,11 @@ def parse_plan_request(document: Any) -> PlanRequest:
                 value = workflow["desired_output"]
                 if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
                     _error(errors, "workflow.desired_output", "must_be_identifier")
+                elif value == STRUCTURE_SEARCH_OUTPUT:
+                    # Formula-based structure prediction is not a structure-based
+                    # Desired Output; it is planned by /structure-search-plans and
+                    # cannot be prepared or submitted.
+                    _error(errors, "workflow.desired_output", "use_structure_search_plans")
                 else:
                     desired_output = value
             else:
@@ -268,4 +275,106 @@ def parse_execution_request(document: Any) -> ExecutionRequest:
         expected_plan_digest=expected,
         submit=submit,
         labels=labels,
+    )
+
+
+# ------------------------------------------------------ structure-search plans
+
+SEARCH_PLAN_REQUEST_SCHEMA_VERSION = 1
+SEARCH_TOP_LEVEL_KEYS = frozenset({"formula", "search", "expected_plan_digest"})
+SEARCH_KEYS = frozenset({"min_atoms", "max_atoms", "num_generations", "walltime"})
+MAX_FORMULA_CHARS = 64
+# Request fields of the structure-based planner: a search starts from a formula.
+SEARCH_NOT_ACCEPTED_TOP_LEVEL = frozenset({"structure", "workflow", "resources"})
+# Search settings v1 fixes by policy (ambient pressure, non-magnetic plain PBE,
+# fixed composition, the BMD screening ladder and its k-point resolutions,
+# population rules): a request may not set them.
+SEARCH_FIXED_BY_POLICY = frozenset(
+    {
+        "external_pressure_gpa", "pressure", "theory", "spin_polarized", "magnetic", "magmom",
+        "calculation_type", "kresol_start", "kpoints", "incar", "potcar", "encut",
+        "population_size", "initial_population_size", "stop_criterion", "steps", "ladder",
+    }
+)
+
+
+@dataclass(frozen=True)
+class StructureSearchPlanRequestShape:
+    formula: str
+    search: dict[str, Any]
+    expected_plan_digest: str | None
+
+
+def parse_structure_search_plan_request(document: Any) -> StructureSearchPlanRequestShape:
+    """Validate a ``POST /api/v1/structure-search-plans`` body (shape only).
+
+    Request (``schema_version`` 1)::
+
+        {
+          "formula": "SiO2",                    # required chemical formula
+          "search": {"min_atoms": int, "max_atoms": int,
+                     "num_generations": int, "walltime": "H:MM:SS"},
+                                                # optional; every key optional;
+                                                # an omitted key takes the default
+          "expected_plan_digest": "sha256:..."  # optional; refused as stale if different
+        }
+
+    Whether the formula is readable and the search admissible is decided by
+    BMD Compute's search planning (formula reader, spec, admission), never here.
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    for key in sorted(set(document) - SEARCH_TOP_LEVEL_KEYS, key=str):
+        if key in SEARCH_NOT_ACCEPTED_TOP_LEVEL:
+            _error(errors, str(key), "not_accepted_for_structure_search")
+        elif key in SEARCH_FIXED_BY_POLICY:
+            _error(errors, str(key), "fixed_by_bmd_policy")
+        else:
+            _error(errors, str(key), "unknown_field")
+
+    formula = document.get("formula")
+    if "formula" not in document:
+        _error(errors, "formula", "required")
+    elif not isinstance(formula, str) or not formula.strip():
+        _error(errors, "formula", "must_be_nonempty_string")
+    elif len(formula) > MAX_FORMULA_CHARS:
+        _error(errors, "formula", "too_long")
+    elif any(ord(character) < 32 for character in formula):
+        _error(errors, "formula", "invalid_characters")
+
+    search: dict[str, Any] = {}
+    if "search" in document and document["search"] is not None:
+        value = document["search"]
+        if not isinstance(value, dict):
+            _error(errors, "search", "must_be_object")
+        else:
+            for key in sorted(set(value) - SEARCH_KEYS, key=str):
+                problem = "fixed_by_bmd_policy" if key in SEARCH_FIXED_BY_POLICY else "unknown_field"
+                _error(errors, f"search.{key}", problem)
+            for key in ("min_atoms", "max_atoms", "num_generations"):
+                if key in value:
+                    if not _strict_int(value[key]) or value[key] <= 0:
+                        _error(errors, f"search.{key}", "must_be_positive_integer")
+                    else:
+                        search[key] = value[key]
+            if "walltime" in value:
+                if not isinstance(value["walltime"], str) or not _WALLTIME.fullmatch(value["walltime"]):
+                    _error(errors, "search.walltime", "must_be_hh_mm_ss")
+                else:
+                    search["walltime"] = value["walltime"]
+
+    expected = None
+    if "expected_plan_digest" in document and document["expected_plan_digest"] is not None:
+        expected = document["expected_plan_digest"]
+        if not isinstance(expected, str) or not _PLAN_DIGEST.fullmatch(expected):
+            _error(errors, "expected_plan_digest", "must_be_sha256_digest")
+
+    if errors:
+        raise PlanRequestError(errors)
+    return StructureSearchPlanRequestShape(
+        formula=formula,
+        search=search,
+        expected_plan_digest=expected,
     )

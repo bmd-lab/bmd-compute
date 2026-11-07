@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from backend.calculations.registry import CalculationValidationError
-from backend.calculations.resources import validate_walltime
+from backend.calculations.resources import format_walltime, validate_walltime, walltime_seconds
 
 
 SPEC_SCHEMA = "bmd_compute.structure_search_spec"
@@ -188,7 +188,7 @@ class StructureSearchSpec:
         object.__setattr__(self, "num_generations", _int(self.num_generations, "num_generations", minimum=1))
         object.__setattr__(self, "stop_criterion", _int(self.stop_criterion, "stop_criterion", minimum=1))
         object.__setattr__(self, "kresol_start", kresol)
-        object.__setattr__(self, "walltime", validate_walltime(self.walltime))
+        object.__setattr__(self, "walltime", canonical_walltime(self.walltime))
         object.__setattr__(self, "external_pressure_gpa", pressure)
         object.__setattr__(self, "population_size", population)
         object.__setattr__(self, "initial_population_size", initial)
@@ -331,6 +331,19 @@ PROVISIONAL_DEFAULTS = (
     "initial_population_size", "num_generations", "stop_criterion",
     "kresol_start", "walltime",
 )
+
+
+def canonical_walltime(value) -> str:
+    """A search walltime validated and written in one canonical form (``HH:MM:SS``).
+
+    Validation is BMD's (``resources.validate_walltime``: ``H:MM:SS``, more
+    than zero and at most 100 days); the canonical text is the existing
+    ``resources.format_walltime`` of the same duration, so equivalent
+    spellings (``48:00:00``, ``048:00:00``) give one spec. The duration is
+    never changed.
+    """
+
+    return format_walltime(walltime_seconds(validate_walltime(value)))
 
 
 def default_cell_range(formula_atoms: int) -> tuple[int, int]:
@@ -508,6 +521,7 @@ __all__ = [
     "SEARCH_DEFAULTS_POLICY_ID",
     "SEARCH_DEFAULTS_POLICY_VERSION",
     "SEARCH_DEFAULTS_STATUS",
+    "canonical_walltime",
     "default_cell_range",
     "default_search_spec",
     "search_defaults_record",

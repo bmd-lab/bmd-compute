@@ -781,3 +781,53 @@ def test_reduced_formula_notice_uses_the_entered_element_order(monkeypatch):
     assert _main_formula(html) == "C2H8"
     notice = re.search(r"data-prediction-entered>(.*?)</p>", html, re.S).group(1)
     assert "C2H8" in notice and "CH4" in notice and "H4C" not in notice
+
+
+# --- equivalent walltime spellings -----------------------------------------------
+
+
+@pytest.mark.parametrize("spelling", ["48:00:00", "048:00:00", "0048:00:00", " 48:00:00 "])
+def test_equivalent_walltimes_give_one_plan_and_keep_the_entered_text(spelling):
+    from backend.structure_search.spec import canonical_walltime
+
+    reference = build_search_plan_from_formula("Si", AdvancedSettings(walltime="48:00:00"))
+    plan = build_search_plan_from_formula("Si", AdvancedSettings(walltime=spelling))
+    assert plan.digest == reference.digest and plan.canonical == reference.canonical
+    assert plan.record["search"]["spec"]["walltime"] == "48:00:00"
+    assert plan.record["request"]["advanced_overrides"]["walltime"] == "48:00:00"
+    assert plan.provenance["request"]["advanced_overrides_as_entered"]["walltime"] == spelling
+    assert canonical_walltime(spelling) == "48:00:00"
+
+
+def test_equivalent_integer_overrides_give_one_plan():
+    a = build_search_plan_from_formula("Si", AdvancedSettings(max_atoms="08", num_generations="030"))
+    b = build_search_plan_from_formula("Si", AdvancedSettings(max_atoms=8, num_generations=30))
+    assert a.digest == b.digest
+    assert a.record["request"]["advanced_overrides"]["max_atoms"] == 8
+
+
+def test_different_durations_still_give_different_plans():
+    assert (build_search_plan_from_formula("Si", AdvancedSettings(walltime="48:00:00")).digest
+            != build_search_plan_from_formula("Si", AdvancedSettings(walltime="48:00:01")).digest)
+
+
+@pytest.mark.parametrize(
+    "walltime",
+    ["2-00:00:00", "48:00", "48:60:00", "48:00:60", "0:00:00", "2400:00:01", "10000:00:00", "two days", "-1:00:00"],
+)
+def test_malformed_or_out_of_range_walltimes_are_refused(walltime):
+    with pytest.raises(CalculationValidationError):
+        build_search_plan_from_formula("Si", AdvancedSettings(walltime=walltime))
+
+
+@pytest.mark.parametrize("walltime", ["5:00:00", "05:00:00", "048:00:00", "2400:00:00", "168:00:00"])
+def test_resource_estimate_keeps_the_requested_duration(walltime):
+    from backend.calculations.resources import structure_search_resources, walltime_seconds
+
+    record = build_search_plan_from_formula("Si", AdvancedSettings(walltime=walltime)).record["resources"]
+    entered = structure_search_resources(walltime).to_dict()
+    planned = record["request"]
+    assert walltime_seconds(planned["walltime"]) == walltime_seconds(walltime.strip())
+    assert {k: v for k, v in planned.items() if k != "walltime"} == {k: v for k, v in entered.items() if k != "walltime"}
+    assert f"#SBATCH --time={planned['walltime']}" in record["sbatch_directives"]
+    assert record["status"] == "provisional_estimate" and record["approved"] is False

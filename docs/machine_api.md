@@ -7,10 +7,11 @@ bmd-run:
 | --- | --- | --- |
 | `GET /api/v1/identity` | any valid token | Service identity, API and schema versions, the caller's principal and scopes |
 | `POST /api/v1/plans` | `plan` | Resolve a structure and workflow request into the authoritative calculation plan |
+| `POST /api/v1/structure-search-plans` | `plan` | Plan a formula-based USPEX structure search (New structure); read-only, no preparation or submission |
 | `PUT /api/v1/attempts/{attempt_id}` | `prepare` (prepare only) or `submit` (prepare and submit) | Prepare, or prepare and submit, one calculation; idempotent per attempt ID |
 | `GET /api/v1/attempts/{attempt_id}` | `read` | The attempt's authoritative state, job identity and scheduler state |
 
-`identity` and `plans` never contact POWER. The attempt routes use Compute's
+`identity`, `plans` and `structure-search-plans` never contact POWER. The attempt routes use Compute's
 existing remote preparation, submission and monitoring machinery with
 server-owned connection profiles; see [Execution](#execution). There is no
 machine route for cancellation or result retrieval. The browser routes are
@@ -168,6 +169,57 @@ Errors: `{"api_version": "v1", "error": {"code", "message", ...}}` with codes
 `diagnostic_code` when Compute provides one, for example
 `hse06_soc_not_supported_for_new_calculations`), `plan_failed` (500, generic)
 and `api_not_configured` (503).
+
+## Structure-search plans
+
+`POST /api/v1/structure-search-plans` plans a New structure request: a USPEX
+search for low-energy structures of a chemical formula. It is not a Desired
+Output of `/plans` (which needs a structure): `/plans` and `PUT /attempts`
+refuse `desired_output: "new_structure"` with 422
+(`workflow.desired_output: use_structure_search_plans`) before any planning
+or ledger access. The route and the browser's `/predict` preview call the
+same entry point, `backend.structure_search.planning.plan_structure_search`,
+which builds the frozen `StructureSearchPlan` (`docs/structure_search.md`).
+
+Request (`application/json`, closed objects):
+
+```json
+{
+  "formula": "SiO2",
+  "search": {"min_atoms": 3, "max_atoms": 12, "num_generations": 30, "walltime": "168:00:00"},
+  "expected_plan_digest": "sha256:..."
+}
+```
+
+- `formula` (required): at most 64 characters; read by the same formula
+  reader as the browser. `search` and every key in it are optional (omitted:
+  the provisional search default). `expected_plan_digest` (optional): the
+  request is refused with 409 `plan_changed` (carrying the current
+  `plan_digest`) if it now plans differently.
+- Settings v1 fixes by policy (pressure, theory, spin, `kresol_start`,
+  population sizes, INCAR/POTCAR keys, ...) are refused with
+  `fixed_by_bmd_policy`; `structure`, `workflow` and `resources` with
+  `not_accepted_for_structure_search`; anything else with `unknown_field`.
+- An unreadable formula, or a composition or setting outside the search scope
+  (spin-polarised, DFT+U or SOC compositions, too many elements, cells or
+  generations), gives 422 `calculation_invalid` with the same message and
+  `diagnostic_code` the browser shows.
+
+Response (`schema: "bmd_compute.structure_search_plan_response"`,
+`schema_version: 1`): `request_kind: "structure_search"`,
+`desired_output: "new_structure"`, `plan_schema` and `plan_schema_version`,
+`plan_digest` (the scientific search-plan digest; it excludes provenance and
+is distinct from the calculation plan digest), `formula` (`entered`,
+`display`, `formula_unit_as_entered`, `canonical`, `reduced_from_entered`,
+`reordered_from_entered`, `formula_atoms`), `search` (method, theory,
+`energy_grade: "search-grade"`, `equivalent_to_bmd_adaptive_relaxation:
+false`, cell sizes, population, generations, walltime, defaults status),
+`finalist_refinement` (`status: "planned, not yet available"`), `resources`
+(`status: "provisional_estimate"`, `approved: false`, the exclusive-node
+request), `preparation_available: false`, `submission_available: false`, and
+`plan`: the complete frozen plan document (record, `plan_digest`,
+`provenance`). Equivalent formulas (`SiO2`, `O2Si`) give the same digest; the
+entered formula is kept in `formula` and `plan.provenance`.
 
 ## Plan digest
 

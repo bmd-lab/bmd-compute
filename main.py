@@ -100,6 +100,7 @@ from backend.workflow_summary import (
     summarize_workflow,
     workflow_label_from_spec,
 )
+from backend.structure_search.planning import StructureSearchPlanRequest, plan_structure_search
 from compute_api.router import build_machine_api_router
 
 app = FastAPI()
@@ -1699,7 +1700,16 @@ def predict_preview(
         walltime=search_walltime,
     )
     try:
-        plan = build_prediction_plan(formula, advanced)
+        # The same planning entry point as POST /api/v1/structure-search-plans.
+        plan = plan_structure_search(
+            StructureSearchPlanRequest(
+                formula=formula,
+                min_atoms=min_atoms,
+                max_atoms=max_atoms,
+                num_generations=num_generations,
+                walltime=search_walltime,
+            )
+        ).preview()
     except CalculationValidationError as exc:
         return _prediction_response(request, formula=formula, advanced=advanced, error=exc)
     return _prediction_response(request, formula=formula, advanced=advanced, plan=plan)
@@ -2378,4 +2388,6 @@ def refresh_monitoring(
 
 # Authenticated machine API (planning only). It is a separate router with its
 # own authentication; the browser routes above are unchanged and do not use it.
-app.include_router(build_machine_api_router(planner=plan_calculation_request))
+app.include_router(
+    build_machine_api_router(planner=plan_calculation_request, search_planner=plan_structure_search)
+)

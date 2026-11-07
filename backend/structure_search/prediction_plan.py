@@ -203,11 +203,17 @@ def build_prediction_plan(formula: str, advanced: AdvancedSettings | None = None
     or admission's validation error for a request outside the search scope.
     """
 
-    from backend.structure_search.search_plan import build_search_plan_from_formula
+    from backend.structure_search.planning import StructureSearchPlanRequest, plan_structure_search
 
     advanced = advanced or AdvancedSettings()
-    plan = build_search_plan_from_formula(formula, advanced)
-    return preview_from_plan(plan, advanced_overrides=not advanced.is_empty())
+    request = StructureSearchPlanRequest(
+        formula=formula,
+        min_atoms=advanced.min_atoms,
+        max_atoms=advanced.max_atoms,
+        num_generations=advanced.num_generations,
+        walltime=advanced.walltime,
+    )
+    return plan_structure_search(request).preview()
 
 
 def _reduced_in_entered_order(entered: Mapping[str, Any], fallback: str) -> str:
