@@ -423,7 +423,11 @@ are not part of the declared methodology.
 Status: **the five-step ladder is retained provisionally as the search's
 screening and ranking methodology (Lee Burton, 6 Nov 2026).** No structure
 search can be started from bmd-compute yet; the design is in
-`structure_search.md`. The values here are implemented in
+`structure_search.md`. Execution status (7 Nov 2026): a frozen search plan
+can be staged on POWER and verified there (validated for Si, plan
+`sha256:014ef52c…0ebbc`); submission is not implemented. Staging changes no
+scientific input: the ladder, validity criteria and POTCARs below are what
+the plan records. The values here are implemented in
 `backend/structure_search/incar_policy.py` and `potcar.py` and pinned by
 golden files in `tests/fixtures/structure_search/`.
 

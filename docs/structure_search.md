@@ -524,6 +524,29 @@ execution.
   `/bmd-db/guest/logs/structure_search/submission_attempts/`, which the
   container never needs to see.
 
+### Managed remote staging (USPEX integration step 4C)
+
+Staging (`docs/machine_api.md`, *Structure-search staging*) ends at
+`STAGED`: the run directory holds the submission record, the runtime package
+uploaded with the attempt, the bound search inputs and the POTCARs copied on
+POWER, all verified there. Finalization (runtime-package check, POTCAR
+identities, staged-input verification) runs as one command with its own
+300 s SSH timeout; other remote commands keep the 60 s default.
+
+**Checked on POWER (7 Nov 2026, attempt `5ead0670`):** one Si search
+(plan `sha256:014ef52c…0ebbc`, code `2bbd1ba` + `b13f01f`) was staged as
+`bmdguest` in `/bmd/bmdguest/searches/uspex_search-20261107-173622-5ead0670`
+and reached `STAGED`; a fresh read-only re-verification passed. The bound
+bridge, `INPUT.txt`, the five INCARs, the plan and the manifests passed
+independent checks; the staged Si POTCAR was byte-identical to the POWER
+library with mode 0600. The attempt recovered from two genuine SSH timeouts
+in finalization (then 60 s) without re-uploading any scientific input.
+Finalization took 74.9 s (POTCAR identity checks about 37 s, staged-input
+verification about 20 s); the recovering request took 104.4 s in all. No
+SLURM job, USPEX search or VASP calculation ran, and collecting the evidence
+did not change the run. Record and evidence checksums:
+`reference/uspex_pilot/staging_validation/RESULTS_20261107_5ead0670.md`.
+
 ## 9. Open questions
 
 - Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks
@@ -534,13 +557,14 @@ execution.
   `reference/uspex_pilot/si_bridge/sample_results1/README.md`.)
 - Is `value : sleepSeconds` the right `INPUT.txt` form? The manual shows the
   keyword only in prose.
-- Who maintains `/bmd/shared/uspex_cache` and the sandbox, and does
-  `bmdguest` reach them with the current permissions?
+- Who maintains the sandbox `/bmd/shared/uspex25_sandbox`? (Searches use
+  their own unpack cache, `/bmd/bmdguest/uspex_cache`, owned by `bmdguest`
+  and initialised for the 7 Nov 2026 staging validation.)
 - Lab sign-off on the INCAR ladder (#75): final-step smearing, the early-step
   ENCUT (must not fall below any POTCAR's ENMAX in a search), `PREC` of the
   loose steps, how tightly step 4 relaxes every candidate, and `KPAR`.
 - BMD review of the resume and cancel exception (#69).
 - Who looks after multi-week searches that occupy a whole node?
-- Where is the dedicated production search workspace under `/bmd` (owner,
-  permissions, quota), separate from `/bmd/bmdguest/validation` and
-  `/bmd-db/guest`?
+- The production search workspace is `/bmd/bmdguest/searches` (approved
+  7 Nov 2026, used by the staging validation). Its quota, and how old runs
+  are retired, are not settled.

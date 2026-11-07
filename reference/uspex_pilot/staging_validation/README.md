@@ -31,6 +31,13 @@ Locations used on POWER (all as `bmdguest`):
 | `/bmd-db/potcars/POT_PAW_PBE_64/Si/POTCAR` | read only |
 | `/bmd-db/guest/validation/uspex_staging_4c_<UTC>_<attempt[:8]>/` | evidence written by `power_evidence.sh` (new) |
 
+## Validation record
+
+Run on 7 Nov 2026 for attempt `5ead0670-911a-4c52-9587-9f3ae9539269`
+(commits `2bbd1ba` + `b13f01f`): staging validated, nothing submitted.
+Results, recovery, timings and evidence checksums:
+[`RESULTS_20261107_5ead0670.md`](RESULTS_20261107_5ead0670.md).
+
 ## Preconditions (stop if any is not met)
 
 1. Step 4C is committed, and that commit is available to the VM's clone (how

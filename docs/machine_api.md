@@ -399,6 +399,21 @@ After checking that no staging request is running, an operator may remove
 that empty lock directory; nothing else needs repair. A refused attempt is
 kept for inspection; use a new attempt ID.
 
+### Finalization timeout and timings
+
+The finalize step (staging and `reverify_staged_search`) runs as one SSH
+command with a dedicated 300 s timeout (`FINALIZE_TIMEOUT_S`); every other
+remote command, and ordinary calculations, keep the runner's 60 s default.
+A timeout leaves the attempt `STAGING` (503 `staging_unavailable`) and is
+recovered by repeating the request. The service logs each phase's duration
+and, from POWER, where finalization spent its time (guard and imports,
+package re-check, plan load, POTCAR copy and identity, staged-input
+verification); the timers wrap the verified package's functions in the
+remote process and change neither the package nor the checks. Measured on
+POWER for Si (7 Nov 2026): finalization 74.9 s, of which about 37 s POTCAR
+identity and about 20 s staged-input verification
+(`reference/uspex_pilot/staging_validation/RESULTS_20261107_5ead0670.md`).
+
 ### What `STAGED` means
 
 `STAGED` (and `staging.remote_integrity: "last_verified"`,
