@@ -9,7 +9,7 @@ from backend import config
 
 POWER_DEFAULTS = {
     "USPEX_SANDBOX_DIR": ("BMD_USPEX_SANDBOX_DIR", "/bmd/shared/uspex25_sandbox"),
-    "USPEX_CACHE_DIR": ("BMD_USPEX_CACHE_DIR", "/bmd/shared/uspex_cache"),
+    "USPEX_CACHE_DIR": ("BMD_USPEX_CACHE_DIR", "/bmd/bmdguest/uspex_cache"),
     "USPEX_PAYLOAD_SHA256": (
         "BMD_USPEX_PAYLOAD_SHA256",
         "fc4a08e65ffc5f4fc3b45cb058de2cd54731ab2c191123aac8a3c69e87e95c8c",
@@ -26,6 +26,8 @@ POWER_DEFAULTS = {
     "STRUCTURE_SEARCH_NODE_SOCKETS": ("BMD_SEARCH_NODE_SOCKETS", 2),
     "STRUCTURE_SEARCH_CORES_PER_SOCKET": ("BMD_SEARCH_CORES_PER_SOCKET", 96),
     "STRUCTURE_SEARCH_EXCLUDED_NODES": ("BMD_SEARCH_EXCLUDED_NODES", "compute-0-[332-333]"),
+    "STRUCTURE_SEARCH_WORKSPACE_DIR": ("BMD_SEARCH_WORKSPACE_DIR", "/bmd/bmdguest/searches"),
+    "STRUCTURE_SEARCH_LOGS_DIR": ("BMD_SEARCH_LOGS_DIR", "/bmd-db/guest/logs/structure_search"),
 }
 
 

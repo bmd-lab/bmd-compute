@@ -359,7 +359,7 @@ def test_probe_settings_differ_from_production_only_in_the_private_cache(private
     _clean_env(monkeypatch)
     assert runner.PRIVATE_CACHE_DIR == "/bmd/bmdguest/validation/uspex_cache_private"
     production = SearchRuntimeSettings.from_config()
-    assert production.cache_dir == config.USPEX_CACHE_DIR == "/bmd/shared/uspex_cache"  # unchanged
+    assert production.cache_dir == config.USPEX_CACHE_DIR == "/bmd/bmdguest/uspex_cache"  # the approved production cache
     probe = runner.probe_runtime_settings(cache=str(private_cache), root=str(validation_root))
     assert probe.cache_dir == str(private_cache)
     for field in dataclasses.fields(production):
@@ -379,7 +379,7 @@ def test_inherited_bmd_variables_are_refused(monkeypatch, name):
 
 def test_private_cache_must_be_a_writable_real_directory_in_the_validation_area(private_cache, validation_root, tmp_path, monkeypatch):
     assert runner.check_private_cache(str(private_cache), root=str(validation_root)) == str(private_cache)
-    for bad in ("/bmd/shared/uspex_cache", "/bmd/bmdguest/uspex_cache_private",
+    for bad in ("/bmd/shared/uspex_cache", "/bmd/bmdguest/uspex_cache", "/bmd/bmdguest/uspex_cache_private",
                 "/bmd/bmdguest/envs/uspex_cache_private", "/bmd/bmdguest/validation/../uspex_cache_private"):
         with pytest.raises(runner.PathRefused):
             runner.check_private_cache(bad)
@@ -513,4 +513,4 @@ def test_production_bind_and_runtime_code_are_unchanged():
 
     assert DEFAULT_BIND == "/bmd"
     assert runner.PRIVATE_CACHE_DIR.startswith(DEFAULT_BIND + "/")
-    assert runtime.SearchRuntimeSettings.from_config().cache_dir == "/bmd/shared/uspex_cache"
+    assert runtime.SearchRuntimeSettings.from_config().cache_dir == "/bmd/bmdguest/uspex_cache"

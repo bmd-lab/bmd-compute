@@ -63,6 +63,7 @@ from compute_api.schemas import (
     parse_execution_request,
     parse_plan_request,
     parse_structure_search_attempt_request,
+    parse_structure_search_staging_request,
     parse_structure_search_plan_request,
 )
 
@@ -303,6 +304,42 @@ def build_machine_api_router(*, planner: Planner, search_planner: Planner | None
         except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
             return _error_response(_scientific_error(exc, "search preparation", "preparation_failed",
                                                      "BMD Compute could not prepare this search."))
+        return _json(200, {"api_version": API_VERSION, **response})
+
+    @router.put("/structure-search-attempts/{attempt_id}/staging")
+    async def put_structure_search_staging(attempt_id: str, request: Request):
+        from backend.remote import RemoteOperationBusy, SubmissionAttemptError
+        from backend.structure_search.staging import StagingError
+        from compute_api.structure_search_execution import stage_search_attempt
+
+        try:
+            principal = _authorize(request, scope=SCOPE_PREPARE)
+            canonical = _canonical_attempt_id(attempt_id)
+            document = await _read_json_body(request)
+            try:
+                shape = parse_structure_search_staging_request(document)
+            except PlanRequestError as exc:
+                raise _ApiError(
+                    422, "invalid_request", "The structure-search staging request is invalid.", fields=exc.errors
+                ) from None
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+
+        try:
+            response = await run_in_threadpool(
+                stage_search_attempt, principal=principal.principal, attempt_id=canonical, shape=shape
+            )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except StagingError as exc:
+            return _error_response(_ApiError(409, exc.code, _bounded(exc.message)))
+        except RemoteOperationBusy:
+            return _error_response(_ApiError(503, "remote_busy", "BMD Compute is busy with other remote operations; retry shortly."))
+        except SubmissionAttemptError:
+            return _error_response(_ApiError(409, "remote_attempt_mismatch", "The remote attempt state does not match this attempt."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            LOGGER.error("Machine API search staging failed (%s).", type(exc).__name__, exc_info=True)
+            return _error_response(_ApiError(503, "staging_unavailable", "BMD Compute could not stage this search; retry."))
         return _json(200, {"api_version": API_VERSION, **response})
 
     @router.get("/structure-search-attempts/{attempt_id}")

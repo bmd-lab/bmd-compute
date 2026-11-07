@@ -405,3 +405,31 @@ def parse_structure_search_attempt_request(document: Any) -> StructureSearchPlan
     if errors:
         raise PlanRequestError(errors)
     return shape
+
+
+@dataclass(frozen=True)
+class StructureSearchStagingRequestShape:
+    expected_plan_digest: str
+
+
+def parse_structure_search_staging_request(document: Any) -> StructureSearchStagingRequestShape:
+    """Validate a ``PUT /api/v1/structure-search-attempts/{id}/staging`` body.
+
+    ``{"expected_plan_digest": "sha256:..."}``: the digest of the attempt's
+    frozen plan, as returned when it was prepared. Nothing else is accepted;
+    in particular there is no ``submit``.
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    for key in sorted(set(document) - {"expected_plan_digest"}, key=str):
+        _error(errors, str(key), "submission_not_available" if key == "submit" else "unknown_field")
+    expected = document.get("expected_plan_digest")
+    if "expected_plan_digest" not in document or expected is None:
+        _error(errors, "expected_plan_digest", "required")
+    elif not isinstance(expected, str) or not _PLAN_DIGEST.fullmatch(expected):
+        _error(errors, "expected_plan_digest", "must_be_sha256_digest")
+    if errors:
+        raise PlanRequestError(errors)
+    return StructureSearchStagingRequestShape(expected_plan_digest=expected)

@@ -177,7 +177,9 @@ values, not against its own environment.
 | Setting | Variable | POWER default |
 |---|---|---|
 | USPEX 25.0 sandbox (unpacked image, not the `.sif`) | `BMD_USPEX_SANDBOX_DIR` | `/bmd/shared/uspex25_sandbox` |
-| Shared unpack cache, used as `XDG_CACHE_HOME` for the USPEX command only | `BMD_USPEX_CACHE_DIR` | `/bmd/shared/uspex_cache` |
+| Production unpack cache, used as `XDG_CACHE_HOME` for the USPEX command only | `BMD_USPEX_CACHE_DIR` | `/bmd/bmdguest/uspex_cache` |
+| Search workspace (run directories; must be under `/bmd`) | `BMD_SEARCH_WORKSPACE_DIR` | `/bmd/bmdguest/searches` |
+| Search attempt states (`submission_attempts/`) | `BMD_SEARCH_LOGS_DIR` | `/bmd-db/guest/logs/structure_search` |
 | Expected payload SHA-256 of `/opt/uspex/uspex` | `BMD_USPEX_PAYLOAD_SHA256` | `fc4a08e6…e87e95c8c` (USPEX 25.0, 11 Nov 2025) |
 | Singularity executable | `BMD_SINGULARITY_EXECUTABLE` | `/powerapps/share/rocky9/mamba/mamba-1.5.8/envs/singularity-3.8.6/bin/singularity` |
 | `I_MPI_PMI_LIBRARY` for `srun --mpi=pmi2` steps | `BMD_SEARCH_I_MPI_PMI_LIBRARY` | `/usr/lib64/libpmi2.so` |

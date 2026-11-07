@@ -56,7 +56,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import posixpath
 import stat
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -77,6 +79,11 @@ SEARCH_RECORD_SCHEMA = "bmd_compute.api_structure_search_attempt_record"
 SEARCH_RECORD_SCHEMA_VERSION = 1
 STATE_PREPARING = "PREPARING"
 STATE_PREPARED_LOCALLY = "PREPARED_LOCALLY"
+STATE_STAGING = "STAGING"
+STATE_STAGED = "STAGED"
+REMOTE_STATE_STAGING = "STAGING"
+REMOTE_STATE_STAGED = "STAGED"
+STAGED_REMOTE_INTEGRITY = "last_verified"  # same as backend.structure_search.staging
 PREPARATIONS_DIRNAME = "preparations"
 PREPARATION_PREFIX = "preparation-"
 RESPONSE_SCHEMA = "bmd_compute.api_structure_search_attempt"
@@ -303,8 +310,32 @@ def search_attempt_response(record: Mapping[str, Any], *, integrity: str | None 
             "interrupted_preparations": len(preparation.get("abandoned") or []),
             "integrity": integrity,
         },
-        "remote_staging_available": False,
+        "remote_staging_available": record["state"] in {STATE_PREPARED_LOCALLY, STATE_STAGING},
+        "staging": _staging_response(record.get("staging")),
         "submission_available": False,
+    }
+
+
+def _staging_response(staging: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not staging:
+        return None
+    result = staging.get("result") or {}
+    return {
+        "location": "POWER (search workspace)",
+        "run_name": staging.get("run_name"),
+        "remote_state": result.get("remote_state") or REMOTE_STATE_STAGING,
+        "started_at": staging.get("started_at"),
+        "staged_at": staging.get("staged_at"),
+        # STAGED is what POWER last verified (at staged_at), not current integrity;
+        # reading it back never contacts POWER.
+        "remote_integrity": STAGED_REMOTE_INTEGRITY if staging.get("staged_at") else None,
+        "last_verified_at": staging.get("staged_at"),
+        "bridge_path_bound": bool(result.get("bridge_path_bound")),
+        "bridge_sha256": staging.get("bridge_sha256"),
+        "runtime_package_manifest_sha256": staging.get("runtime_manifest_digest"),
+        "files": result.get("files"),
+        "potcars": result.get("potcars"),
+        "contains_potcar_contents": False,
     }
 
 
@@ -343,7 +374,7 @@ def prepare_search_attempt(*, search_planner, principal: str, attempt_id: str, s
     record = ledger.read(attempt_id)
     if record is not None:
         _check_binding(record, principal, request_digest)
-        if record["state"] == STATE_PREPARED_LOCALLY:
+        if record["state"] != STATE_PREPARING:
             return _stored(ledger, record)
 
     result = search_planner(
@@ -370,7 +401,7 @@ def prepare_search_attempt(*, search_planner, principal: str, attempt_id: str, s
                 raise ExecutionError(409, "attempt_conflict", "This attempt was created concurrently; retry.")
         else:
             _check_binding(record, principal, request_digest)
-            if record["state"] == STATE_PREPARED_LOCALLY:
+            if record["state"] != STATE_PREPARING:
                 return _stored(ledger, record)
         if record["plan_digest"] != result.digest:  # pragma: no cover - implied by the request hash
             raise ExecutionError(409, "plan_changed", "This attempt was bound to a different plan.")
@@ -388,13 +419,394 @@ def lookup_search_attempt(*, principal: str, attempt_id: str) -> dict[str, Any]:
     if record is None:
         raise ExecutionError(404, "attempt_not_found", "No structure-search attempt with this ID exists.")
     _authorize_record(record, principal)
-    if record["state"] != STATE_PREPARED_LOCALLY:
+    if record["state"] == STATE_PREPARING:
         return search_attempt_response(record, integrity="incomplete")
     directory = _preparation_dir(ledger, record)
     intact = _verified(directory, record["plan_digest"]) is not None and (
         _manifest_sha256(directory) == record["preparation"]["manifest_sha256"]
     )
     return search_attempt_response(record, integrity="verified" if intact else "damaged")
+
+
+# ---------------------------------------------------------------- remote staging (4C)
+
+
+def _staging_failed(code: str, message: str, status: int = 409) -> ExecutionError:
+    return ExecutionError(status, code, message)
+
+
+def _uploads(spec: Mapping[str, Any], staged_files: Mapping[str, bytes], sources: Mapping[str, str]):
+    """Every file staging uploads, as ``(run-dir-relative path, text)``, in upload order."""
+
+    from backend.structure_search.staging import SEARCH_SUBDIR
+
+    package = posixpath.basename(spec["runner"]["backend_package_dir"].rstrip("/"))
+    # Sorted keys: the text must be reproducible from the spec stored in the ledger on resume.
+    uploads = [("submission.json", json.dumps(spec, indent=2, sort_keys=True))]
+    uploads += [(posixpath.join(package, name), text) for name, text in sorted(sources.items())]
+    uploads += [
+        (posixpath.join(SEARCH_SUBDIR, name), data.decode("utf-8"))
+        for name, data in sorted(staged_files.items())
+    ]
+    return uploads
+
+
+class _RemoteStaging:
+    """One attempt's staging on POWER: what it uploads and how POWER verifies it.
+
+    Every method that touches POWER must run while the attempt's remote claim
+    (``submission_attempts/<id>.lock``) is held.
+    """
+
+    def __init__(self, *, spec, plan, local_manifest, sources, manifest):
+        from backend.config import NOTEBOOK_DEFAULTS
+        from backend.structure_search.potcar import POTCAR_FUNCTIONAL_DIR
+        from backend.structure_search.runtime import SearchRuntimeSettings
+        from backend.structure_search.staging import SEARCH_SUBDIR, staged_search_files, staging_layout
+
+        self.spec = spec
+        self.plan = plan
+        self.sources = sources
+        self.attempt_id = spec["submission"]["attempt_id"]
+        paths = spec["paths"]
+        self.layout = staging_layout(spec["run_name"], workspace_dir=paths["flows_dir"], logs_dir=paths["logs_dir"])
+        staged_files = staged_search_files(plan, local_manifest, bridge_path=spec["structure_search"]["bridge_path"])
+        self.uploads = _uploads(spec, staged_files, sources)
+        self.expected = {path: sha256_hex(text) for path, text in self.uploads}
+        self.potcars = {
+            posixpath.join(SEARCH_SUBDIR, row["staged_at_execution_as"]): row["dataset_sha256"][:16]
+            for row in plan.record["potcar"]["elements"]
+        }
+        self.expected_files = json.loads(staged_files["prepared_inputs.json"])["files"]
+        self.request = {
+            "attempt_id": self.attempt_id,
+            "run_dir": self.layout["run_dir"],
+            "package_dir": self.layout["package_dir"],
+            "search_dir": self.layout["search_dir"],
+            "bridge_path": self.layout["bridge_path"],
+            "manifest": dict(manifest),
+            "plan_digest": plan.digest,
+            "potcar_library": NOTEBOOK_DEFAULTS["PMG_VASP_PSP_DIR"],
+            "functional_dir": POTCAR_FUNCTIONAL_DIR,
+            "cache_ready_marker": str(SearchRuntimeSettings.from_config().ready_marker),
+            "copy_potcars": True,
+        }
+
+    def _python(self) -> str:
+        import shlex
+
+        return shlex.quote(str(self.spec["runner"]["python"]))
+
+    def inventory(self, runner) -> dict[str, Any]:
+        from backend.structure_search.staging import build_inventory_script, parse_inventory_output
+
+        script = build_inventory_script(self.layout["run_dir"])
+        output = runner.run(f"{self._python()} - <<'PY'\n{script}PY", check=False, modules=False, export_env=False)
+        return parse_inventory_output(output.stdout)
+
+    def reconcile(self, runner, *, complete: bool = False) -> dict[str, Any]:
+        from backend.structure_search.staging import reconcile_staging
+
+        return reconcile_staging(self.inventory(runner), self.expected, attempt_id=self.attempt_id,
+                                 potcars=self.potcars, complete=complete)
+
+    def upload_missing(self, runner, plan: Mapping[str, Any]) -> None:
+        """Upload what is missing; complete or supersede this attempt's own unfinished uploads."""
+
+        from backend.structure_search.staging import UPLOAD_MODE, staging_temporary_path
+
+        missing = plan["missing"]
+        run_dir = self.layout["run_dir"]
+        for parent in sorted({posixpath.dirname(path) for path in missing}):
+            runner.ensure_directory(posixpath.join(run_dir, parent) if parent else run_dir)
+        for relative, text in self.uploads:
+            if relative not in missing:
+                continue
+            target = posixpath.join(run_dir, relative)
+            temporary = staging_temporary_path(target, self.attempt_id, self.expected[relative])
+            if not missing[relative]["temporary_complete"]:
+                runner.put_text(temporary, text, mode=UPLOAD_MODE)  # creates, or supersedes our own partial copy
+            runner._replace_file(temporary, target)  # atomic; the target is absent under the claim
+
+    def finalize(self, runner, *, copy_potcars: bool) -> dict[str, Any]:
+        from backend.structure_search.staging import build_finalize_script, parse_finalize_output
+        from backend.submission import RUNTIME_PACKAGE_GUARD_MODULE
+        import shlex
+
+        script = build_finalize_script({**self.request, "copy_potcars": copy_potcars},
+                                       runtime_sources=self.sources, guard_module=RUNTIME_PACKAGE_GUARD_MODULE)
+        command = f"cd {shlex.quote(self.layout['run_dir'])}\n{self._python()} - <<'PY'\n{script}PY"
+        output = runner.run(command, check=False, modules=False, export_env=False)
+        result = parse_finalize_output(output.stdout)
+        if not result.get("ok"):
+            raise _staging_failed(str(result.get("code") or "staging_failed"),
+                                  str(result.get("message") or "Staging on POWER failed."))
+        bindings = result.get("bindings") or {}
+        if (
+            result.get("plan_digest") != self.plan.digest
+            or result.get("files") != self.expected_files
+            or bindings.get("bridge_path") != self.layout["bridge_path"]
+            or bindings.get("bound") is not True
+            or result.get("contains_potcar_contents") is not False
+        ):
+            raise _staging_failed("staging_unconfirmed", "POWER did not confirm the staged files.")
+        return result
+
+    def verify(self, runner) -> dict[str, Any]:
+        """Read-only verification of the complete staged run directory. Writes nothing."""
+
+        result = self.finalize(runner, copy_potcars=False)
+        self.reconcile(runner, complete=True)
+        return result
+
+    def reserve_run_directory(self, runner) -> None:
+        """A new attempt: refuse an existing run directory, record STAGING, then create the directory.
+
+        The remote STAGING state, written first, reserves the run name for this
+        attempt: a later request that finds the state but not the directory
+        creates it, and one that finds both adopts the directory only if
+        everything in it is attributable to this attempt (``reconcile``).
+        """
+
+        run_dir = self.layout["run_dir"]
+        if runner.is_dir(run_dir) or runner.is_file(run_dir):
+            raise _staging_failed("run_directory_exists",
+                                  "The run directory already exists; it is never reused or replaced.")
+        runner._write_submission_attempt_state(self.spec, REMOTE_STATE_STAGING, output="")
+        self.create_run_directory(runner)
+
+    def create_run_directory(self, runner) -> None:
+        import shlex
+
+        created = runner.run(f"mkdir {shlex.quote(self.layout['run_dir'])}", check=False,
+                             modules=False, export_env=False)
+        if not created.ok:
+            raise _staging_failed("run_directory_exists",
+                                  "The run directory already exists; it is never reused or replaced.")
+
+
+@contextmanager
+def _claimed_runner(spec):
+    from backend.remote_runtime import connected_remote_runner, connection_profile_from_cluster
+    from compute_api import execution
+
+    with connected_remote_runner(
+        profile=connection_profile_from_cluster(spec["cluster"]),
+        runner_factory=execution.RUNNER_FACTORY,
+    ) as runner:
+        runner.ensure_directory(spec["paths"]["submission_attempts_dir"])
+        if not runner._claim_submission_attempt(spec):
+            raise _staging_failed("staging_in_progress", "This attempt is being staged by another request; retry.")
+        try:
+            yield runner
+        finally:
+            runner._release_submission_attempt_claim(spec)
+
+
+def _stage_remote(*, spec, plan, local_manifest, sources, manifest) -> dict[str, Any]:
+    """Stage one search on POWER through BMD's remote runner. Never runs sbatch, USPEX or VASP."""
+
+    staging = _RemoteStaging(spec=spec, plan=plan, local_manifest=local_manifest, sources=sources,
+                             manifest=manifest)
+    with _claimed_runner(spec) as runner:
+        state = runner._read_submission_attempt_state(spec)
+        if state:
+            runner._ensure_submission_attempt_matches(spec, state)
+            if state.get("state") == REMOTE_STATE_STAGED:
+                result = staging.verify(runner)  # adopted only after a read-only re-verification
+                return {**result, "remote_state": REMOTE_STATE_STAGED}
+            if state.get("state") != REMOTE_STATE_STAGING:
+                raise _staging_failed("remote_state_invalid",
+                                      f"The remote attempt is in state {state.get('state')!r}.")
+            if not runner.is_dir(staging.layout["run_dir"]):
+                staging.create_run_directory(runner)  # interrupted after reserving the run name
+        else:
+            staging.reserve_run_directory(runner)
+
+        staging.upload_missing(runner, staging.reconcile(runner))
+        result = staging.finalize(runner, copy_potcars=True)
+        staging.reconcile(runner, complete=True)
+        summary = {
+            "plan_digest": result["plan_digest"],
+            "files": result["files"],
+            "potcars": result["potcars"],
+            "bridge_path_bound": True,
+        }
+        runner._write_submission_attempt_state(spec, REMOTE_STATE_STAGED, output=json.dumps(summary, sort_keys=True))
+        return {**result, "remote_state": REMOTE_STATE_STAGED}
+
+
+def _staging_inputs(ledger, record):
+    """The frozen plan, its local manifest and today's runtime package, checked for staging.
+
+    Refuses a plan BMD Compute would now make differently (``plan_changed``)
+    and a runtime package whose bridge is not the one the plan was made for
+    (``bridge_changed``). Contacts nothing.
+    """
+
+    from backend.runtime_package import runtime_package_manifest_digest, runtime_package_manifest_for_sources
+    from backend.structure_search.search_plan import (
+        PLAN_FILE,
+        PREPARED_FILE,
+        SearchPlanError,
+        load_plan_text,
+        require_current_plan,
+    )
+    from backend.structure_search.staging import BRIDGE_RELATIVE_PATH
+    from backend.submission import build_backend_module_sources
+
+    directory = _preparation_dir(ledger, record)
+    plan = load_plan_text((directory / PLAN_FILE).read_text(encoding="utf-8"))
+    local_manifest = json.loads((directory / PREPARED_FILE).read_text(encoding="utf-8"))
+    try:
+        require_current_plan(plan)
+    except SearchPlanError as exc:
+        raise ExecutionError(409, "plan_changed", "BMD Compute would now plan this search differently; "
+                             "it is not staged. Prepare a new attempt.",
+                             changed=(exc.diagnostic or {}).get("changed")) from None
+    sources = build_backend_module_sources()
+    manifest = runtime_package_manifest_for_sources(sources)
+    if manifest.get(BRIDGE_RELATIVE_PATH) != plan.record["execution"]["bridge"]["sha256"]:
+        raise ExecutionError(409, "bridge_changed", "The launch bridge differs from the one the plan was made for.")
+    return plan, local_manifest, sources, manifest, runtime_package_manifest_digest(manifest)
+
+
+def reverify_staged_search(*, principal: str, attempt_id: str) -> dict[str, Any]:
+    """Freshly re-verify a STAGED search on POWER, read-only. Changes nothing anywhere.
+
+    ``STAGED`` records the state POWER last verified, not a guarantee that the
+    run directory is still intact. Step 4D must call this, inside the same
+    remote claim as any submission, before an attempt may become
+    submission-ready; ordinary reads (GET) never contact POWER.
+
+    Checks, against the stored submission spec: the local preparation, that
+    the plan is still current, that today's runtime package is the one that
+    was uploaded, the remote attempt state (``STAGED``, same fingerprint), and
+    on POWER the runtime package (guard), plan digest, bound bridge, POTCAR
+    identities and the complete run directory (no file missing, changed,
+    added or left half-written). Returns the verification; raises
+    :class:`ExecutionError` (409 with the problem's code) otherwise.
+    """
+
+    ledger = SearchAttemptLedger.from_environment_read_only()
+    if ledger.calculation_exists(attempt_id):
+        raise _calculation_id_conflict()
+    record = ledger.read(attempt_id)
+    if record is None:
+        raise ExecutionError(404, "attempt_not_found", "No structure-search attempt with this ID exists.")
+    _authorize_record(record, principal)
+    if record["state"] != STATE_STAGED:
+        raise ExecutionError(409, "attempt_not_staged", "This attempt has not been staged.")
+    _stored(ledger, record)
+    plan, local_manifest, sources, manifest, manifest_digest = _staging_inputs(ledger, record)
+    staging = record["staging"]
+    if manifest_digest != staging["runtime_manifest_digest"]:
+        raise ExecutionError(409, "runtime_package_changed",
+                             "BMD Compute's runtime package changed since this attempt was staged.")
+    spec = staging["spec"]
+    remote = _RemoteStaging(spec=spec, plan=plan, local_manifest=local_manifest, sources=sources,
+                            manifest=manifest)
+    with _claimed_runner(spec) as runner:
+        state = runner._read_submission_attempt_state(spec)
+        if not state:
+            raise _staging_failed("remote_state_missing", "POWER holds no state for this attempt.")
+        runner._ensure_submission_attempt_matches(spec, state)
+        if state.get("state") != REMOTE_STATE_STAGED:
+            raise _staging_failed("remote_state_invalid", f"The remote attempt is in state {state.get('state')!r}.")
+        result = remote.verify(runner)
+    return {
+        "attempt_id": attempt_id,
+        "plan_digest": result["plan_digest"],
+        "verified_at": isoformat(utc_now()),
+        "remote_state": REMOTE_STATE_STAGED,
+        "runtime_package_manifest_sha256": manifest_digest,
+        "files": result["files"],
+        "potcars": result["potcars"],
+        "contains_potcar_contents": False,
+    }
+
+
+def stage_search_attempt(*, principal: str, attempt_id: str, shape) -> dict[str, Any]:
+    """Stage a PREPARED_LOCALLY search attempt on POWER (idempotent; ends at STAGED)."""
+
+    from backend.structure_search.staging import build_search_submission_spec
+    from backend.submission import canonical_run_timestamp
+
+    ledger = SearchAttemptLedger.from_environment_read_only()
+    if ledger.calculation_exists(attempt_id):
+        raise _calculation_id_conflict()
+    record = ledger.read(attempt_id)
+    if record is None:
+        raise ExecutionError(404, "attempt_not_found", "No structure-search attempt with this ID exists.")
+    _authorize_record(record, principal)
+    if record["plan_digest"] != shape.expected_plan_digest:
+        raise ExecutionError(409, "plan_digest_mismatch", "This attempt was prepared for a different plan digest.")
+    if record["state"] == STATE_PREPARING:
+        raise ExecutionError(409, "attempt_not_prepared", "This attempt has not been prepared locally yet.")
+    _stored(ledger, record)  # the local preparation must still be intact
+    if record["state"] == STATE_STAGED:
+        return search_attempt_response(record, integrity="verified")
+
+    plan, local_manifest, sources, manifest, manifest_digest = _staging_inputs(ledger, record)
+    bridge_sha256 = plan.record["execution"]["bridge"]["sha256"]
+
+    with ledger.locked():
+        record = ledger.read(attempt_id)
+        _authorize_record(record, principal)
+        if record["state"] == STATE_STAGED:
+            return search_attempt_response(record, integrity="verified")
+        if record["state"] == STATE_PREPARED_LOCALLY:
+            started = isoformat(utc_now())
+            spec = build_search_submission_spec(
+                plan=plan,
+                attempt_id=attempt_id,
+                run_timestamp=canonical_run_timestamp(None),
+                created_at=started,
+                runtime_manifest=manifest,
+            )
+            record["state"] = STATE_STAGING
+            record["staging"] = {
+                "run_name": spec["run_name"],
+                "spec": spec,
+                "runtime_manifest_digest": manifest_digest,
+                "bridge_sha256": bridge_sha256,
+                "started_at": started,
+                "staged_at": None,
+                "result": None,
+            }
+            record["updated_at"] = started
+            ledger.replace(record)
+        elif record["state"] == STATE_STAGING:
+            if record["staging"]["runtime_manifest_digest"] != manifest_digest:
+                raise ExecutionError(
+                    409, "runtime_package_changed",
+                    "BMD Compute's runtime package changed since staging started; the partial staging "
+                    "is kept and not completed. Use a new attempt ID.",
+                )
+            spec = record["staging"]["spec"]
+        else:  # pragma: no cover - states are exhaustive
+            raise ExecutionError(409, "remote_state_invalid", "The attempt is in an unexpected state.")
+
+    result = _stage_remote(spec=spec, plan=plan, local_manifest=local_manifest, sources=sources, manifest=manifest)
+
+    with ledger.locked():
+        record = ledger.read(attempt_id)
+        if record["state"] != STATE_STAGED:
+            staged_at = isoformat(utc_now())
+            record["state"] = STATE_STAGED
+            record["staging"] = {
+                **record["staging"],
+                "staged_at": staged_at,
+                "result": {
+                    "remote_state": REMOTE_STATE_STAGED,
+                    "bridge_path_bound": True,
+                    "files": result["files"],
+                    "potcars": result["potcars"],
+                },
+            }
+            record["updated_at"] = staged_at
+            ledger.replace(record)
+    return search_attempt_response(record, integrity="verified")
 
 
 __all__ = [
@@ -404,6 +816,7 @@ __all__ = [
     "STATE_PREPARED_LOCALLY",
     "STATE_PREPARING",
     "lookup_search_attempt",
+    "stage_search_attempt",
     "prepare_search_attempt",
     "search_attempt_response",
     "search_request_sha256",

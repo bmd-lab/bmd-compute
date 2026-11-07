@@ -489,7 +489,15 @@ and the machine API's read-only `POST /api/v1/structure-search-plans`
 `backend.structure_search.planning.plan_structure_search` (step 4A), so both
 give the same plan and digest. `PUT /api/v1/structure-search-attempts/{id}`
 (step 4B) prepares an approved plan locally and idempotently in the API
-state root, with the bridge path left unbound until remote staging (4C).
+state root, with the bridge path left unbound until remote staging.
+`PUT /api/v1/structure-search-attempts/{id}/staging` (step 4C) stages it on
+POWER in a fresh `/bmd/bmdguest/searches/<run_name>/`, binds the bridge from
+that run's uploaded runtime package, copies and checks the POTCARs, verifies
+everything there and records `STAGED` (layout, sequence, interruption
+recovery and the meaning of `STAGED` in `docs/machine_api.md`). `STAGED` is
+the last verified state; it cannot be submitted yet, and step 4D must
+re-verify it on POWER first. The staging-only POWER validation procedure is
+`reference/uspex_pilot/staging_validation/README.md`.
 `prepare_search_directory(plan, new_dir, bridge_path=...)` writes `INPUT.txt`,
 `Specific/INCAR_1..5`, `POTCAR.spec`, `search_plan.json` and
 `prepared_inputs.json` into a directory that must not exist yet, after
@@ -509,10 +517,12 @@ execution.
   has not been independently confirmed.
 - Symbolic links anywhere above or inside a prepared directory are refused.
 - **Workspace.** The USPEX container sees only `/bmd` (`-B /bmd`), so
-  production searches will need a dedicated writable search workspace under
-  `/bmd`, separate from the validation area (`/bmd/bmdguest/validation`) and
-  from ordinary calculations in `/bmd-db/guest`. It has not been created or
-  configured.
+  searches run in `/bmd/bmdguest/searches/` (`BMD_SEARCH_WORKSPACE_DIR`),
+  separate from the validation area (`/bmd/bmdguest/validation`) and from
+  ordinary calculations in `/bmd-db/guest`. The production cache is
+  `/bmd/bmdguest/uspex_cache/`; remote search attempt states are kept in
+  `/bmd-db/guest/logs/structure_search/submission_attempts/`, which the
+  container never needs to see.
 
 ## 9. Open questions
 

@@ -133,6 +133,7 @@ INVALID_BINDING_CODE = "structure_search_invalid_binding"
 BINDING_MISMATCH_CODE = "structure_search_binding_mismatch"
 BRIDGE_MISMATCH_CODE = "structure_search_bridge_mismatch"
 UNBOUND_BRIDGE_CODE = "structure_search_bridge_path_unbound"
+POTCAR_IDENTITY_CODE = "structure_search_potcar_identity_mismatch"
 
 # Local preparation (machine API step 4B) happens before the launch bridge's
 # absolute path on POWER is known. INPUT.txt is then written with this
@@ -951,7 +952,41 @@ def _directory_entries(root: Path) -> dict[str, bytes]:
     return found
 
 
-def verify_prepared_directory(path, *, runtime_settings=None, require_current: bool = True) -> dict[str, Any]:
+def default_potcar_identity(path) -> dict[str, Any]:
+    """TITEL, ENMAX and dataset SHA-256 of one POTCAR file, read as the ENMAX metadata was."""
+
+    from pymatgen.io.vasp.inputs import PotcarSingle
+
+    from backend.calculations.potcar_enmax_metadata import potcar_identity
+
+    return potcar_identity(PotcarSingle.from_file(str(path)))
+
+
+def potcar_identity_problems(record: Mapping[str, Any], identities: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """Elements whose staged POTCAR identity differs from the frozen plan's."""
+
+    problems = []
+    for row in record["potcar"]["elements"]:
+        found = identities.get(row["element"])
+        if (
+            not isinstance(found, Mapping)
+            or str(found.get("TITEL", "")).strip() != str(row["TITEL"]).strip()
+            or not isinstance(found.get("ENMAX"), (int, float))
+            or abs(float(found["ENMAX"]) - float(row["ENMAX"])) > 1e-6
+            or found.get("sha256") != row["dataset_sha256"]
+        ):
+            problems.append(row["element"])
+    return problems
+
+
+def verify_prepared_directory(
+    path,
+    *,
+    runtime_settings=None,
+    require_current: bool = True,
+    potcars: str = "absent",
+    potcar_identity=None,
+) -> dict[str, Any]:
     """Check that a prepared directory holds exactly its frozen plan's inputs.
 
     The directory must contain exactly the files preparation writes (no
@@ -960,7 +995,16 @@ def verify_prepared_directory(path, *, runtime_settings=None, require_current: b
     digest, and every file must equal what the plan and its recorded
     bridge-path binding render. With ``require_current`` the plan must also
     still be current. Returns the ``prepared_inputs.json`` record.
+
+    ``potcars="staged"`` is for a directory staged on POWER: it must also
+    hold exactly one ``Specific/POTCAR_<El>`` per element of the plan, each
+    identified (``potcar_identity``, default :func:`default_potcar_identity`)
+    with the plan's TITEL, ENMAX and dataset SHA-256. Their contents are
+    never compared with, or copied into, anything else.
     """
+
+    if potcars not in ("absent", "staged"):
+        raise ValueError("potcars must be 'absent' or 'staged'")
 
     root = Path(os.path.abspath(os.fspath(path)))
     found = _directory_entries(root)
@@ -988,9 +1032,14 @@ def verify_prepared_directory(path, *, runtime_settings=None, require_current: b
     if not isinstance(generator, Mapping):
         raise SearchPlanError(f"{PREPARED_FILE} has no generator record.", code=PREPARED_MISMATCH_CODE)
     expected = render_prepared_files(plan, bridge_path=bindings.get("bridge_path"), generator=generator)
-    directories = {name.rsplit("/", 1)[0] for name in expected if "/" in name}
-    extra = sorted(set(found) - set(expected))
-    missing = sorted(set(expected) - set(found))
+    staged_potcars = {}
+    if potcars == "staged":
+        staged_potcars = {
+            row["staged_at_execution_as"]: row["element"] for row in plan.record["potcar"]["elements"]
+        }
+    directories = {name.rsplit("/", 1)[0] for name in [*expected, *staged_potcars] if "/" in name}
+    extra = sorted(set(found) - set(expected) - set(staged_potcars))
+    missing = sorted((set(expected) | set(staged_potcars)) - set(found))
     if extra or missing:
         raise SearchPlanError(
             f"{root} does not hold exactly the prepared files"
@@ -1017,6 +1066,21 @@ def verify_prepared_directory(path, *, runtime_settings=None, require_current: b
             code=PREPARED_MISMATCH_CODE,
             files=differing,
         )
+    if staged_potcars:
+        identify = potcar_identity or default_potcar_identity
+        identities = {}
+        for name, element in staged_potcars.items():
+            try:
+                identities[element] = dict(identify(root / name))
+            except Exception:  # noqa: BLE001 - an unreadable POTCAR is a mismatch
+                identities[element] = {}
+        wrong = potcar_identity_problems(plan.record, identities)
+        if wrong:
+            raise SearchPlanError(
+                f"Staged POTCAR(s) for {', '.join(wrong)} are not the datasets the plan was made for.",
+                code=POTCAR_IDENTITY_CODE,
+                elements=wrong,
+            )
     return json.loads(expected[PREPARED_FILE].decode("utf-8"))
 
 
@@ -1026,6 +1090,9 @@ def verify_execution_binding(
     bridge_path: str,
     runtime_settings=None,
     filesystem_root: str = "/",
+    require_current: bool = True,
+    potcars: str = "absent",
+    potcar_identity=None,
 ) -> dict[str, Any]:
     """Check, where a search is about to run, that it runs what was prepared.
 
@@ -1037,9 +1104,19 @@ def verify_execution_binding(
     the plan. ``filesystem_root`` is where the cluster's file system is seen
     (``/`` on POWER; tests use a temporary directory). Returns the
     ``prepared_inputs.json`` record.
+
+    Remote staging (step 4C) calls it on POWER with ``potcars="staged"`` and
+    ``require_current=False``: POWER cannot re-plan, so the service checks that
+    the plan is current before staging.
     """
 
-    manifest = verify_prepared_directory(prepared_dir, runtime_settings=runtime_settings, require_current=True)
+    manifest = verify_prepared_directory(
+        prepared_dir,
+        runtime_settings=runtime_settings,
+        require_current=require_current,
+        potcars=potcars,
+        potcar_identity=potcar_identity,
+    )
     if not (manifest.get("bindings") or {}).get("bound") or bridge_path == UNBOUND_BRIDGE_PATH:
         raise SearchPlanError(
             "This search was prepared without a launch-bridge path (local preparation); "
@@ -1109,6 +1186,9 @@ __all__ = [
     "canonical_spec",
     "verify_execution_binding",
     "UNBOUND_BRIDGE_CODE",
+    "POTCAR_IDENTITY_CODE",
+    "default_potcar_identity",
+    "potcar_identity_problems",
     "UNBOUND_BRIDGE_PATH",
     "BINDING_MISMATCH_CODE",
     "BRIDGE_MISMATCH_CODE",

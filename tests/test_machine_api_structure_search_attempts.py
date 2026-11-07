@@ -157,7 +157,7 @@ def test_preparation_writes_the_frozen_plan_inputs_locally(client, tokens, state
     assert payload["state"] == "PREPARED_LOCALLY"
     assert payload["attempt_kind"] == "structure_search"
     assert payload["plan_digest"] == body["expected_plan_digest"]
-    assert payload["submission_available"] is False and payload["remote_staging_available"] is False
+    assert payload["submission_available"] is False and payload["remote_staging_available"] is True  # step 4C
     assert payload["preparation"]["bridge_path_bound"] is False
     assert payload["preparation"]["contains_potcar_contents"] is False
     assert payload["preparation"]["integrity"] == "verified"

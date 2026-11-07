@@ -10,6 +10,7 @@ bmd-run:
 | `POST /api/v1/structure-search-plans` | `plan` | Plan a formula-based USPEX structure search (New structure); read-only, no preparation or submission |
 | `PUT /api/v1/structure-search-attempts/{attempt_id}` | `prepare` | Prepare a search plan locally in the API state root (`PREPARED_LOCALLY`); idempotent per attempt ID; no remote staging or submission |
 | `GET /api/v1/structure-search-attempts/{attempt_id}` | `read` | Read a structure-search attempt back |
+| `PUT /api/v1/structure-search-attempts/{attempt_id}/staging` | `prepare` | Stage a `PREPARED_LOCALLY` attempt on POWER and verify it there (`STAGED`); idempotent; never submits |
 | `PUT /api/v1/attempts/{attempt_id}` | `prepare` (prepare only) or `submit` (prepare and submit) | Prepare, or prepare and submit, one calculation; idempotent per attempt ID |
 | `GET /api/v1/attempts/{attempt_id}` | `read` | The attempt's authoritative state, job identity and scheduler state |
 
@@ -267,15 +268,18 @@ Sequence of a `PUT`:
 
 The launch-bridge path on POWER is not bound yet: `INPUT.txt` names
 `search_plan.UNBOUND_BRIDGE_PATH` and the manifest records `bound: false`;
-`verify_execution_binding` refuses such a directory. Remote staging (which
-binds and verifies the real path) is step 4C.
+`verify_execution_binding` refuses such a directory. Remote staging (below)
+binds and verifies the real path on POWER; the local preparation is never
+modified.
 
 Response (`schema: "bmd_compute.api_structure_search_attempt"`, v1):
 `attempt_id`, `attempt_kind`, `plan_digest`, `state` (`PREPARING` or
-`PREPARED_LOCALLY`), `created_at`, `updated_at`, `preparation` (`files`,
-`manifest_sha256`, `bridge_path_bound: false`, `contains_potcar_contents:
-false`, `interrupted_preparations`, `integrity`), `remote_staging_available:
-false`, `submission_available: false`. No local paths are returned.
+`PREPARED_LOCALLY`, `STAGING` or `STAGED`), `created_at`, `updated_at`,
+`preparation` (`files`, `manifest_sha256`, `bridge_path_bound: false`,
+`contains_potcar_contents: false`, `interrupted_preparations`, `integrity`),
+`remote_staging_available` (true in `PREPARED_LOCALLY` and `STAGING`),
+`staging` (null until staging starts; see below), `submission_available:
+false`. No local or remote paths are returned.
 
 `GET` (scope `read`) returns the same body without planning or writing;
 `integrity` is `verified`, `damaged` (the files no longer match the record)
@@ -288,6 +292,129 @@ as abandoned, and preparation continues in `preparation-<n+1>`. A damaged
 `PREPARED_LOCALLY` attempt gives 409 `preparation_damaged` and is not
 replaced. Nothing is ever overwritten or deleted, and there is no automatic
 clean-up yet.
+
+## Structure-search staging (remote, step 4C)
+
+`PUT /api/v1/structure-search-attempts/{attempt_id}/staging` (scope
+`prepare`) takes exactly `{"expected_plan_digest": "sha256:..."}` and stages
+a `PREPARED_LOCALLY` attempt of the same principal on POWER as `bmdguest`,
+through the configured connection profile and the shared remote-operation
+limiter. It never submits, claims a SLURM job or runs USPEX or VASP.
+
+POWER layout (all under `bmdguest`):
+
+| Path | Content |
+| --- | --- |
+| `/bmd/bmdguest/searches/<run_name>/` (`BMD_SEARCH_WORKSPACE_DIR`) | fresh per attempt; `run_name` is `uspex_search-<UTC timestamp>-<first 8 of attempt ID>` |
+| `…/<run_name>/submission.json` | the search submission spec (schema `bmd_compute.structure_search_submission`; POTCAR identities, no contents) |
+| `…/<run_name>/bmd_backend_runtime/` | the versioned runtime package, installed by the runtime-package guard; the launch bridge is its `structure_search/bridge/bmd_bridge.sh` |
+| `…/<run_name>/search/` | bound `INPUT.txt` and `prepared_inputs.json`, the other prepared inputs, and `Specific/POTCAR_<El>` (mode 0600) |
+| `/bmd-db/guest/logs/structure_search/submission_attempts/<id>.json` (`BMD_SEARCH_LOGS_DIR`) | remote attempt state (`STAGING` → `STAGED`) and `<id>.lock`, separate from calculation attempt states |
+| `/bmd/bmdguest/uspex_cache/` (`BMD_USPEX_CACHE_DIR`) | production USPEX unpack cache; its ready marker must exist |
+
+Sequence:
+
+1. Local checks before contacting POWER: the attempt exists and is
+   `PREPARED_LOCALLY` (409 `attempt_not_prepared` while `PREPARING`), the
+   digest matches (409 `plan_digest_mismatch`), the local preparation still
+   verifies (409 `preparation_damaged`), the plan is current (409
+   `plan_changed`) and the bridge in today's runtime package has the hash in
+   the plan (409 `bridge_changed`).
+2. The record becomes `STAGING` with the run name, the submission spec and
+   the runtime package's manifest digest, all fixed for every later retry.
+3. On POWER, under the attempt's remote claim (409 `staging_in_progress` if
+   held): a new attempt refuses an existing run directory (409
+   `run_directory_exists`; it is never reused), records remote `STAGING`,
+   which reserves the run name for this attempt, and then creates the
+   directory exclusively. A stand-alone, read-only inventory of the run
+   directory (kind, mode and SHA-256 of every entry; no contents) decides
+   what is uploaded (see *Interrupted staging* below). Each file is written
+   to its own temporary name and moved into place atomically.
+4. A finalize step runs on POWER from the uploaded package after the
+   runtime-package guard has verified it: it reloads the plan and checks its
+   digest, checks the cache ready marker (409 `uspex_cache_not_ready`), copies
+   each licensed POTCAR from the POWER library into `search/Specific/`
+   without replacing any file, checks TITEL, ENMAX and SHA-256 of source and
+   copy against the plan (409 `potcar_unavailable`,
+   `potcar_identity_mismatch`), and runs `verify_execution_binding`: the
+   whole search directory must be exactly what the plan renders with the
+   bridge path bound, and the bridge must be a regular file with the planned
+   SHA-256.
+5. Only when the finalize report matches what the service expects, and a
+   final inventory shows every file present, nothing extra and no temporary
+   left, is the remote state set to `STAGED`, then the local record.
+   Anything else gives 409 `staging_unconfirmed`, `staging_incomplete` (or
+   the reported code); success is never claimed for a partial staging.
+
+The bound `INPUT.txt` and manifest are rendered by the service from the
+frozen plan and verified byte for byte on POWER by the uploaded code.
+POTCAR contents never pass through the API, the ledger or a response.
+
+`staging` in the response: `location` (`power`), `run_name`,
+`remote_state`, `started_at`, `staged_at`, `bridge_path_bound`,
+`bridge_sha256`, `runtime_package_manifest_sha256`, `files`, `potcars`
+(element, symbol, TITEL, ENMAX, dataset SHA-256), `contains_potcar_contents:
+false`.
+
+Idempotency and recovery: a `STAGED` attempt is returned from the ledger
+without contacting POWER (`GET` likewise). A `STAGING` attempt is resumed
+in the same run directory with the same spec; if the runtime package
+changed meanwhile it gives 409 `runtime_package_changed`. If POWER is
+already `STAGED` (the service stopped before recording it), the staging is
+re-verified read-only and adopted. Other errors: 503 `remote_busy` (limiter),
+409 `remote_attempt_mismatch` (fingerprint), 503 `staging_unavailable`
+(transport).
+
+### Interrupted staging
+
+Every file staging writes on POWER (uploads, and the POTCAR copies made by
+the finalize step) goes first to a temporary sibling named for one attempt
+and one upload operation, then is moved into place without replacing
+anything:
+
+```
+.<target name>.bmdstage-<attempt id>-<first 16 hex of the content SHA-256>.part
+```
+
+(for a POTCAR, the planned dataset SHA-256). A retry of the same attempt,
+under the same remote claim and after the fingerprint check, applies these
+rules to the inventory:
+
+| Found | Action |
+| --- | --- |
+| an expected file with the expected SHA-256 | kept, never rewritten |
+| an expected file that differs, a symbolic link, an unexpected file or directory | 409 `staging_damaged`, nothing touched |
+| this attempt's temporary for a missing target, same content tag, complete bytes and mode 0640 | moved into place |
+| the same, but partial or without its final mode | rewritten in place (superseded), then moved |
+| this attempt's POTCAR temporary for a missing copy | rewritten in place, linked into place, then removed |
+| this attempt's POTCAR temporary that is the same file as the completed copy (interrupted after the link) | removed |
+| a temporary of another attempt, of other content, for an unknown target, beside a completed target, an unattributable `.tmp`, or a POTCAR temporary that is not the completed copy | 409 `staging_ambiguous`, nothing touched |
+| the remote `STAGING` state but no run directory (interrupted after the reservation) | the directory is created |
+
+Completed files, the local preparation and the attempt states are never
+modified or deleted. A request that dies while holding the claim leaves
+`submission_attempts/<id>.lock`: later requests get 409
+`staging_in_progress` (a live request cannot be told from a dead one).
+After checking that no staging request is running, an operator may remove
+that empty lock directory; nothing else needs repair. A refused attempt is
+kept for inspection; use a new attempt ID.
+
+### What `STAGED` means
+
+`STAGED` (and `staging.remote_integrity: "last_verified"`,
+`staging.last_verified_at`) records what POWER verified at that time, not a
+guarantee that the run directory is still intact: files on POWER can change
+afterwards, and reads (`GET`, a repeated staging `PUT`) never contact POWER.
+`compute_api.structure_search_execution.reverify_staged_search` performs a
+fresh, read-only verification (local preparation, current plan, same
+runtime package, remote state and fingerprint, the guard-verified package,
+plan digest, bound bridge, POTCAR identities and a complete inventory) and
+changes nothing. Step 4D must run it inside the same remote claim as
+submission, before an attempt can become submission-ready; until then
+`submission_available` is always false.
+
+`STAGED` is not the calculation `PREPARED` state: the existing claim and
+`sbatch` paths refuse it. Submission is a later step.
 
 ## Plan digest
 
