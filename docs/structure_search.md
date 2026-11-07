@@ -487,7 +487,9 @@ The preview (`/predict`) is a view of this plan and shows its digest. It
 and the machine API's read-only `POST /api/v1/structure-search-plans`
 (`docs/machine_api.md`) plan through one entry point,
 `backend.structure_search.planning.plan_structure_search` (step 4A), so both
-give the same plan and digest.
+give the same plan and digest. `PUT /api/v1/structure-search-attempts/{id}`
+(step 4B) prepares an approved plan locally and idempotently in the API
+state root, with the bridge path left unbound until remote staging (4C).
 `prepare_search_directory(plan, new_dir, bridge_path=...)` writes `INPUT.txt`,
 `Specific/INCAR_1..5`, `POTCAR.spec`, `search_plan.json` and
 `prepared_inputs.json` into a directory that must not exist yet, after

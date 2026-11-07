@@ -10,9 +10,12 @@ Every route runs the same fixed sequence before doing any work:
 
 ``/identity``, ``/plans`` and ``/structure-search-plans`` never contact POWER.
 ``/structure-search-plans`` plans a formula-based USPEX structure search
-(New structure); it is read-only, uses the same planning entry point as the
-browser's New structure preview (``backend.structure_search.planning``), and
-has no preparation or submission counterpart. ``PUT /attempts/{id}``
+(New structure); it is read-only and uses the same planning entry point as the
+browser's New structure preview (``backend.structure_search.planning``).
+``PUT``/``GET /structure-search-attempts/{id}`` prepare a search plan locally,
+idempotently, in the API state root and read it back
+(``compute_api.structure_search_execution``); they never contact POWER and
+there is no search submission. ``PUT /attempts/{id}``
 prepares, or prepares and submits, one calculation and ``GET /attempts/{id}``
 reads its state, both through Compute's existing remote machinery and
 server-owned connection profiles (see ``compute_api.execution``). The planner
@@ -59,6 +62,7 @@ from compute_api.schemas import (
     PlanRequestError,
     parse_execution_request,
     parse_plan_request,
+    parse_structure_search_attempt_request,
     parse_structure_search_plan_request,
 )
 
@@ -258,6 +262,66 @@ def build_machine_api_router(*, planner: Planner, search_planner: Planner | None
         except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
             return _error_response(_scientific_error(exc, "search planning", "plan_failed", "BMD Compute could not plan this search."))
         return _json(200, response)
+
+    @router.put("/structure-search-attempts/{attempt_id}")
+    async def put_structure_search_attempt(attempt_id: str, request: Request):
+        from backend.structure_search.search_plan import STALE_PLAN_CODE, SearchPlanError
+        from compute_api.structure_search_execution import prepare_search_attempt
+
+        try:
+            principal = _authorize(request, scope=SCOPE_PREPARE)
+            canonical = _canonical_attempt_id(attempt_id)
+            document = await _read_json_body(request)
+            try:
+                shape = parse_structure_search_attempt_request(document)
+            except PlanRequestError as exc:
+                raise _ApiError(
+                    422, "invalid_request", "The structure-search attempt request is invalid.", fields=exc.errors
+                ) from None
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+
+        try:
+            response = await run_in_threadpool(
+                prepare_search_attempt,
+                search_planner=search_planner or _default_search_planner(),
+                principal=principal.principal,
+                attempt_id=canonical,
+                shape=shape,
+            )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except SearchPlanError as exc:
+            if exc.code == STALE_PLAN_CODE:
+                diagnostic = exc.diagnostic or {}
+                return _error_response(
+                    _ApiError(409, "plan_changed", _bounded(exc.message), suggestion=_bounded(exc.suggestion),
+                              plan_digest=diagnostic.get("plan_digest"))
+                )
+            return _error_response(_scientific_error(exc, "search preparation", "preparation_failed",
+                                                     "BMD Compute could not prepare this search."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            return _error_response(_scientific_error(exc, "search preparation", "preparation_failed",
+                                                     "BMD Compute could not prepare this search."))
+        return _json(200, {"api_version": API_VERSION, **response})
+
+    @router.get("/structure-search-attempts/{attempt_id}")
+    async def get_structure_search_attempt(attempt_id: str, request: Request):
+        from compute_api.structure_search_execution import lookup_search_attempt
+
+        try:
+            principal = _authorize(request, scope=SCOPE_READ)
+            canonical = _canonical_attempt_id(attempt_id)
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+        try:
+            response = await run_in_threadpool(lookup_search_attempt, principal=principal.principal, attempt_id=canonical)
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.error("Machine API search attempt lookup failed (%s).", type(exc).__name__, exc_info=True)
+            return _error_response(_ApiError(500, "lookup_failed", "BMD Compute could not read this attempt."))
+        return _json(200, {"api_version": API_VERSION, **response})
 
     @router.put("/attempts/{attempt_id}")
     async def put_attempt(attempt_id: str, request: Request):

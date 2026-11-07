@@ -8,6 +8,8 @@ bmd-run:
 | `GET /api/v1/identity` | any valid token | Service identity, API and schema versions, the caller's principal and scopes |
 | `POST /api/v1/plans` | `plan` | Resolve a structure and workflow request into the authoritative calculation plan |
 | `POST /api/v1/structure-search-plans` | `plan` | Plan a formula-based USPEX structure search (New structure); read-only, no preparation or submission |
+| `PUT /api/v1/structure-search-attempts/{attempt_id}` | `prepare` | Prepare a search plan locally in the API state root (`PREPARED_LOCALLY`); idempotent per attempt ID; no remote staging or submission |
+| `GET /api/v1/structure-search-attempts/{attempt_id}` | `read` | Read a structure-search attempt back |
 | `PUT /api/v1/attempts/{attempt_id}` | `prepare` (prepare only) or `submit` (prepare and submit) | Prepare, or prepare and submit, one calculation; idempotent per attempt ID |
 | `GET /api/v1/attempts/{attempt_id}` | `read` | The attempt's authoritative state, job identity and scheduler state |
 
@@ -220,6 +222,72 @@ request), `preparation_available: false`, `submission_available: false`, and
 `plan`: the complete frozen plan document (record, `plan_digest`,
 `provenance`). Equivalent formulas (`SiO2`, `O2Si`) give the same digest; the
 entered formula is kept in `formula` and `plan.provenance`.
+
+## Structure-search attempts (local preparation)
+
+`PUT /api/v1/structure-search-attempts/{attempt_id}` (scope `prepare`; the
+attempt ID is a canonical lowercase UUID) takes the `structure-search-plans`
+body with `expected_plan_digest` required; `submit` is refused
+(`submission_not_available`). Implemented in
+`compute_api.structure_search_execution`, in the same service and with the
+same ledger mechanisms (validated reads, atomic `O_EXCL` create and
+rename-replace, the state root's `ledger.lock`) as calculation attempts.
+
+State root layout (`BMD_API_STATE_DIR`, directories mode 0700):
+
+| Path | Content |
+| --- | --- |
+| `attempts/<id>.json` | calculation attempts, unchanged (v1.2.0 layout and schema `bmd_compute.api_attempt` v1) |
+| `ledger.lock` | shared by both kinds |
+| `structure_search/attempts/<id>.json` | search attempt records, schema `bmd_compute.api_structure_search_attempt_record` v1 |
+| `structure_search/preparations/<id>/preparation-<n>/` | prepared search inputs |
+
+Search records are never written to `attempts/`, so calculation scans, by
+this release or by v1.2.0 after a rollback, see only calculation records;
+no migration is needed either way. Attempt IDs are unique across the two
+kinds: under the shared lock each kind refuses an ID the other uses (409
+`attempt_kind_mismatch`), and if both exist (possible only if an older
+release created one) both kinds' routes refuse it.
+
+Sequence of a `PUT`:
+
+1. An attempt already `PREPARED_LOCALLY` for the same principal and request
+   is returned as stored (its files are checked first), without re-planning,
+   even if scientific policy has changed since.
+2. Otherwise (a new attempt, or one left `PREPARING`) the request is planned
+   with today's policy; a digest other than `expected_plan_digest` gives 409
+   `plan_changed` before anything is written.
+3. Under the lock the record is created (`PREPARING`) or its principal (403)
+   and request (409 `attempt_request_mismatch`) are checked. The request
+   identity is the formula as entered, the search settings and the expected
+   digest.
+4. `search_plan.prepare_search_directory` writes and verifies the inputs;
+   the record becomes `PREPARED_LOCALLY` with the plan digest, the files'
+   SHA-256 and the manifest's SHA-256. No POTCAR is read or written.
+
+The launch-bridge path on POWER is not bound yet: `INPUT.txt` names
+`search_plan.UNBOUND_BRIDGE_PATH` and the manifest records `bound: false`;
+`verify_execution_binding` refuses such a directory. Remote staging (which
+binds and verifies the real path) is step 4C.
+
+Response (`schema: "bmd_compute.api_structure_search_attempt"`, v1):
+`attempt_id`, `attempt_kind`, `plan_digest`, `state` (`PREPARING` or
+`PREPARED_LOCALLY`), `created_at`, `updated_at`, `preparation` (`files`,
+`manifest_sha256`, `bridge_path_bound: false`, `contains_potcar_contents:
+false`, `interrupted_preparations`, `integrity`), `remote_staging_available:
+false`, `submission_available: false`. No local paths are returned.
+
+`GET` (scope `read`) returns the same body without planning or writing;
+`integrity` is `verified`, `damaged` (the files no longer match the record)
+or `incomplete` (`PREPARING`).
+
+Interruptions: a record left `PREPARING` is completed by the next `PUT`,
+after step 2: a preparation directory that verifies is adopted, a missing
+one is prepared, and one that exists but does not verify is kept, recorded
+as abandoned, and preparation continues in `preparation-<n+1>`. A damaged
+`PREPARED_LOCALLY` attempt gives 409 `preparation_damaged` and is not
+replaced. Nothing is ever overwritten or deleted, and there is no automatic
+clean-up yet.
 
 ## Plan digest
 

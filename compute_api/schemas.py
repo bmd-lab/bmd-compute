@@ -378,3 +378,30 @@ def parse_structure_search_plan_request(document: Any) -> StructureSearchPlanReq
         search=search,
         expected_plan_digest=expected,
     )
+
+
+def parse_structure_search_attempt_request(document: Any) -> StructureSearchPlanRequestShape:
+    """Validate a ``PUT /api/v1/structure-search-attempts/{id}`` body.
+
+    The same body as ``POST /structure-search-plans``, with
+    ``expected_plan_digest`` required. Submission is not available: a
+    ``submit`` field is refused.
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    rest = dict(document)
+    if "submit" in rest:
+        rest.pop("submit")
+        _error(errors, "submit", "submission_not_available")
+    shape = None
+    try:
+        shape = parse_structure_search_plan_request(rest)
+    except PlanRequestError as exc:
+        errors.extend(exc.errors)
+    if "expected_plan_digest" not in document or document.get("expected_plan_digest") is None:
+        _error(errors, "expected_plan_digest", "required")
+    if errors:
+        raise PlanRequestError(errors)
+    return shape

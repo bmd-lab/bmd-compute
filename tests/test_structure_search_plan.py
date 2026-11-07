@@ -347,7 +347,7 @@ def test_prepared_files_match_the_plan_and_manifest(tmp_path):
     assert load_plan_text(tree[PLAN_FILE].decode()).digest == plan.digest
     assert manifest == json.loads(tree[PREPARED_FILE])
     assert manifest["plan_digest"] == plan.digest
-    assert manifest["bindings"] == {"bridge_path": BRIDGE}
+    assert manifest["bindings"] == {"bridge_path": BRIDGE, "bound": True}
     assert manifest["bindings_and_generator_covered_by_plan_digest"] is False
     assert {"commit", "dirty"} <= set(manifest["generator"])
     assert manifest["submitted"] is False and manifest["contains_potcar_contents"] is False
@@ -831,3 +831,19 @@ def test_resource_estimate_keeps_the_requested_duration(walltime):
     assert {k: v for k, v in planned.items() if k != "walltime"} == {k: v for k, v in entered.items() if k != "walltime"}
     assert f"#SBATCH --time={planned['walltime']}" in record["sbatch_directives"]
     assert record["status"] == "provisional_estimate" and record["approved"] is False
+
+
+# --- unbound local preparation (step 4B) -----------------------------------------
+
+
+def test_unbound_preparation_is_recorded_and_cannot_run(tmp_path):
+    plan = build_search_plan_from_formula("Si")
+    manifest = prepare_search_directory(plan, tmp_path / "search", bridge_path=search_plan.UNBOUND_BRIDGE_PATH)
+    assert manifest["bindings"] == {"bridge_path": search_plan.UNBOUND_BRIDGE_PATH, "bound": False}
+    assert search_plan.UNBOUND_BRIDGE_PATH in (tmp_path / "search" / "INPUT.txt").read_text()
+    verify_prepared_directory(tmp_path / "search")
+    root = _cluster(tmp_path)
+    for path in (BRIDGE, search_plan.UNBOUND_BRIDGE_PATH):
+        with pytest.raises(SearchPlanError) as info:
+            search_plan.verify_execution_binding(tmp_path / "search", bridge_path=path, filesystem_root=str(root))
+        assert _code(info) == search_plan.UNBOUND_BRIDGE_CODE

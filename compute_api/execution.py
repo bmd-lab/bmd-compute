@@ -45,6 +45,7 @@ from compute_api.ledger import (
     AttemptLedger,
     LedgerUnavailable,
     isoformat,
+    structure_search_attempt_exists,
     utc_now,
 )
 from compute_api.plan_digest import compute_plan_digest
@@ -406,6 +407,17 @@ def _authorize_record(record: Mapping[str, Any], principal: str) -> None:
         raise ExecutionError(403, "attempt_forbidden", "This attempt belongs to another principal.")
 
 
+def _refuse_structure_search_id(ledger, attempt_id: str) -> None:
+    """Attempt IDs are unique across kinds: refuse an ID a structure search uses."""
+
+    if structure_search_attempt_exists(ledger.root, attempt_id):
+        raise ExecutionError(
+            409,
+            "attempt_kind_mismatch",
+            "This attempt ID belongs to a different kind of attempt (a structure search).",
+        )
+
+
 _SUBMISSION_STARTED = frozenset({SUBMISSION_RESERVED, SUBMISSION_SUBMITTED, SUBMISSION_UNCERTAIN})
 
 
@@ -434,6 +446,7 @@ def _bind_attempt(ledger, planner, attempt_id, principal, request):
     """
 
     request_digest = request_sha256(request)
+    _refuse_structure_search_id(ledger, attempt_id)
     for _ in range(5):
         record = ledger.read(attempt_id)
         if record is not None:
@@ -457,6 +470,7 @@ def _bind_attempt(ledger, planner, attempt_id, principal, request):
         with ledger.locked():
             if ledger.read(attempt_id) is not None:
                 continue
+            _refuse_structure_search_id(ledger, attempt_id)
             records = ledger.records()
             if any(existing["run_timestamp"] == timestamp for existing in records):
                 collision = True
@@ -618,6 +632,7 @@ def execute_attempt(*, planner, principal: str, attempt_id: str, request: Execut
 
 def lookup_attempt(*, principal: str, attempt_id: str) -> dict[str, Any]:
     ledger = _ledger()
+    _refuse_structure_search_id(ledger, attempt_id)
     record = ledger.read(attempt_id)
     if record is None:
         raise ExecutionError(404, "attempt_not_found", "No machine attempt with this ID exists.")

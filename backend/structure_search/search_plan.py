@@ -132,6 +132,14 @@ PREPARED_MISMATCH_CODE = "structure_search_prepared_input_mismatch"
 INVALID_BINDING_CODE = "structure_search_invalid_binding"
 BINDING_MISMATCH_CODE = "structure_search_binding_mismatch"
 BRIDGE_MISMATCH_CODE = "structure_search_bridge_mismatch"
+UNBOUND_BRIDGE_CODE = "structure_search_bridge_path_unbound"
+
+# Local preparation (machine API step 4B) happens before the launch bridge's
+# absolute path on POWER is known. INPUT.txt is then written with this
+# placeholder, which names no real file, and prepared_inputs.json records
+# the binding as unbound. Remote staging (step 4C) renders INPUT.txt again
+# with the real path; verify_execution_binding refuses an unbound directory.
+UNBOUND_BRIDGE_PATH = "/bmd/UNBOUND-bridge-path-bound-at-remote-staging/bmd_bridge.sh"
 
 _POTCAR_SYMBOL = re.compile(r"^[A-Z][a-z]?(_[A-Za-z0-9]+)*$")
 
@@ -794,7 +802,7 @@ def render_prepared_files(
         "schema_version": PREPARED_SCHEMA_VERSION,
         "plan_digest": plan.digest,
         "plan_file": PLAN_FILE,
-        "bindings": {"bridge_path": binding},
+        "bindings": {"bridge_path": binding, "bound": binding != UNBOUND_BRIDGE_PATH},
         "generator": _generator_provenance(generator),
         "bindings_and_generator_covered_by_plan_digest": False,
         "files": {path: hashlib.sha256(data).hexdigest() for path, data in sorted(files.items())},
@@ -1032,6 +1040,12 @@ def verify_execution_binding(
     """
 
     manifest = verify_prepared_directory(prepared_dir, runtime_settings=runtime_settings, require_current=True)
+    if not (manifest.get("bindings") or {}).get("bound") or bridge_path == UNBOUND_BRIDGE_PATH:
+        raise SearchPlanError(
+            "This search was prepared without a launch-bridge path (local preparation); "
+            "it must be staged with the real path before it can run.",
+            code=UNBOUND_BRIDGE_CODE,
+        )
     binding = _require_bridge_path(bridge_path)
     recorded = (manifest.get("bindings") or {}).get("bridge_path")
     if binding != recorded:
@@ -1094,6 +1108,8 @@ __all__ = [
     "canonical_composition",
     "canonical_spec",
     "verify_execution_binding",
+    "UNBOUND_BRIDGE_CODE",
+    "UNBOUND_BRIDGE_PATH",
     "BINDING_MISMATCH_CODE",
     "BRIDGE_MISMATCH_CODE",
     "ELEMENT_ORDER_RULE",

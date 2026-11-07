@@ -19,6 +19,15 @@ outside the repository (``BMD_API_STATE_DIR``).
 
 The ledger never stores tokens, credentials or structure text. It does store
 the server-built remote attempt-state path, which is never returned to clients.
+
+Structure-search attempts (``compute_api.structure_search_execution``) use the
+same mechanisms but keep their records in their own directory,
+``<state root>/structure_search/attempts/``, under their own record schema.
+The calculation directory ``<state root>/attempts/`` therefore holds only
+calculation records, exactly as in v1.2.0, so older releases never meet a
+search record. Both kinds share the state root's ``ledger.lock``, and each
+kind's creation checks, under that lock, that the ID is not already used by
+the other kind, so attempt IDs stay unique across kinds.
 """
 
 from __future__ import annotations
@@ -41,6 +50,9 @@ ATTEMPT_RECORD_SCHEMA_VERSION = 1
 ATTEMPTS_DIRNAME = "attempts"
 LOCK_FILENAME = "ledger.lock"
 MAX_RECORD_BYTES = 256 * 1024
+
+# Structure-search attempts live in a separate directory of the state root.
+STRUCTURE_SEARCH_DIRNAME = "structure_search"
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _CANONICAL_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -73,7 +85,19 @@ def isoformat(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def structure_search_attempt_exists(state_root: Path, attempt_id: str) -> bool:
+    """Whether a structure-search attempt with this ID exists (read-only check)."""
+
+    if canonical_attempt_id(attempt_id) is None:
+        raise ValueError("attempt id must be a canonical UUID")
+    return os.path.lexists(state_root / STRUCTURE_SEARCH_DIRNAME / ATTEMPTS_DIRNAME / f"{attempt_id}.json")
+
+
 class AttemptLedger:
+    # The record schema this ledger reads and writes (calculation attempts).
+    RECORD_SCHEMA = ATTEMPT_RECORD_SCHEMA
+    RECORD_SCHEMA_VERSION = ATTEMPT_RECORD_SCHEMA_VERSION
+
     def __init__(self, root: Path):
         self.root = root
         self.attempts_dir = root / ATTEMPTS_DIRNAME
@@ -81,7 +105,9 @@ class AttemptLedger:
     # ------------------------------------------------------------ configuration
 
     @classmethod
-    def from_environment(cls, environ=None) -> "AttemptLedger":
+    def state_root_from_environment(cls, environ=None) -> Path:
+        """The validated, private state root, without creating anything."""
+
         environ = os.environ if environ is None else environ
         value = str(environ.get(STATE_DIR_ENV) or "").strip()
         if not value or not Path(value).is_absolute():
@@ -93,6 +119,11 @@ class AttemptLedger:
         if root == _REPOSITORY_ROOT or _REPOSITORY_ROOT in root.parents:
             raise LedgerUnavailable("inside repository")
         cls._require_private_directory(root)
+        return root
+
+    @classmethod
+    def from_environment(cls, environ=None) -> "AttemptLedger":
+        root = cls.state_root_from_environment(environ)
         ledger = cls(root)
         try:
             ledger.attempts_dir.mkdir(mode=0o700, exist_ok=True)
@@ -157,8 +188,8 @@ class AttemptLedger:
             raise LedgerUnavailable("malformed record") from None
         if (
             not isinstance(record, dict)
-            or record.get("schema") != ATTEMPT_RECORD_SCHEMA
-            or record.get("schema_version") != ATTEMPT_RECORD_SCHEMA_VERSION
+            or record.get("schema") != self.RECORD_SCHEMA
+            or record.get("schema_version") != self.RECORD_SCHEMA_VERSION
             or record.get("attempt_id") != attempt_id
         ):
             raise LedgerUnavailable("unexpected record")
