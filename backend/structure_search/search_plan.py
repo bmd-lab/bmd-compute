@@ -962,6 +962,54 @@ def default_potcar_identity(path) -> dict[str, Any]:
     return potcar_identity(PotcarSingle.from_file(str(path)))
 
 
+def potcar_identity_from_text(text: str) -> dict[str, Any]:
+    """TITEL, ENMAX and dataset SHA-256 of one POTCAR given as text (as ``PotcarSingle.from_file`` reads it)."""
+
+    from pymatgen.io.vasp.inputs import PotcarSingle
+
+    from backend.calculations.potcar_enmax_metadata import potcar_identity
+
+    return potcar_identity(PotcarSingle(text))
+
+
+class ContentAddressedPotcarIdentity:
+    """POTCAR identities for one verification operation, parsed once per distinct content.
+
+    Each call reads the file's bytes afresh and hashes them; the identity is
+    computed from exactly those bytes (decoded as ``PotcarSingle.from_file``
+    decodes a file: UTF-8 with universal newlines, invalid bytes ignored) and
+    reused only for identical bytes. Identity is a function of the content
+    alone (``from_file`` takes no symbol from a ``POTCAR`` or ``POTCAR_<El>``
+    name), so this is exactly as strong as parsing every time: a file whose
+    bytes changed gets a new hash and is parsed again. An instance belongs to
+    one operation and is discarded with it; nothing is kept across requests.
+    """
+
+    def __init__(self, identify_text=None):
+        self._identify_text = identify_text
+        self._identities: dict[str, dict[str, Any]] = {}
+
+    def __call__(self, path) -> dict[str, Any]:
+        import io
+
+        data = Path(path).read_bytes()
+        key = hashlib.sha256(data).hexdigest()
+        if key not in self._identities:
+            try:
+                text = io.TextIOWrapper(io.BytesIO(data), encoding="utf-8").read()
+            except UnicodeDecodeError:
+                text = io.TextIOWrapper(io.BytesIO(data), encoding="utf-8", errors="ignore").read()
+            identify = self._identify_text or potcar_identity_from_text
+            self._identities[key] = dict(identify(text))
+        return dict(self._identities[key])
+
+    @property
+    def parsed(self) -> int:
+        """How many distinct contents were parsed."""
+
+        return len(self._identities)
+
+
 def potcar_identity_problems(record: Mapping[str, Any], identities: Mapping[str, Mapping[str, Any]]) -> list[str]:
     """Elements whose staged POTCAR identity differs from the frozen plan's."""
 
@@ -998,7 +1046,8 @@ def verify_prepared_directory(
 
     ``potcars="staged"`` is for a directory staged on POWER: it must also
     hold exactly one ``Specific/POTCAR_<El>`` per element of the plan, each
-    identified (``potcar_identity``, default :func:`default_potcar_identity`)
+    identified (``potcar_identity``, default a fresh
+    :class:`ContentAddressedPotcarIdentity`)
     with the plan's TITEL, ENMAX and dataset SHA-256. Their contents are
     never compared with, or copied into, anything else.
     """
@@ -1067,7 +1116,7 @@ def verify_prepared_directory(
             files=differing,
         )
     if staged_potcars:
-        identify = potcar_identity or default_potcar_identity
+        identify = potcar_identity or ContentAddressedPotcarIdentity()
         identities = {}
         for name, element in staged_potcars.items():
             try:
@@ -1187,7 +1236,9 @@ __all__ = [
     "verify_execution_binding",
     "UNBOUND_BRIDGE_CODE",
     "POTCAR_IDENTITY_CODE",
+    "ContentAddressedPotcarIdentity",
     "default_potcar_identity",
+    "potcar_identity_from_text",
     "potcar_identity_problems",
     "UNBOUND_BRIDGE_PATH",
     "BINDING_MISMATCH_CODE",

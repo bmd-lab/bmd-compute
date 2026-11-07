@@ -547,6 +547,70 @@ SLURM job, USPEX search or VASP calculation ran, and collecting the evidence
 did not change the run. Record and evidence checksums:
 `reference/uspex_pilot/staging_validation/RESULTS_20261107_5ead0670.md`.
 
+### Managed submission: job definition and state model (USPEX integration step 4D-1)
+
+Not yet reachable from the API: promotion, submission, monitoring and
+cancellation are steps 4D-2 to 4D-4.
+
+- **Job script** (`backend/structure_search/job.py`, schema
+  `bmd_compute.structure_search_job_script` v1), rendered deterministically
+  from the staged attempt's spec, frozen plan, resource acknowledgement,
+  runtime-package manifest and the configured VASP modules: the plan's
+  `sbatch_directives` verbatim, then `--job-name=bmds-<attempt[:8]>`,
+  `--comment=bmd_attempt:<attempt>` (the reconciliation identity),
+  `--chdir=<run dir>` (the working directory SLURM records),
+  `--output=<run dir>/slurm-%j.out` and `--no-requeue`. It creates
+  `job_started` exclusively first, so a duplicate or requeued job stops
+  (status 84) without touching anything; drops every `BMD_*` and jobflow
+  variable; loads the modules (recorded as requested and as loaded); and runs
+  the job entry point from the uploaded package after the embedded guard has
+  verified it (status 85 and no package code if it does not match).
+- **Job entry point** (`job.job_main`): re-verifies the staged inputs
+  against the frozen plan, including the POTCAR identities (status 80 if
+  anything changed); runs the USPEX runtime check (81); then starts the USPEX
+  master (`master.build_master_command`, with the plan's bind) and the existing
+  launch loop (`launcher.run_search`) with the plan's launch settings and the
+  candidate-validity check always on. SIGTERM (cancellation, walltime) stops
+  USPEX before its steps. It records each phase in `search_status.json`.
+- **Memory per relaxation** (`launcher.allocated_node_memory`, the launcher's
+  one policy): node memory less 10 %, divided across the parallel
+  relaxations (four 48-rank steps), as before. The node memory is what SLURM
+  allocated, never a configured size: `SLURM_MEM_PER_NODE` when it is a
+  positive number of MB (or `SLURM_MEM_PER_CPU` × `SLURM_CPUS_ON_NODE`);
+  under the plan's exclusive `--mem=0`, where it may be `0` or absent, the
+  memory allocated to the running job in its own `scontrol -o show job`
+  record (`AllocTRES mem=`; `MinMemoryNode` is a request, `0` under
+  `--mem=0`, and is only a cross-check: a positive request that differs makes
+  the record ambiguous). A malformed value, or no positive amount, stops the job
+  before USPEX starts (status 82, `node_memory_unavailable`). The amount, its
+  source and the per-step `--mem` are recorded in `search_status.json`.
+- **Three separate answers** (`backend/structure_search/lifecycle.py`):
+  SLURM's state, the job's execution outcome, and scientific validity, which
+  4D does not assess (`not_assessed`; every step is still held to the
+  validity rules). `SEARCH_COMPLETED` needs SLURM `COMPLETED` *and* a
+  recorded `uspex_finished` with master status 0; it means the search ended,
+  not that a structure is determined (`finalists.status: not_started`).
+- **States.** Remote: `STAGING → STAGED → SEARCH_PREPARED → SEARCH_SUBMITTING
+  → SEARCH_SUBMITTED`, disjoint from the calculation states, which the
+  calculation claim and `sbatch` path refuse. `SEARCH_SUBMITTING` returns to
+  `SEARCH_PREPARED` only after a definite `sbatch` refusal, or an operator's
+  confirmation that no job exists; an uncertain submission is never repeated
+  automatically. Local: `… STAGED → PREPARED → SUBMITTING →
+  SUBMITTED | SUBMISSION_UNCERTAIN → SEARCH_COMPLETED | SEARCH_FAILED |
+  SEARCH_CANCELLED | SEARCH_TIMED_OUT`.
+- **Resource acknowledgement** (schema
+  `bmd_compute.structure_search_resource_acknowledgement` v1): the user's
+  explicit acknowledgement of the plan's provisional resource request, frozen
+  for one attempt and plan with a SHA-256 over the whole record; the job
+  script refuses any other.
+- **POTCAR identity within one operation** is parsed once per distinct file
+  content (`search_plan.ContentAddressedPotcarIdentity`): each check re-reads
+  and hashes the file and reuses an identity only for identical bytes, so it
+  is as strong as parsing every time. Nothing is kept across operations.
+
+Adding the job module changes the runtime package, so attempts staged before
+4D (including the 7 Nov 2026 validation attempt) cannot be submitted.
+
 ## 9. Open questions
 
 - Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks

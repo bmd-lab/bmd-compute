@@ -1031,7 +1031,7 @@ def test_instrumented_finalize_script_returns_the_same_result_with_timings(clien
     assert TIMINGS_MARKER not in plain_out
     timings = parse_finalize_timings(timed_out)
     assert timings["finalize_calls"] == 1 and timings["package_recheck_calls"] == 1
-    assert timings["plan_load_calls"] == 1 and timings["potcar_identity_calls"] >= 1
+    assert timings["plan_load_calls"] == 1 and timings["potcar_parse_calls"] >= 1  # one parse per content
     for key in ("guard_verify_and_install_s", "imports_s", "finalize_s", "total_s"):
         assert isinstance(timings[key], float), key
     assert tree(run_dir) == before

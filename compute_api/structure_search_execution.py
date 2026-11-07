@@ -471,6 +471,7 @@ _TIMED_FUNCTIONS = (
     ("_bmd_guard_module", "bmd_runtime_package_problems", "package_recheck"),
     ("_bmd_search_plan", "load_plan_text", "plan_load"),
     ("_bmd_search_plan", "default_potcar_identity", "potcar_identity"),
+    ("_bmd_search_plan", "potcar_identity_from_text", "potcar_parse"),
     ("_bmd_search_plan", "potcar_identity_problems", "potcar_compare"),
     ("_bmd_search_plan", "verify_execution_binding", "verify_staged_inputs"),
     ("_bmd_staging", "_copy_exclusive", "potcar_copy"),
@@ -495,7 +496,9 @@ import backend.structure_search.search_plan as _bmd_search_plan
 import backend.structure_search.staging as _bmd_staging
 _BMD_TIMINGS["imports_s"] = round(_bmd_time.monotonic() - _bmd_t, 3)
 def _bmd_timed(module, name, key):
-    original = getattr(module, name)
+    original = getattr(module, name, None)
+    if original is None:  # not in the package this attempt was staged with
+        return
     def timed(*args, **kwargs):
         start = _bmd_time.monotonic()
         try:

@@ -162,6 +162,151 @@ def slurm_job_environment(source: Mapping[str, str]) -> dict[str, str]:
     return {key: value for key, value in source.items() if key.startswith("SLURM_")}
 
 
+class NodeMemoryUnavailable(ValueError):
+    """The memory allocated to this job on its node could not be established reliably."""
+
+
+@dataclass(frozen=True)
+class NodeMemory:
+    """Memory SLURM allocated to the job on this node, in MB, and where that figure came from."""
+
+    mb: int
+    source: str
+    detail: str
+
+
+_POSITIVE_INTEGER = re.compile(r"^[1-9][0-9]*$")
+_SLURM_MEMORY = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([KMGTP]?)$")
+_SLURM_MEMORY_FACTOR_MB = {"K": 1 / 1024, "": 1, "M": 1, "G": 1024, "T": 1024 ** 2, "P": 1024 ** 3}
+
+
+def _slurm_memory_mb(value: str) -> int | None:
+    """MB of a SLURM memory value such as ``512000``, ``500G`` or ``1.5T`` (bare numbers are MB)."""
+
+    match = _SLURM_MEMORY.match(str(value).strip())
+    if not match:
+        return None
+    return int(float(match.group(1)) * _SLURM_MEMORY_FACTOR_MB[match.group(2)])
+
+
+def node_memory_from_environment(environment: Mapping[str, str]) -> NodeMemory | None:
+    """Node memory from the job's SLURM variables, or None if they give no amount.
+
+    ``SLURM_MEM_PER_NODE`` is used when it is a positive number of MB. Under
+    ``--mem=0`` ("all the node's memory") it may be ``0`` or absent: that is
+    not an amount, so the caller must look elsewhere (``allocated_node_memory``).
+    ``SLURM_MEM_PER_CPU`` times ``SLURM_CPUS_ON_NODE`` covers jobs that request
+    memory per CPU. Any other value is refused rather than guessed.
+    """
+
+    per_node = environment.get("SLURM_MEM_PER_NODE")
+    if per_node is not None and per_node != "0":
+        if not _POSITIVE_INTEGER.match(per_node):
+            raise NodeMemoryUnavailable(f"SLURM_MEM_PER_NODE={per_node!r} is not a number of MB.")
+        return NodeMemory(int(per_node), "SLURM_MEM_PER_NODE", f"SLURM_MEM_PER_NODE={per_node}")
+    per_cpu, cpus = environment.get("SLURM_MEM_PER_CPU"), environment.get("SLURM_CPUS_ON_NODE")
+    if per_cpu is not None and per_cpu != "0":
+        if not _POSITIVE_INTEGER.match(per_cpu) or not _POSITIVE_INTEGER.match(str(cpus or "")):
+            raise NodeMemoryUnavailable(
+                f"SLURM_MEM_PER_CPU={per_cpu!r} with SLURM_CPUS_ON_NODE={cpus!r} does not give an amount."
+            )
+        return NodeMemory(int(per_cpu) * int(cpus), "SLURM_MEM_PER_CPU",
+                          f"SLURM_MEM_PER_CPU={per_cpu} x SLURM_CPUS_ON_NODE={cpus}")
+    return None
+
+
+def _scontrol_show_job(job_id: str, environment: Mapping[str, str]) -> str | None:
+    import shutil
+
+    scontrol = shutil.which("scontrol", path=environment.get("PATH"))
+    if scontrol is None:
+        return None
+    try:
+        completed = subprocess.run([scontrol, "-o", "show", "job", job_id], capture_output=True, text=True,
+                                   timeout=60, check=False, env=dict(environment))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return completed.stdout if completed.returncode == 0 else None
+
+
+def node_memory_from_job_record(text: str, job_id: str) -> NodeMemory | None:
+    """The memory SLURM allocated to this job, from ``scontrol -o show job``: AllocTRES ``mem=``.
+
+    Only an allocation counts, never a request. ``AllocTRES`` lists what
+    SLURM actually allocated to a running job; under ``--mem=0`` it carries
+    the node's memory when SLURM tracks memory. ``MinMemoryNode`` is the
+    job's *request*: under ``--mem=0`` it is the literal ``0`` ("all memory",
+    not an amount), and it is never used as the amount. It is only a
+    cross-check: a positive ``MinMemoryNode`` that differs from the
+    allocation makes the record ambiguous. Returns None (the caller fails
+    closed) unless the record is exactly one line for this job, ``RUNNING``,
+    on exactly one node, with one positive ``mem=`` allocation consistent
+    with any positive request.
+    """
+
+    lines = [line for line in (text or "").splitlines() if f"JobId={job_id} " in f"{line} "]
+    if len(lines) != 1:
+        return None
+    items = [item.split("=", 1) for item in lines[0].split() if "=" in item]
+    names = [name for name, _ in items]
+    if any(names.count(name) > 1 for name in ("JobState", "NumNodes", "AllocTRES", "MinMemoryNode")):
+        return None
+    fields = dict(items)
+    if fields.get("JobState") != "RUNNING" or fields.get("NumNodes") != "1":
+        return None
+    tres_items = [item.split("=", 1) for item in fields.get("AllocTRES", "").split(",") if "=" in item]
+    memory_values = [value for name, value in tres_items if name == "mem"]
+    if len(memory_values) != 1:
+        return None
+    allocated = _slurm_memory_mb(memory_values[0])
+    if allocated is None or allocated < 1:
+        return None
+    requested = fields.get("MinMemoryNode")
+    if requested is not None:
+        requested_mb = _slurm_memory_mb(requested)
+        if requested_mb is None or (requested_mb >= 1 and requested_mb != allocated):
+            return None  # an unreadable request, or a positive request the allocation contradicts
+    return NodeMemory(
+        allocated,
+        "scontrol AllocTRES mem",
+        f"scontrol show job {job_id}: AllocTRES mem={memory_values[0]}"
+        + (f", MinMemoryNode={requested}" if requested is not None else ""),
+    )
+
+
+def allocated_node_memory(environment: Mapping[str, str], *, show_job=_scontrol_show_job) -> NodeMemory:
+    """The memory SLURM allocated to this job on its node. Raises :class:`NodeMemoryUnavailable`.
+
+    Authoritative SLURM information only, never a configured or measured node
+    size: the job's ``SLURM_MEM_PER_NODE`` (or per-CPU) variables when they
+    give an amount, otherwise, as under an exclusive ``--mem=0`` allocation,
+    the memory allocated to the running job in its own record from
+    ``scontrol show job`` (AllocTRES; a request such as ``MinMemoryNode`` is
+    never taken as an allocation).
+    """
+
+    from_environment = node_memory_from_environment(environment)
+    if from_environment is not None:
+        return from_environment
+    job_id = str(environment.get("SLURM_JOB_ID") or "")
+    if not _POSITIVE_INTEGER.match(job_id):
+        raise NodeMemoryUnavailable(
+            "SLURM_MEM_PER_NODE gives no amount and there is no SLURM_JOB_ID to ask SLURM for the allocation."
+        )
+    record = show_job(job_id, environment)
+    if record is None:
+        raise NodeMemoryUnavailable(
+            f"SLURM_MEM_PER_NODE gives no amount and 'scontrol show job {job_id}' did not answer."
+        )
+    memory = node_memory_from_job_record(record, job_id)
+    if memory is None:
+        raise NodeMemoryUnavailable(
+            f"SLURM reports no unambiguous memory allocation for running job {job_id} "
+            "(AllocTRES mem=); per-step --mem cannot be set reliably."
+        )
+    return memory
+
+
 def default_step_memory_mb(node_memory_mb: int, max_parallel: int, margin_fraction: float) -> int:
     """Memory per ``srun`` step: node memory less a margin, shared by the parallel steps."""
 
@@ -234,9 +379,10 @@ class LauncherSettings:
         together on separate cores. If ``mem`` is not given it defaults to
         the node memory less ``memory_margin_fraction``, divided by
         ``max_parallel``. Node memory is ``node_memory_mb`` or, if that is
-        not given, ``SLURM_MEM_PER_NODE`` from ``environment`` (under
-        ``--mem=0`` SLURM reports the node's memory there; not yet checked
-        on POWER, so prefer passing ``node_memory_mb``).
+        not given, what the job's SLURM variables report
+        (``node_memory_from_environment``). Under ``--mem=0`` those may give
+        no amount; a job then passes ``node_memory_mb`` from
+        ``allocated_node_memory``, which asks SLURM for the allocation.
         Confirmed on POWER (#59, 4 Nov 2026): ``srun --exact --mpi=pmi2 -n 4
         --mem=8G vasp_std`` inside a shared allocation started 4 VASP ranks
         on separate cores with the same energy as ``mpirun``. That run had
@@ -339,14 +485,14 @@ class LauncherSettings:
     def _default_step_memory_mb(self) -> int:
         node_memory_mb = self.node_memory_mb
         if node_memory_mb is None:
-            reported = self.environment.get("SLURM_MEM_PER_NODE", "")
-            if not reported.isdigit() or int(reported) < 1:
-                raise ValueError(
-                    "srun_steps needs a per-step --mem: pass mem, or node_memory_mb, or an "
-                    "environment with SLURM_MEM_PER_NODE (concurrent steps without --mem run "
-                    "one after another, #59)"
+            reported = node_memory_from_environment(self.environment)
+            if reported is None:
+                raise NodeMemoryUnavailable(
+                    "srun_steps needs a per-step --mem: pass mem, or node_memory_mb (for a job, from "
+                    "allocated_node_memory), or an environment whose SLURM_MEM_PER_NODE gives an amount "
+                    "(concurrent steps without --mem run one after another, #59)"
                 )
-            node_memory_mb = int(reported)
+            node_memory_mb = reported.mb
         return default_step_memory_mb(node_memory_mb, self.max_parallel, self.memory_margin_fraction)
 
     def ranks_for_step(self, step: int) -> int:
@@ -1032,7 +1178,12 @@ __all__ = [
     "SRUN_COMMAND_TEMPLATE",
     "SRUN_STEPS",
     "cpu_range",
+    "NodeMemory",
+    "NodeMemoryUnavailable",
+    "allocated_node_memory",
     "default_step_memory_mb",
+    "node_memory_from_environment",
+    "node_memory_from_job_record",
     "pinned_slot_first_cores",
     "EXIT_COMMAND_NOT_STARTED",
     "FORBIDDEN_STEP_ENVIRONMENT",

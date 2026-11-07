@@ -501,14 +501,17 @@ def finalize_staged_search(
 
     from backend.runtime_package_guard import bmd_runtime_package_problems
     from backend.structure_search.search_plan import (
+        ContentAddressedPotcarIdentity,
         SearchPlanError,
-        default_potcar_identity,
         load_plan_text,
         potcar_identity_problems,
         verify_execution_binding,
     )
 
-    identify = potcar_identity or default_potcar_identity
+    # One identity per distinct POTCAR content within this operation only: the
+    # library file and its staged copy are byte-identical, and the staged copy is
+    # identified again by the staged-input verification below.
+    identify = potcar_identity or ContentAddressedPotcarIdentity()
     try:
         problems = bmd_runtime_package_problems(str(_on(filesystem_root, request["package_dir"])), request["manifest"])
         if problems:
