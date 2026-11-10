@@ -32,4 +32,4 @@ Do not copy notebook code directly into FastAPI route handlers.
 
 ## uspex_pilot/
 
-Manual Phase 0 test scripts for the planned structure-search (USPEX) feature, and the POWER validations of its integration steps: the candidate-validity probe (`uspex_pilot/validity_probe/`, 6 Nov 2026) and the staging-only validation (`uspex_pilot/staging_validation/`, 7 Nov 2026). See `uspex_pilot/README.md` and `docs/structure_search.md`.
+Manual Phase 0 test scripts for the planned structure-search (USPEX) feature, and the POWER validations of its integration steps: the candidate-validity probe (`uspex_pilot/validity_probe/`, 6 Nov 2026) and the staging and promotion validations (`uspex_pilot/staging_validation/`, 7 and 10 Nov 2026). See `uspex_pilot/README.md` and `docs/structure_search.md`.

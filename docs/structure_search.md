@@ -624,6 +624,15 @@ records the transition, atomically. It never submits. The frozen plan, ladder,
 POTCAR policy and validity rules are untouched. The promotion-only POWER
 validation is part C of `reference/uspex_pilot/staging_validation/README.md`.
 
+**Checked on POWER (10 Nov 2026, attempt `14bfbbac`):** a new Si search
+(plan `sha256:014ef52c…0ebbc`, code `b7bd184`) was staged and promoted as
+`bmdguest` to `SEARCH_PREPARED`. The job script (SHA-256 `a52bee7e…619f`)
+and the resource acknowledgement matched the promotion record and the script
+parsed; the bridge, scientific inputs and POTCAR identity passed independent
+checks; the login-node readiness check passed; no job started and nothing ran.
+Record and evidence checksums:
+`reference/uspex_pilot/staging_validation/RESULTS_20261110_14bfbbac.md`.
+
 ## 9. Open questions
 
 - Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks

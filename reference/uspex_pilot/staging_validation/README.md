@@ -38,6 +38,11 @@ Run on 7 Nov 2026 for attempt `5ead0670-911a-4c52-9587-9f3ae9539269`
 Results, recovery, timings and evidence checksums:
 [`RESULTS_20261107_5ead0670.md`](RESULTS_20261107_5ead0670.md).
 
+Promotion (part C) run on 10 Nov 2026 for attempt
+`14bfbbac-8599-48a6-bcc2-cfea917fd967` (commit `b7bd184`): stopped at
+`SEARCH_PREPARED`, nothing submitted. Record:
+[`RESULTS_20261110_14bfbbac.md`](RESULTS_20261110_14bfbbac.md).
+
 ## Preconditions (stop if any is not met)
 
 1. Step 4C is committed, and that commit is available to the VM's clone (how
