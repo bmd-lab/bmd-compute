@@ -668,6 +668,29 @@ read or assessed yet; monitoring, cancellation and finalist refinement are
 later steps. The change is service-side only (the runtime package is
 unchanged). The plan, ladder, POTCAR policy and validity rules are untouched.
 
+### Monitoring and cancellation (USPEX integration step 4D-4)
+
+`POST …/observations` and `PUT …/cancellation` (`docs/machine_api.md`) are
+service-side only; the runtime package is unchanged. An observation reads
+SLURM (`squeue`, `sacct`), POWER's clock and the job's own records
+(`job_started`, `search_status.json`, launcher heartbeat) read-only, checks
+the job against the identity bound at submission (job ID, comment where
+reported, exact name and run directory, and a submission time inside the
+attempt's submission window, read in UTC with the clock skew measured; times
+that cannot be interpreted leave the identity unverified), and appends
+write-once evidence. A missing comment is enough to follow an already-bound
+job (`partial`), never to adopt an uncertain submission or to cancel. Scheduler state, execution outcome and scientific validity
+(`not_assessed`) stay separate. Missing or delayed accounting is `UNKNOWN`;
+a terminal state is recorded only from accounting, 120 s after the job's end
+by POWER's clock, and never changed afterwards (contradictions go to operator
+review). Cancellation records the request, then, after verifying the queued
+job's full identity under the attempt's claim, runs `scancel` with the exact
+job ID; the outcome is only what a later observation of SLURM shows. A
+request refused before any remote cancellation request returns the attempt
+to `SUBMITTED`; one stopped later stays `CANCEL_REQUESTED` and is resumed only
+by repeating it, with a fresh identity check. There is
+no background poller, resubmission or restart; finalists stay `not_started`.
+
 ## 9. Open questions
 
 - Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks

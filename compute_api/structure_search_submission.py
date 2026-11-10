@@ -97,6 +97,9 @@ from compute_api.structure_search_promotion import ACKNOWLEDGEMENT_FILE, _job_sc
 STATE_SUBMITTING = "SUBMITTING"
 STATE_SUBMISSION_UNCERTAIN = "SUBMISSION_UNCERTAIN"
 STATE_SUBMITTED = "SUBMITTED"
+# A job exists: SUBMITTED, then (step 4D-4) CANCEL_REQUESTED and the terminal states. Never submitted again.
+_POST_SUBMISSION = (STATE_SUBMITTED, "CANCEL_REQUESTED", "SEARCH_COMPLETED", "SEARCH_FAILED", "SEARCH_CANCELLED",
+                    "SEARCH_TIMED_OUT")
 SUBMISSION_RECORD_SCHEMA = "bmd_compute.structure_search_submission_record"
 SUBMISSION_RECORD_SCHEMA_VERSION = 1
 RECONCILIATION_WINDOW = "now-7days"
@@ -469,7 +472,7 @@ def submit_search_attempt(*, principal: str, attempt_id: str, shape) -> dict[str
     _authorize_record(record, principal)
     if record["plan_digest"] != shape.expected_plan_digest:
         raise ExecutionError(409, "plan_digest_mismatch", "This attempt was prepared for a different plan digest.")
-    if record["state"] not in (STATE_PREPARED, STATE_SUBMITTING, STATE_SUBMISSION_UNCERTAIN, STATE_SUBMITTED):
+    if record["state"] not in (STATE_PREPARED, STATE_SUBMITTING, STATE_SUBMISSION_UNCERTAIN, *_POST_SUBMISSION):
         raise ExecutionError(409, "attempt_not_prepared", "Only a PREPARED (submission-ready) attempt can be submitted.")
     promotion = record["promotion"]
     if shape.job_script_sha256 != promotion["job_script"]["sha256"]:
@@ -479,7 +482,7 @@ def submit_search_attempt(*, principal: str, attempt_id: str, shape) -> dict[str
         raise ExecutionError(409, "acknowledgement_mismatch",
                              "This attempt was promoted for a different resource request.")
     stored = _stored(ledger, record)
-    if record["state"] == STATE_SUBMITTED:
+    if record["state"] in _POST_SUBMISSION:  # submitted (later observed, cancelled or ended): never again
         return stored
 
     inputs = _inputs(ledger, record) if record["state"] == STATE_PREPARED else None
@@ -488,7 +491,7 @@ def submit_search_attempt(*, principal: str, attempt_id: str, shape) -> dict[str
     with ledger.locked():
         record = ledger.read(attempt_id)
         _authorize_record(record, principal)
-        if record["state"] == STATE_SUBMITTED:
+        if record["state"] in _POST_SUBMISSION:
             return search_attempt_response(record, integrity="verified", resources=search_resources(ledger, record))
         if record["state"] == STATE_PREPARED:
             _local_transition(record, STATE_SUBMITTING)
@@ -675,7 +678,7 @@ def recover_remote_record(*, principal: str, attempt_id: str, shape) -> dict[str
     _authorize_record(record, principal)
     if record["plan_digest"] != shape.expected_plan_digest:
         raise ExecutionError(409, "plan_digest_mismatch", "This attempt was prepared for a different plan digest.")
-    if record["state"] != STATE_SUBMITTED:
+    if record["state"] not in _POST_SUBMISSION:
         raise ExecutionError(409, "attempt_not_submitted",
                              "Only a SUBMITTED attempt (with a job ID from sbatch) has a remote record to complete.")
     submission = record.get("submission") or {}
@@ -688,7 +691,7 @@ def recover_remote_record(*, principal: str, attempt_id: str, shape) -> dict[str
     result = _recover_remote(record=record, principal=principal)
     with ledger.locked():
         record = ledger.read(attempt_id)
-        if record["state"] != STATE_SUBMITTED or record["submission"].get("job_id") != shape.job_id:
+        if record["state"] not in _POST_SUBMISSION or record["submission"].get("job_id") != shape.job_id:
             raise ExecutionError(409, "submission_conflict", "The local record changed during recovery.")
         record["submission"] = {**record["submission"], "remote_record_pending": False,
                                 "remote_record_recovered_at": isoformat(utc_now()),

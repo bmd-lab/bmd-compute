@@ -13,6 +13,8 @@ bmd-run:
 | `PUT /api/v1/structure-search-attempts/{attempt_id}/staging` | `prepare` | Stage a `PREPARED_LOCALLY` attempt on POWER and verify it there (`STAGED`); idempotent; never submits |
 | `PUT /api/v1/structure-search-attempts/{attempt_id}/promotion` | `submit` | Acknowledge the resource request and promote a `STAGED` attempt to submission-ready (`PREPARED` / `SEARCH_PREPARED`); idempotent; never submits |
 | `PUT /api/v1/structure-search-attempts/{attempt_id}/submission` | `submit` | Submit a `PREPARED` attempt to SLURM at most once (`SUBMITTED` / `SEARCH_SUBMITTED`), or reconcile an uncertain submission read-only; never resubmits |
+| `POST /api/v1/structure-search-attempts/{attempt_id}/observations` | `read` | Observe a submitted search once on POWER (read-only) and append the evidence; rate-limited |
+| `PUT /api/v1/structure-search-attempts/{attempt_id}/cancellation` | `submit` | Request cancellation of a submitted search's job; `scancel` by exact job ID after verifying its identity; repeatable |
 | `PUT /api/v1/structure-search-attempts/{attempt_id}/submission/remote-record` | `submit` | Complete a lost `SEARCH_SUBMITTED` record for a `SUBMITTED` attempt after verifying its job against SLURM; idempotent; never submits |
 | `PUT /api/v1/attempts/{attempt_id}` | `prepare` (prepare only) or `submit` (prepare and submit) | Prepare, or prepare and submit, one calculation; idempotent per attempt ID |
 | `GET /api/v1/attempts/{attempt_id}` | `read` | The attempt's authoritative state, job identity and scheduler state |
@@ -665,6 +667,151 @@ claim 409 `submission_in_progress` (the operation limiter, 503
 
 The submission is service-side code only: the runtime package is unchanged,
 so an attempt promoted by step 4D-2 (such as `14bfbbac`) can be submitted.
+
+## Structure-search monitoring and cancellation (step 4D-4)
+
+Service-side only (`compute_api/structure_search_monitoring.py`): the runtime
+package is unchanged. Reads (`GET`) never contact POWER; there is no
+background poller.
+
+### Observations
+
+`POST /api/v1/structure-search-attempts/{attempt_id}/observations` (scope
+`read`, the owner; no body) for an attempt in `SUBMITTED`,
+`CANCEL_REQUESTED` or a terminal state (409 `attempt_not_submitted`; 409
+`submission_uncertain` for an uncertain submission, which has no bound job).
+Within `MIN_OBSERVATION_INTERVAL_SECONDS` (60 s) of the last observation it
+returns that one (`observation.performed: false`, `retry_after_s`) without
+contacting POWER.
+
+One read-only SSH session through the operation limiter, without the
+attempt's claim (nothing is written on POWER): `squeue -h -u "$(id -un)" -o
+'%i|%j|%k|%Z|%T|%r|%V'` (all of this account's queued jobs), `sacct -X -n -P
+-j <job> -o JobID,JobName,Comment,WorkDir,State,ExitCode,Submit,Start,End`,
+POWER's clock (`date +%s; date +%Y-%m-%dT%H:%M:%S`), the remote attempt
+state (fingerprint checked), and, through the contained reader (no symbolic
+links, bounded), `job_started`, `search_status.json` and
+`bridge_spool/heartbeat` in the run directory. The SLURM output file is never
+read.
+
+Time stamps: both SLURM commands run with `TZ=UTC SLURM_TIME_FORMAT=standard`,
+so every time is ISO 8601 UTC, and POWER's clock is read in the same session
+(`date -u +%s`, `date -u +%Y-%m-%dT%H:%M:%S`, which must agree, and `date
++%z`, POWER's local offset, kept as evidence), bracketed by the service's
+clock to measure the skew between the hosts. A job's submission time must lie
+inside the attempt's submission window: from the attempt's `requested_at`
+(recorded before verification and `sbatch`) to the moment the job was bound
+(`sbatch`'s answer, or the verified reconciliation), shifted by the measured
+skew, ±60 s plus the skew's measurement uncertainty (whole-second rounding and
+clock drift; reused job IDs are months apart). It is `consistent`;
+`contradicted` when it lies outside by more than any time-zone offset (14 h),
+which means another job under a reused ID; or `unverified` — never guessed —
+when a time is not in the expected UTC form, lies after POWER's own clock, is
+out of order, lies outside the window by less than a time-zone offset (the
+reason names POWER's offset when the difference matches it), POWER's clock was
+not readable, or the skew exceeds 300 s.
+
+Identity: the job must be the one the attempt bound (`binding`: `sbatch`'s
+own answer, a verified reconciliation, or POWER's record of either;
+otherwise `job_binding_not_established`), reported with the attempt's exact
+job name and run directory, and submitted inside the window. A different
+non-empty comment, any other field that differs, two values for one field,
+another job carrying this attempt's comment or directory, a submission time
+`contradicted` as above, `job_started` or `search_status.json` naming another
+job, a remote record naming another job or identity, or a remote state other
+than `SEARCH_SUBMITTING`/`SEARCH_SUBMITTED`/`SEARCH_CANCEL_REQUESTED` block any
+state change and are recorded for operator review. With the comment reported
+the identity is `verified`; with no comment reported (accounting may not keep
+it) it is `partial`, which is enough to follow an already-bound job to its
+terminal state but never enough to adopt an uncertain submission (step 4D-3)
+or to cancel; a missing name or directory, or `unverified` times, leave it
+`unverified` (no state change).
+
+Scheduler state: `squeue` while the job is queued or running, otherwise
+`sacct`; `UNKNOWN` when neither reports it. A terminal state is recorded only
+when accounting reports it, `squeue` does not report a different one, and the
+job ended at least 120 s (`SETTLE_SECONDS`) before POWER's own clock;
+otherwise `classification.blocked` is `not_terminal`, `terminal_settling`
+(with `remaining_s`), `job_not_reported`, `identity_not_established` or
+`contradiction`. The terminal state is `lifecycle.classify_job`:
+`SEARCH_COMPLETED` only for SLURM `COMPLETED` with `search_status.json`
+recording `uspex_finished` and master exit status 0; `CANCELLED` →
+`SEARCH_CANCELLED`; `TIMEOUT`/`DEADLINE` → `SEARCH_TIMED_OUT`; anything else,
+or a missing, foreign or unreadable record, `SEARCH_FAILED`. Once recorded, a
+terminal state never changes; a later observation that disagrees is added to
+`monitoring.contradictions` (`operator_review: true`).
+
+Evidence: each observation is a new file
+`<state root>/structure_search/observations/<attempt>/<NNNNNN>.json` (mode
+0600, linked into place so an existing file is never replaced, naming the
+previous file's SHA-256): commands, POWER's clock, every scheduler record,
+identity assessment, execution record summary (with the status file's
+SHA-256), heartbeat age, remote state, classification and classifier
+version. The local record keeps a summary (`monitoring`: `observation_count`,
+`last`, `terminal`, `contradictions`). An interrupted record update is applied
+from the evidence by the next request (503 `observation_unavailable` until
+then). Calculation records and the calculation ledger are untouched.
+
+The response adds `observation`, `observation_available`, `monitoring`, and
+fills `submission.scheduler` (`state`, `source`, `observed_at`, `settled`) and
+`submission.execution` (`outcome`, `source: search_status.json`, `sha256`)
+from the last observation; `scientific_validity` stays `not_assessed`.
+
+### Cancellation
+
+`PUT /api/v1/structure-search-attempts/{attempt_id}/cancellation` (scope
+`submit`, the owner), body exactly `{"expected_plan_digest": "sha256:...",
+"job_id": "<digits>", "confirm": true}` (422 otherwise). Local checks: plan
+digest, the recorded job ID (409 `job_id_mismatch`), `SUBMITTED` or
+`CANCEL_REQUESTED` (409 `attempt_terminal`, `submission_uncertain`,
+`attempt_not_submitted`), and a complete remote record (409
+`remote_record_pending`).
+
+1. **Requested**: the record becomes `CANCEL_REQUESTED` (who, when) before
+   POWER is contacted.
+2. **Remote request recorded**: on POWER, under the attempt's claim (409
+   `cancellation_in_progress`), the remote state must be `SEARCH_SUBMITTED`
+   or `SEARCH_CANCEL_REQUESTED` with this promotion, identity and job ID
+   (409 `submission_conflict`, `transition_not_allowed`). A fresh identity
+   check follows, every time: `squeue` must report the job queued or running
+   with a `verified` identity (comment, name, directory, submission window)
+   and no other job carrying it (409 `job_identity_unverified`,
+   `submission_conflict`, `job_not_visible`; 503 `scheduler_unavailable`).
+   Then `SEARCH_CANCEL_REQUESTED` is written atomically (once), and the local
+   record notes it before anything is sent; if it cannot, nothing is sent.
+3. **Command attempted**: `scancel <job ID>`, one numeric ID, never a name,
+   user or other option: `command_sent`, `command_found_job_ended`,
+   `command_failed` or `command_outcome_unknown`. A job no longer queued gets
+   no command (`not_sent_job_not_active`).
+4. **Observed**: only an observation of SLURM's settled terminal state ends
+   it (`cancellation.observed`, `outcome: cancelled`, or
+   `job_ended_before_cancellation_took_effect`; the state is what SLURM
+   reports).
+
+Where a request stops (`cancellation.last_refusal` gives the code and stage):
+
+| Stopped | Local state | `cancellation.status` |
+| --- | --- | --- |
+| Refused or failed before any remote cancellation request exists (including a lost connection) | `SUBMITTED` (cancellation available again) | `refused_before_remote_request` |
+| The remote write itself interrupted (it may or may not have landed) | `CANCEL_REQUESTED` | `remote_request_uncertain` |
+| Remote request recorded, `scancel` not attempted (or a later refusal) | `CANCEL_REQUESTED` | `remote_recorded_command_pending` |
+| `scancel` attempted, answer lost | `CANCEL_REQUESTED` | `command_outcome_unknown` |
+| Settled terminal state observed | terminal (SLURM's) | `observed` |
+
+Pending states are resumed only by repeating the request
+(`resume_by_repeating`), which checks the identity afresh before any
+`scancel`; observations never send anything. If an earlier request's remote
+record is missing locally, the next observation adopts it
+(`adopted_from_power`, `remote_recorded_command_pending`). Every command is
+recorded (`cancellation.command`); earlier requests are kept
+(`earlier_requests`). Nothing is resubmitted or restarted; a repeated
+submission request returns the stored attempt.
+
+New states, defined service-side: local `CANCEL_REQUESTED` (`SUBMITTED →
+CANCEL_REQUESTED → terminal`, or back to `SUBMITTED` when refused before any
+remote request) and remote `SEARCH_CANCEL_REQUESTED`
+(`SEARCH_SUBMITTED → SEARCH_CANCEL_REQUESTED`). The calculation path refuses
+them like every other search state.
 
 ## Plan digest
 

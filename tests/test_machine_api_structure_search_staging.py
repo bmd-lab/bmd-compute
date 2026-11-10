@@ -19,6 +19,7 @@ import shlex
 import stat
 import sys
 from contextlib import nullcontext
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,17 @@ def fake_identity(path):
 
 
 class FakePower:
+    @property
+    def clock(self) -> datetime:
+        """POWER's current UTC time (naive), the service's clock plus the configured skew."""
+
+        return datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0) + self.clock_skew
+
+    def offset_text(self) -> str:  # date +%z
+        minutes = int(self.local_offset.total_seconds() // 60)
+        sign = "+" if minutes >= 0 else "-"
+        return f"{sign}{abs(minutes) // 60:02d}{abs(minutes) % 60:02d}"
+
     def __init__(self, root: Path):
         self.root = root
         self.commands: list[str] = []
@@ -94,6 +106,14 @@ class FakePower:
         self.extra_jobs: list[dict] = []  # other jobs SLURM reports (job_id, job_name, comment, workdir, state)
         self.scheduler_comments = True  # False: SLURM reports no comments
         self.scheduler_answers = True
+        # Monitoring and cancellation (step 4D-4). Job times are kept in UTC; SLURM prints them in POWER's local
+        # time (UTC+2 here) unless the command sets TZ=UTC and the fake honours it.
+        self.clock_skew = timedelta(0)  # POWER's clock minus the service's
+        self.local_offset = timedelta(hours=2)
+        self.slurm_honours_tz = True
+        self.scancel_mode = "accept"  # accept, lost, error, ended
+        self.scancel_runs: list[str] = []
+        self.clock_answers = True
         self.fail_put = None  # (target suffix, "partial" | "before_chmod" | "before_rename")
         self.after_uploads = None
 
@@ -152,8 +172,18 @@ class FakePowerRunner(ParamikoRemoteRunner):
             return RemoteCommandResult(command=command, returncode=0)
         if command.startswith("cd ") and " && sbatch --parsable " in command:
             return self._sbatch(command)
-        if command.startswith("squeue ") or command.startswith("sacct "):
+        bare = command.removeprefix("TZ=UTC SLURM_TIME_FORMAT=standard ")
+        if bare.startswith("squeue ") or bare.startswith("sacct "):
             return self._scheduler_query(command)
+        if command == "date -u +%s; date -u +%Y-%m-%dT%H:%M:%S; date +%z":
+            if not self.power.clock_answers:
+                return RemoteCommandResult(command=command, returncode=1)
+            clock = self.power.clock
+            epoch = int(clock.replace(tzinfo=timezone.utc).timestamp())
+            return RemoteCommandResult(command=command, returncode=0,
+                                       stdout=f"{epoch}\n{clock.strftime('%Y-%m-%dT%H:%M:%S')}\n{self.power.offset_text()}\n")
+        if command.startswith("scancel"):
+            return self._scancel(command)
         if staging.INVENTORY_DIR_MARKER in command:
             if self.power.fail_inventory:
                 self.power.fail_inventory -= 1
@@ -193,7 +223,8 @@ class FakePowerRunner(ParamikoRemoteRunner):
             power.next_job += 1
             power.jobs[job_id] = {"job_id": job_id, "job_name": directives["job-name"],
                                   "comment": directives["comment"], "workdir": directives["chdir"],
-                                  "state": "PENDING", "directives": directives}
+                                  "state": "PENDING", "directives": directives,
+                                  "submit": power.clock.strftime("%Y-%m-%dT%H:%M:%S")}
             return job_id
 
         mode = power.sbatch_mode
@@ -220,17 +251,60 @@ class FakePowerRunner(ParamikoRemoteRunner):
         if not power.scheduler_answers:
             return RemoteCommandResult(command=command, returncode=1, stderr="slurm_load_jobs error")
         jobs = list(power.jobs.values()) + list(power.extra_jobs)
-        squeue = command.startswith("squeue ")
+        utc = command.startswith("TZ=UTC ") and power.slurm_honours_tz
+        squeue = command.removeprefix("TZ=UTC SLURM_TIME_FORMAT=standard ").startswith("squeue ")
+
+        def shown(value):  # job times are kept in UTC; SLURM prints local time unless TZ=UTC is honoured
+            try:
+                moment = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S")
+            except (TypeError, ValueError):
+                return value or ""
+            return (moment if utc else moment + power.local_offset).strftime("%Y-%m-%dT%H:%M:%S")
+
+        monitoring = "%V" in command  # the monitoring squeue (7 fields) or sacct -j (9 fields)
+        only = shlex.split(command)[shlex.split(command).index("-j") + 1] if " -j " in command else None
         lines = []
         for job in jobs:
-            if squeue and job["state"] not in ("PENDING", "RUNNING"):
+            if only is not None and job["job_id"] != only:
+                continue
+            lingering = job.get("in_queue")  # True/False overrides: squeue keeps ended jobs briefly
+            if squeue and not (lingering if lingering is not None else job["state"] in ("PENDING", "RUNNING")):
                 continue
             hidden = job.get("hidden")  # True: not yet visible anywhere; "sacct": accounting lags behind squeue
             if hidden is True or (hidden == "sacct" and not squeue):
                 continue
             comment = job["comment"] if (squeue or power.scheduler_comments) else ""
-            lines.append("|".join([job["job_id"], job["job_name"], comment, job["workdir"], job["state"]]))
+            state = job["state"] if squeue else job.get("sacct_state", job["state"])
+            base = [job["job_id"], job["job_name"], comment, job["workdir"], state]
+            if squeue and monitoring:
+                base += [job.get("reason", "None"), shown(job.get("submit", ""))]
+            elif not squeue and only is not None:
+                base += [job.get("exit_code", "0:0"), shown(job.get("submit", "")), shown(job.get("start", "Unknown")),
+                         shown(job.get("end", "Unknown"))]
+            lines.append("|".join(base))
         return RemoteCommandResult(command=command, returncode=0, stdout="\n".join(lines) + ("\n" if lines else ""))
+
+    def _scancel(self, command):
+        parts = shlex.split(command)
+        assert len(parts) == 2 and parts[1].isdigit(), parts  # exactly one numeric job ID, no options
+        power = self.power
+        power.scancel_runs.append(parts[1])
+        job = power.jobs.get(parts[1]) or next((j for j in power.extra_jobs if j["job_id"] == parts[1]), None)
+        mode = power.scancel_mode
+        if mode == "error":
+            return RemoteCommandResult(command=command, returncode=1, stderr="scancel: error: Access/permission denied")
+        if mode == "ended" or job is None or job["state"] not in ("PENDING", "RUNNING"):
+            return RemoteCommandResult(command=command, returncode=1, stderr=(
+                f"scancel: error: Kill job error on job id {parts[1]}: Job/step already completing or completed"))
+        job.update(state="CANCELLED", end=power.clock.strftime("%Y-%m-%dT%H:%M:%S"), exit_code="0:15")
+        if mode == "lost":
+            raise TimeoutError("timed out")
+        return RemoteCommandResult(command=command, returncode=0)
+
+    def read_contained_file(self, root, parts, *, max_bytes, python=None):
+        from backend.secure_remote_read import read_contained_regular_file
+
+        return read_contained_regular_file(str(self.power.at(root)), parts, max_bytes)
 
     def _runtime_check(self, runtime_record):
         self.power.runtime_checks += 1

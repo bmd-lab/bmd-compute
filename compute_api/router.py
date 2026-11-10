@@ -63,6 +63,7 @@ from compute_api.schemas import (
     parse_execution_request,
     parse_plan_request,
     parse_structure_search_attempt_request,
+    parse_structure_search_cancellation_request,
     parse_structure_search_promotion_request,
     parse_structure_search_remote_record_request,
     parse_structure_search_submission_request,
@@ -459,6 +460,70 @@ def build_machine_api_router(*, planner: Planner, search_planner: Planner | None
             return _error_response(_ApiError(503, "remote_record_unavailable",
                                              "BMD Compute could not complete the remote record; retry. "
                                              "Nothing is ever submitted by this request."))
+        return _json(200, {"api_version": API_VERSION, **response})
+
+    @router.post("/structure-search-attempts/{attempt_id}/observations")
+    async def post_structure_search_observation(attempt_id: str, request: Request):
+        from backend.remote import RemoteOperationBusy, SubmissionAttemptError
+        from compute_api.structure_search_monitoring import observe_search_attempt
+
+        try:
+            principal = _authorize(request, scope=SCOPE_READ)
+            canonical = _canonical_attempt_id(attempt_id)
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+        try:
+            response = await run_in_threadpool(
+                observe_search_attempt, principal=principal.principal, attempt_id=canonical
+            )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except RemoteOperationBusy:
+            return _error_response(_ApiError(503, "remote_busy", "BMD Compute is busy with other remote operations; retry shortly."))
+        except SubmissionAttemptError:
+            return _error_response(_ApiError(409, "remote_attempt_mismatch", "The remote attempt state does not match this attempt."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            LOGGER.error("Machine API search observation failed (%s).", type(exc).__name__, exc_info=True)
+            return _error_response(_ApiError(503, "observation_unavailable",
+                                             "BMD Compute could not observe this search; nothing was changed. Retry."))
+        return _json(200, {"api_version": API_VERSION, **response})
+
+    @router.put("/structure-search-attempts/{attempt_id}/cancellation")
+    async def put_structure_search_cancellation(attempt_id: str, request: Request):
+        from backend.remote import RemoteOperationBusy, SubmissionAttemptError
+        from backend.structure_search.lifecycle import LifecycleError
+        from backend.structure_search.staging import StagingError
+        from compute_api.structure_search_monitoring import cancel_search_attempt
+
+        try:
+            principal = _authorize(request, scope=SCOPE_SUBMIT)
+            canonical = _canonical_attempt_id(attempt_id)
+            document = await _read_json_body(request)
+            try:
+                shape = parse_structure_search_cancellation_request(document)
+            except PlanRequestError as exc:
+                raise _ApiError(
+                    422, "invalid_request", "The cancellation request is invalid.", fields=exc.errors
+                ) from None
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+        try:
+            response = await run_in_threadpool(
+                cancel_search_attempt, principal=principal.principal, attempt_id=canonical, shape=shape
+            )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except (StagingError, LifecycleError) as exc:
+            return _error_response(_ApiError(409, exc.code, _bounded(exc.message)))
+        except RemoteOperationBusy:
+            return _error_response(_ApiError(503, "remote_busy", "BMD Compute is busy with other remote operations; retry shortly."))
+        except SubmissionAttemptError:
+            return _error_response(_ApiError(409, "remote_attempt_mismatch", "The remote attempt state does not match this attempt."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            LOGGER.error("Machine API search cancellation failed (%s).", type(exc).__name__, exc_info=True)
+            return _error_response(_ApiError(503, "cancellation_unavailable",
+                                             "BMD Compute could not complete the cancellation request; observe the "
+                                             "attempt, then repeat it (repeating is safe)."))
         return _json(200, {"api_version": API_VERSION, **response})
 
     @router.get("/structure-search-attempts/{attempt_id}")

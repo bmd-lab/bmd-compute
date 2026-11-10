@@ -328,16 +328,68 @@ def search_attempt_response(record: Mapping[str, Any], *, integrity: str | None 
         # PREPARED: verified and ready when last checked on POWER (step 4D-2).
         "submission_ready": record["state"] == STATE_PREPARED,
         "submission_available": record["state"] == STATE_PREPARED,
-        "submission": _submission_response(record.get("submission"), state=record["state"]),
+        "submission": _submission_response(record.get("submission"), state=record["state"],
+                                           monitoring=record.get("monitoring")),
+        # Step 4D-4: observations (POST …/observations) and cancellation (PUT …/cancellation).
+        "observation_available": record["state"] in _OBSERVABLE_STATES and bool(
+            (record.get("submission") or {}).get("job_id")),
+        "monitoring": _monitoring_response(record.get("monitoring")),
+        "cancellation_available": record["state"] in ("SUBMITTED", "CANCEL_REQUESTED") and not (
+            record.get("submission") or {}).get("remote_record_pending"),
+        "cancellation": _cancellation_response(record.get("cancellation")),
     }
 
 
-def _submission_response(submission: Mapping[str, Any] | None, *, state: str) -> dict[str, Any] | None:
+_TERMINAL = ("SEARCH_COMPLETED", "SEARCH_FAILED", "SEARCH_CANCELLED", "SEARCH_TIMED_OUT")
+_OBSERVABLE_STATES = ("SUBMITTED", "CANCEL_REQUESTED", *_TERMINAL)
+
+
+def _monitoring_response(monitoring: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Observations of the job (step 4D-4): the last one, the recorded terminal state, contradictions."""
+
+    if not monitoring:
+        return None
+    return {
+        "observation_count": monitoring.get("observation_count"),
+        "last": monitoring.get("last"),
+        "terminal": monitoring.get("terminal"),
+        "contradiction_count": monitoring.get("contradiction_count", 0),
+        "contradictions": monitoring.get("contradictions") or [],
+        "operator_review": bool(monitoring.get("contradiction_count")),
+    }
+
+
+def _cancellation_response(cancellation: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Requested, command attempted and observed are reported separately (step 4D-4)."""
+
+    if not cancellation:
+        return None
+    commands = list(cancellation.get("commands") or [])
+    return {
+        "status": cancellation.get("status"),
+        # Repeat the request to resume (after a fresh identity check on POWER); nothing resumes by itself.
+        "resume_by_repeating": cancellation.get("status") in (
+            "remote_request_uncertain", "remote_recorded_command_pending", "command_outcome_unknown",
+            "command_failed"),
+        "job_id": cancellation.get("job_id"),
+        "requested": {"at": cancellation.get("requested_at"), "by": cancellation.get("requested_by"),
+                      "adopted_from_power": bool(cancellation.get("adopted_from_power"))},
+        "command": {"count": cancellation.get("command_count", 0), "last": commands[-1] if commands else None,
+                    "attempts": commands},
+        "observed": cancellation.get("observed"),
+        "last_check": cancellation.get("last_check"),
+        "last_refusal": cancellation.get("last_refusal"),
+    }
+
+
+def _submission_response(submission: Mapping[str, Any] | None, *, state: str,
+                         monitoring: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
     """The SLURM submission (step 4D-3), with scheduler, execution and scientific validity kept apart."""
 
     if not submission:
         return None
-    submitted = state == "SUBMITTED"
+    submitted = state in _OBSERVABLE_STATES
+    last = (monitoring or {}).get("last")
     return {
         "status": submission.get("status"),
         "job_id": submission.get("job_id"),
@@ -355,9 +407,15 @@ def _submission_response(submission: Mapping[str, Any] | None, *, state: str) ->
         "uncertain_reason": submission.get("uncertain_reason"),
         "last_error": submission.get("last_error"),
         "reconciliation": submission.get("reconciliation"),
-        # Three separate answers, none inferred from another; not refreshed or read here.
-        "scheduler": {"state": None, "refreshed": False} if submitted else None,
-        "execution": {"outcome": None, "read": False} if submitted else None,
+        # Three separate answers, none inferred from another; reads never refresh them (observations do).
+        "scheduler": (None if not submitted else {"state": None, "refreshed": False} if not last else {
+            "state": last["scheduler"]["state"], "source": last["scheduler"]["source"], "refreshed": True,
+            "observed_at": last["observed_at"], "observation_sequence": last["sequence"],
+            "settled": last["scheduler"].get("settled")}),
+        "execution": (None if not submitted else {"outcome": None, "read": False} if not last else {
+            "outcome": last["execution"]["outcome"], "source": "search_status.json", "read": True,
+            "sha256": last["execution"]["sha256"], "observed_at": last["observed_at"],
+            "observation_sequence": last["sequence"]}),
         "scientific_validity": {"status": "not_assessed"},
         "finalists": {"status": "not_started"},
     }

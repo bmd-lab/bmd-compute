@@ -559,3 +559,35 @@ def parse_structure_search_remote_record_request(document: Any) -> StructureSear
     if errors:
         raise PlanRequestError(errors)
     return StructureSearchRemoteRecordRequestShape(expected_plan_digest=expected, job_id=job_id)
+
+
+@dataclass(frozen=True)
+class StructureSearchCancellationRequestShape:
+    expected_plan_digest: str
+    job_id: str
+
+
+def parse_structure_search_cancellation_request(document: Any) -> StructureSearchCancellationRequestShape:
+    """Validate a ``PUT /api/v1/structure-search-attempts/{id}/cancellation`` body.
+
+    ``{"expected_plan_digest": "sha256:...", "job_id": "<digits>", "confirm":
+    true}``: the attempt's plan digest, the exact SLURM job ID recorded for it,
+    and an explicit confirmation. Nothing else is accepted.
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    for key in sorted(set(document) - {"expected_plan_digest", "job_id", "confirm"}, key=str):
+        _error(errors, str(key), "unknown_field")
+    expected = document.get("expected_plan_digest")
+    if not isinstance(expected, str) or not _PLAN_DIGEST.fullmatch(expected):
+        _error(errors, "expected_plan_digest", "required" if expected is None else "must_be_sha256_digest")
+    job_id = document.get("job_id")
+    if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
+        _error(errors, "job_id", "required" if job_id is None else "must_be_slurm_job_id")
+    if document.get("confirm") is not True:
+        _error(errors, "confirm", "must_be_true")
+    if errors:
+        raise PlanRequestError(errors)
+    return StructureSearchCancellationRequestShape(expected_plan_digest=expected, job_id=job_id)

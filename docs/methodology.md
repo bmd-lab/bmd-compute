@@ -426,7 +426,7 @@ search can be started from bmd-compute yet; the design is in
 `structure_search.md`. Execution status (7 Nov 2026): a frozen search plan
 can be staged on POWER and verified there, and promoted to submission-ready
 with its job script and resource acknowledgement (both validated for Si, plan
-`sha256:014ef52c…0ebbc`, 7 and 10 Nov 2026); submission is implemented (step 4D-3) but not yet run on POWER. Staging changes no
+`sha256:014ef52c…0ebbc`, 7 and 10 Nov 2026); submission, monitoring and cancellation are implemented (steps 4D-3, 4D-4) but not yet run on POWER. Staging changes no
 scientific input: the ladder, validity criteria and POTCARs below are what
 the plan records. The values here are implemented in
 `backend/structure_search/incar_policy.py` and `potcar.py` and pinned by
