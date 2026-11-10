@@ -148,7 +148,7 @@ def test_an_observation_reads_power_and_records_separate_answers(client, tokens,
     assert observation["identity"]["status"] == "verified" and observation["identity"]["problems"] == []
     assert observation["execution"]["outcome"] == "running" and observation["execution"]["job_started"] == job_id
     assert observation["execution"]["sha256"]
-    assert observation["execution"]["heartbeat_age_s"] == 5  # from POWER's clock, not the service's
+    assert 5 <= observation["execution"]["heartbeat_age_s"] <= 8  # POWER's clock (real time passes in between)
     assert observation["classification"] == {"classifier_version": 2, "derived_state": None,
                                              "blocked": "not_terminal"}
     submission = payload["submission"]

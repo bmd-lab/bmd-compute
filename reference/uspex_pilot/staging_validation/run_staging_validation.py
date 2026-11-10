@@ -1,14 +1,23 @@
-"""Staging and promotion POWER validation of one Si structure search (USPEX steps 4C, 4D-2).
+"""Staging, promotion and submission acceptance on POWER for one Si structure search (USPEX steps 4C, 4D).
 
 Run on the BMD Compute VM, from a separate checkout of the reviewed commit
 (never the live deployment directory), with the interpreter of the service
 environment. Each step is a subcommand taking the same new ROOT:
 
-    setup ROOT       create a new, private validation root (it must not exist)
+    setup ROOT [--acceptance-walltime 00:15:00]
+                     create a new, private validation root (it must not exist); with the option, an
+                     acceptance root whose search uses that 10-15 minute walltime (the planner's override)
     preflight ROOT   read-only POWER checks (power_preflight.sh over SSH)
     run ROOT         plan -> prepare -> stage -> read back -> fresh re-verification
     promote ROOT     acknowledge the resource request -> promote to SEARCH_PREPARED (no sbatch)
     evidence ROOT    independent read-only POWER evidence (power_evidence.sh over SSH)
+    submit ROOT --confirm-attempt ID
+                     the one submission request of this validation (one sbatch, by the service)
+    observe ROOT     one read-only observation (no submission, no cancellation)
+    cancel ROOT --confirm-attempt ID --confirm-job JOB
+                     request cancellation of exactly that job (scancel, by the service, after a fresh check)
+    acceptance-evidence ROOT
+                     independent read-only POWER evidence of the job (power_acceptance_evidence.sh over SSH)
     archive ROOT     ROOT.tgz with the evidence, checked to hold no secret or POTCAR text
 
 Validation root (all private to the user)::
@@ -24,8 +33,22 @@ Validation root (all private to the user)::
 authenticated router (loopback client, bearer token) with this validation's
 own ledger. ``run`` stops at remote ``STAGED``; ``promote`` stops at
 ``SEARCH_PREPARED``. Neither calls a calculation or submission route, nor runs
-sbatch, srun, USPEX or VASP. Re-running it after an
-interruption resumes the same attempt. It refuses to start if any
+sbatch, srun, USPEX or VASP. Re-running either after an interruption resumes
+the same attempt.
+
+Acceptance (step 4D, part D of README.md), each command a separate decision:
+``submit`` sends this validation's one submission request, only with
+``--confirm-attempt`` equal to the attempt ID, only for a ``PREPARED``
+attempt this root made (never a historical validation attempt), and never a
+second time (a marker is written before the request; any outcome other than
+a clean ``SUBMITTED`` stops, an uncertain one with "do not repeat").
+``observe`` only observes. ``cancel`` needs ``--confirm-attempt`` and
+``--confirm-job`` equal to the recorded attempt and job, and only accepts a
+command sent or a job already ended. Every one stops (non-zero) on an
+unexpected status, an identity that is not verified (``partial`` only for a
+job no longer queued), inconsistent times, contradictions or a broken
+evidence chain. The kit itself never runs `sbatch`/`scancel`: the service
+does, through its routes. It refuses to start if any
 ``BMD_API_*`` variable is set, if the root is not one ``setup`` made, if the
 state directory holds anything but this validation's own attempt, or if a
 running BMD Compute service on this machine uses the same state or token
@@ -50,7 +73,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PRINCIPAL = "uspex-4c-validation"
-# submit: promotion (step 4D-2) needs it. The kit never calls a submission route (none exists yet).
+# submit: promotion (step 4D-2), and the acceptance's one submission request and cancellation (step 4D).
 SCOPES = ("plan", "prepare", "read", "submit")
 FORMULA = "Si"
 LOOPBACK = ("127.0.0.1", 50000)
@@ -65,6 +88,17 @@ SUBMISSION_IDENTITY_SECRET_ENV = "BMD_SUBMISSION_IDENTITY_SECRET"
 FORBIDDEN_TEXT = ("VRHFIN", "POMASS", "PSCTR", "LEXCH", "End of Dataset", "PRIVATE KEY", "Authorization",
                   "Bearer ", "bmdc1.", '"verifier"')
 REDACTED = "<redacted: HMAC submission identity, not archived>"
+# The 4C and 4D-2 validation attempts are evidence and are never submitted.
+HISTORICAL_ATTEMPTS = frozenset({"5ead0670-911a-4c52-9587-9f3ae9539269", "14bfbbac-8599-48a6-bcc2-cfea917fd967"})
+JOB_ID_RE = re.compile(r"^[0-9]{1,20}$")
+TERMINAL_STATES = ("SEARCH_COMPLETED", "SEARCH_FAILED", "SEARCH_CANCELLED", "SEARCH_TIMED_OUT")
+UNCERTAIN_CODES = ("submission_uncertain", "submission_unverified", "submission_ambiguous", "submission_conflict")
+ACCEPTED_CANCELLATION = ("command_sent", "not_sent_job_not_active", "command_found_job_ended")
+RESUMABLE_CANCELLATION = ("remote_request_uncertain", "remote_recorded_command_pending")
+# The acceptance's allocation: a short walltime set through the planner's Advanced override (never by editing a
+# plan or a job script), carried by the plan digest, the acknowledgement, the job script and the remote record.
+ACCEPTANCE_WALLTIME_DEFAULT = "00:15:00"
+ACCEPTANCE_WALLTIME_RANGE_S = (10 * 60, 15 * 60)
 
 
 class ValidationFailed(SystemExit):
@@ -89,10 +123,28 @@ def _now() -> str:
 # -- setup ---------------------------------------------------------------------------------
 
 
-def setup(root: Path) -> None:
+def canonical_acceptance_walltime(value: str) -> str:
+    """The acceptance walltime in the planner's canonical form, within 10-15 minutes, or a refusal."""
+
+    sys.path.insert(0, str(REPO))
+    from backend.calculations.resources import walltime_seconds
+    from backend.structure_search.spec import canonical_walltime
+
+    try:
+        walltime = canonical_walltime(value)
+    except Exception as exc:  # noqa: BLE001 - the planner's own validation message
+        raise ValidationFailed(f"VALIDATION FAILED: walltime {value!r} refused by the planner: {exc}") from None
+    low, high = ACCEPTANCE_WALLTIME_RANGE_S
+    _require(low <= walltime_seconds(walltime) <= high,
+             f"the acceptance walltime must be 10-15 minutes, not {walltime}.")
+    return walltime
+
+
+def setup(root: Path, *, acceptance_walltime: str | None = None) -> None:
     sys.path.insert(0, str(REPO))
     from compute_api.auth import TOKENS_FILE_SCHEMA, TOKENS_FILE_SCHEMA_VERSION, generate_token
 
+    walltime = canonical_acceptance_walltime(acceptance_walltime) if acceptance_walltime is not None else None
     root = Path(os.path.abspath(root))
     _require(root == root.resolve(), f"{root} goes through a symbolic link.")
     _require(REPO not in root.parents and root != REPO, f"the validation root must be outside {REPO}.")
@@ -108,9 +160,39 @@ def setup(root: Path) -> None:
     }
     _private_file(root / "tokens.json", json.dumps(tokens, indent=2, sort_keys=True) + "\n")
     _private_file(root / "client_token", token + "\n")
-    _private_file(root / "VALIDATION_ROOT.json",
-                  json.dumps({"kind": ROOT_KIND, "created_at": _now(), "principal": PRINCIPAL}, indent=2) + "\n")
-    print(f"Validation root ready: {root}")
+    marker = {"kind": ROOT_KIND, "created_at": _now(), "principal": PRINCIPAL}
+    if walltime is not None:
+        marker["acceptance"] = {"walltime": walltime, "search": {"walltime": walltime},
+                                "note": "submission-and-cancellation acceptance: short allocation via the planner"}
+    _private_file(root / "VALIDATION_ROOT.json", json.dumps(marker, indent=2) + "\n")
+    print(f"Validation root ready: {root}" + (f" (acceptance, walltime {walltime})" if walltime else ""))
+
+
+def acceptance_walltime(root: Path) -> str | None:
+    marker = json.loads((root / "VALIDATION_ROOT.json").read_text(encoding="utf-8"))
+    acceptance = marker.get("acceptance")
+    if acceptance is None:
+        return None
+    walltime = canonical_acceptance_walltime(acceptance.get("walltime"))
+    _require(acceptance == {**acceptance, "walltime": walltime, "search": {"walltime": walltime}},
+             "the validation root's acceptance settings are inconsistent.")
+    return walltime
+
+
+def search_body(root: Path) -> dict:
+    """The planning request: Si with the search defaults, or with the acceptance's walltime override."""
+
+    walltime = acceptance_walltime(root)
+    return {"formula": FORMULA, **({"search": {"walltime": walltime}} if walltime else {})}
+
+
+def check_allocation(resources: dict, walltime: str, where: str) -> None:
+    """A resource request (plan, acknowledgement or response) that asks for exactly ``walltime``, once."""
+
+    _require(resources["request"]["walltime"] == walltime,
+             f"{where}: the requested walltime is {resources['request']['walltime']}, not {walltime}.")
+    times = [line for line in resources["sbatch_directives"] if "--time" in line]
+    _require(times == [f"#SBATCH --time={walltime}"], f"{where}: the time directives are {times}, not --time={walltime}.")
 
 
 # -- isolation -------------------------------------------------------------------------------
@@ -295,6 +377,7 @@ def _write_sums(evidence: Path) -> None:
 
 
 def run(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc: Path = Path("/proc")) -> dict:
+    root = Path(os.path.abspath(root))  # before _open_api changes the working directory
     api = _open_api(root, allow_dirty=allow_dirty, runner_factory=runner_factory, proc=proc)
     client, token, state, evidence = api["client"], api["token"], api["state"], api["evidence"]
     commit, dirty, reverify_staged_search = api["commit"], api["dirty"], api["reverify_staged_search"]
@@ -313,7 +396,7 @@ def run(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc: Pat
         print(f"Resuming attempt {attempt_id}.")
     else:
         status, plan = recorder.exchange(client, "plan", "POST", "/api/v1/structure-search-plans", token,
-                                         {"formula": FORMULA})
+                                         search_body(root))
         _require(status == 200, f"planning returned {status}.")
         digest = plan["plan_digest"]
         attempt_id = str(uuid.uuid4())
@@ -321,7 +404,7 @@ def run(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc: Pat
 
     route = f"/api/v1/structure-search-attempts/{attempt_id}"
     status, prepared = recorder.exchange(client, "prepare", "PUT", route, token,
-                                         {"formula": FORMULA, "expected_plan_digest": digest})
+                                         {**search_body(root), "expected_plan_digest": digest})
     _require(status == 200, f"local preparation returned {status}: {prepared}.")
     _require(prepared["state"] in {"PREPARED_LOCALLY", "STAGING", "STAGED"}, f"unexpected state {prepared['state']}.")
 
@@ -339,6 +422,8 @@ def run(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc: Pat
     _require(staging["remote_integrity"] == "last_verified", "STAGED must be reported as last verified.")
     _require(staged["submission_available"] is False, "submission must not be available.")
     _require(staging["contains_potcar_contents"] is False, "POTCAR contents flag.")
+    if acceptance_walltime(root):
+        check_allocation(staged["resources"], acceptance_walltime(root), "the staged plan")
     _require([row["element"] for row in staging["potcars"]] == [FORMULA], "unexpected POTCAR set.")
     _require(all(row["verified"] for row in staging["potcars"]), "POTCAR identity not verified.")
     _check_no_potcar_contents(staged)
@@ -385,6 +470,7 @@ def promote(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc:
     result. It calls no submission route (there is none) and starts nothing.
     """
 
+    root = Path(os.path.abspath(root))  # before _open_api changes the working directory
     api = _open_api(root, allow_dirty=allow_dirty, runner_factory=runner_factory, proc=proc)
     client, token, state, evidence = api["client"], api["token"], api["state"], api["evidence"]
     attempt_file = evidence / "attempt.json"
@@ -400,6 +486,8 @@ def promote(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc:
     resources = current["resources"]
     _require(resources["status"] == "provisional_estimate" and resources["approved"] is False,
              "unexpected resource status.")
+    if acceptance_walltime(root):
+        check_allocation(resources, acceptance_walltime(root), "the plan being acknowledged")
     print(f"Acknowledging the provisional resource request {resources['resources_sha256']}:")
     print("  " + " ".join(resources["sbatch_directives"]))
 
@@ -445,10 +533,258 @@ def promote(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc:
     return summary
 
 
+# -- acceptance: submit, observe, cancel (step 4D, part D) ---------------------------------------
+
+
+def _own_attempt(evidence: Path) -> tuple[str, str]:
+    attempt_file = evidence / "attempt.json"
+    _require(attempt_file.is_file(), "no attempt: run 'run' and 'promote' first.")
+    attempt = json.loads(attempt_file.read_text(encoding="utf-8"))
+    attempt_id, digest = attempt["attempt_id"], attempt["plan_digest"]
+    _require(bool(ATTEMPT_RE.match(str(attempt_id))), f"malformed attempt ID {attempt_id!r}.")
+    _require(attempt_id not in HISTORICAL_ATTEMPTS, f"{attempt_id} is a historical validation attempt; "
+                                                    "it is never submitted, observed or cancelled by the kit.")
+    return attempt_id, digest
+
+
+def _own_job(evidence: Path, attempt_id: str) -> dict:
+    job_file = evidence / "job.json"
+    _require(job_file.is_file(), "no job: this validation has not submitted (run 'submit' first).")
+    job = json.loads(job_file.read_text(encoding="utf-8"))
+    _require(job.get("attempt_id") == attempt_id and bool(JOB_ID_RE.match(str(job.get("job_id")))),
+             "job.json does not belong to this validation's attempt.")
+    return job
+
+
+def _stop_on_error(status: int, payload: dict, step: str, evidence: Path, advice: str) -> None:
+    if status == 200:
+        return
+    error = payload.get("error") or {}
+    raise ValidationFailed(f"STOP: {step} returned {status} ({error.get('code')}): {error.get('message')}. "
+                           f"Evidence is in {evidence}. {advice}")
+
+
+def submit(root: Path, *, confirm_attempt: str, allow_dirty: bool = False, runner_factory=None,
+           proc: Path = Path("/proc")) -> dict:
+    """The one submission request of this validation (one `sbatch`, by the service), never repeated by the kit."""
+
+    root = Path(os.path.abspath(root))  # before _open_api changes the working directory
+    api = _open_api(root, allow_dirty=allow_dirty, runner_factory=runner_factory, proc=proc)
+    client, token, evidence = api["client"], api["token"], api["evidence"]
+    attempt_id, digest = _own_attempt(evidence)
+    _require(confirm_attempt == attempt_id,
+             f"--confirm-attempt must be exactly this validation's attempt ID ({attempt_id}); nothing was sent.")
+    marker = evidence / "submission_requested.json"
+    _require(not marker.exists(), f"this validation already sent its one submission request ({marker}); it is "
+                                  "never sent again. Use 'observe', and report anything unexpected.")
+    route = f"/api/v1/structure-search-attempts/{attempt_id}"
+    recorder = Recorder(evidence)
+    status, current = recorder.exchange(client, "before_submission", "GET", route, token)
+    _require(status == 200 and current.get("state") == "PREPARED" and current.get("submission_available") is True,
+             f"the attempt is {current.get('state')}, not a submission-ready PREPARED attempt; nothing was sent.")
+    promotion = current["promotion"]
+    _require(promotion["remote_state"] == "SEARCH_PREPARED", "POWER did not last record SEARCH_PREPARED.")
+    walltime = acceptance_walltime(root)
+    _require(walltime is not None, "this root was not set up for the acceptance ('setup --acceptance-walltime'); "
+                                   "the kit never submits a default (168-hour) allocation. Nothing was sent.")
+    allocation = verify_short_allocation(api, recorder, attempt_id=attempt_id, digest=digest, walltime=walltime,
+                                         current=current)
+    body = {"expected_plan_digest": digest, "job_script_sha256": promotion["job_script"]["sha256"],
+            "resource_acknowledgement": {"acknowledged": True,
+                                         "resources_sha256": promotion["acknowledgement"]["resources_sha256"]}}
+    print(f"Submitting attempt {attempt_id} once, walltime {walltime}, job script {promotion['job_script']['sha256']}:")
+    print("  " + " ".join(current["resources"]["sbatch_directives"]))
+    _private_file(marker, json.dumps({"attempt_id": attempt_id, "requested_at": _now(), "body": body},
+                                     indent=2, sort_keys=True) + "\n")  # before the request: never twice
+    status, submitted = recorder.exchange(client, "submit", "PUT", f"{route}/submission", token, body)
+    if status != 200:
+        code = (submitted.get("error") or {}).get("code")
+        if code in UNCERTAIN_CODES or status == 503:
+            raise ValidationFailed(f"STOP: UNCERTAIN SUBMISSION ({status} {code}). Do not repeat 'submit' and do not "
+                                   f"run sbatch. Keep everything; report it. Evidence is in {evidence}.")
+        _stop_on_error(status, submitted, "submission", evidence,
+                       "The kit never submits again; report it (a refusal by SLURM means no job exists).")
+    sub = submitted["submission"]
+    _require(submitted["state"] == "SUBMITTED" and sub["status"] == "submitted",
+             f"submission ended at {submitted.get('state')}; stop and report.")
+    _require(bool(JOB_ID_RE.match(str(sub["job_id"]))), f"malformed job ID {sub.get('job_id')!r}; stop and report.")
+    _require(sub["reconciled"] is False and sub["adopted"] is False and sub["uncertain"] is False,
+             "the job was not bound by sbatch's own answer; stop and report.")
+    _require(sub["remote_record_pending"] is False,
+             "POWER's SEARCH_SUBMITTED record is pending; stop and report (do not submit again).")
+    _require(sub["attempt_comment"] == f"bmd_attempt:{attempt_id}" and sub["job_name"] == f"bmds-{attempt_id[:8]}",
+             "the recorded job identity is not this attempt's; stop and report.")
+    _check_no_potcar_contents(submitted)
+    record = json.loads((api["state"] / "structure_search" / "attempts" / f"{attempt_id}.json").read_text())
+    job = {"attempt_id": attempt_id, "job_id": sub["job_id"], "job_name": sub["job_name"],
+           "attempt_comment": sub["attempt_comment"], "run_name": record["staging"]["run_name"],
+           "run_dir": record["staging"]["spec"]["paths"]["run_dir"], "requested_at": sub["requested_at"],
+           "submitted_at": sub["submitted_at"], "walltime": walltime,
+           "job_script_sha256": allocation["job_script_sha256"]}
+    _private_file(evidence / "job.json", json.dumps(job, indent=2, sort_keys=True) + "\n")
+    recorder.save("submission_summary", {**job, "commit": api["commit"], "state": submitted["state"]})
+    _write_sums(evidence)
+    print(json.dumps({key: job[key] for key in ("attempt_id", "job_id", "run_name")}, indent=2))
+    return job
+
+
+def rebuilt_job_script(state: Path, attempt_id: str) -> str:
+    """The job script the service would submit, rebuilt from the frozen inputs (its SHA-256 checked by the service)."""
+
+    from compute_api.execution import ExecutionError
+    from compute_api.structure_search_execution import SearchAttemptLedger
+    from compute_api.structure_search_submission import _inputs
+
+    ledger = SearchAttemptLedger.from_environment_read_only()
+    _require(ledger.root == state / "structure_search", "the ledger is not the validation's own.")
+    inputs = _inputs(ledger, ledger.read(attempt_id))
+    if isinstance(inputs, ExecutionError):
+        raise ValidationFailed(f"VALIDATION FAILED: the job script cannot be rebuilt ({inputs.code}); nothing was sent.")
+    return inputs[4]
+
+
+def verify_short_allocation(api: dict, recorder, *, attempt_id: str, digest: str, walltime: str, current: dict) -> dict:
+    """Before the one sbatch: the short walltime in the plan digest, the acknowledgement and the job script."""
+
+    from backend.calculations.resources import walltime_seconds
+
+    low, high = ACCEPTANCE_WALLTIME_RANGE_S
+    _require(low <= walltime_seconds(walltime) <= high, f"walltime {walltime} is outside 10-15 minutes.")
+    check_allocation(current["resources"], walltime, "the attempt's resource request")
+    client, token = api["client"], api["token"]
+    status, replanned = recorder.exchange(client, "replan_acceptance", "POST", "/api/v1/structure-search-plans",
+                                          token, {"formula": FORMULA, "search": {"walltime": walltime}})
+    _require(status == 200 and replanned["plan_digest"] == digest,
+             "the plan digest is not the planner's digest for this walltime; nothing was sent.")
+    status, default = recorder.exchange(client, "replan_default", "POST", "/api/v1/structure-search-plans", token,
+                                        {"formula": FORMULA})
+    _require(status == 200 and default["plan_digest"] != digest,
+             "the plan digest does not depend on the walltime; nothing was sent.")
+    record = json.loads((api["state"] / "structure_search" / "attempts" / f"{attempt_id}.json").read_text())
+    acknowledgement = record["promotion"]["acknowledgement"]
+    _require(acknowledgement["plan_digest"] == digest and acknowledgement["attempt_id"] == attempt_id,
+             "the resource acknowledgement is for another plan or attempt; nothing was sent.")
+    check_allocation(acknowledgement["resources"], walltime, "the resource acknowledgement")
+    script = rebuilt_job_script(api["state"], attempt_id)
+    times = [line.strip() for line in script.splitlines() if line.lstrip().startswith("#SBATCH") and "--time" in line]
+    _require(times == [f"#SBATCH --time={walltime}"],
+             f"the job script's time directives are {times}, not --time={walltime}; nothing was sent.")
+    script_sha256 = hashlib.sha256(script.encode("utf-8")).hexdigest()
+    _require(script_sha256 == record["promotion"]["job_script"]["sha256"],
+             "the rebuilt job script is not the promoted one; nothing was sent.")
+    summary = {"walltime": walltime, "plan_digest": digest, "default_plan_digest": default["plan_digest"],
+               "acknowledgement_sha256": acknowledgement["acknowledgement_sha256"],
+               "job_script_sha256": script_sha256, "job_script_time_directives": times}
+    recorder.save("short_allocation_check", summary)
+    print(f"Short allocation verified: {walltime} in the plan digest, the acknowledgement and the job script.")
+    return summary
+
+
+def verify_observation_chain(state: Path, attempt_id: str) -> int:
+    """The observation evidence files: consecutive, private, each naming the previous one's SHA-256."""
+
+    directory = state / "structure_search" / "observations" / attempt_id
+    files = sorted(directory.glob("[0-9][0-9][0-9][0-9][0-9][0-9].json")) if directory.is_dir() else []
+    previous = None
+    for index, path in enumerate(files, start=1):
+        _require(path.name == f"{index:06d}.json", f"observation evidence {path.name} is out of sequence.")
+        _require(not path.is_symlink() and stat.S_IMODE(path.stat().st_mode) == 0o600,
+                 f"observation evidence {path.name} is not a private file.")
+        document = json.loads(path.read_text(encoding="utf-8"))
+        _require(document.get("sequence") == index and document.get("previous_sha256") == previous
+                 and document.get("attempt_id") == attempt_id,
+                 f"observation evidence {path.name} does not continue the chain.")
+        previous = hashlib.sha256(path.read_bytes()).hexdigest()
+    return len(files)
+
+
+def observe(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc: Path = Path("/proc")) -> dict:
+    """One read-only observation of this validation's job. Never submits or cancels."""
+
+    api = _open_api(root, allow_dirty=allow_dirty, runner_factory=runner_factory, proc=proc)
+    client, token, evidence = api["client"], api["token"], api["evidence"]
+    attempt_id, _ = _own_attempt(evidence)
+    job = _own_job(evidence, attempt_id)
+    recorder = Recorder(evidence)
+    route = f"/api/v1/structure-search-attempts/{attempt_id}"
+    status, observed = recorder.exchange(client, "observe", "POST", f"{route}/observations", token)
+    _stop_on_error(status, observed, "observation", evidence, "Report it; nothing was changed.")
+    count = verify_observation_chain(api["state"], attempt_id)
+    _require(observed["submission"]["job_id"] == job["job_id"], "the attempt's job ID changed; stop and report.")
+    _require(observed["state"] in ("SUBMITTED", "CANCEL_REQUESTED", *TERMINAL_STATES),
+             f"unexpected state {observed['state']}; stop and report.")
+    if not observed["observation"]["performed"]:
+        print(f"Not observed again yet (rate limit): retry in {observed['observation']['retry_after_s']} s.")
+        return {"performed": False, "state": observed["state"]}
+    last = observed["monitoring"]["last"]
+    identity, scheduler = last["identity"], last["scheduler"]
+    summary = {"state": observed["state"], "sequence": last["sequence"], "evidence_files": count,
+               "scheduler": {key: scheduler.get(key) for key in ("state", "source", "settled", "submit", "start",
+                                                                  "end", "exit_code")},
+               "identity": identity["status"], "binding": identity.get("binding"),
+               "times": (identity.get("times") or {}).get("status"), "notes": identity.get("notes"),
+               "execution": last["execution"].get("outcome"), "blocked": last["classification"]["blocked"],
+               "terminal": observed["monitoring"]["terminal"], "cancellation": (observed.get("cancellation") or {}
+                                                                                ).get("status")}
+    recorder.save("observation_summary", summary)
+    _write_sums(evidence)
+    print(json.dumps(summary, indent=2))
+    _require(not observed["monitoring"]["operator_review"] and not identity["problems"],
+             f"STOP: contradiction for operator review: {identity['problems']}.")
+    _require(identity.get("binding") == "sbatch", f"STOP: the job is bound by {identity.get('binding')}, not sbatch.")
+    _require(identity["status"] in ("verified", "partial"),
+             f"STOP: identity {identity['status']} (times: {identity.get('times')}).")
+    _require(identity["status"] == "verified" or scheduler.get("source") != "squeue",
+             "STOP: squeue reports the queued job without its comment.")
+    _require((identity.get("times") or {}).get("status") == "consistent",
+             f"STOP: SLURM times not consistent: {identity.get('times')}.")
+    _require(last["classification"]["blocked"] in (None, "not_terminal", "terminal_settling"),
+             f"STOP: observation blocked ({last['classification']['blocked']}).")
+    return summary
+
+
+def cancel(root: Path, *, confirm_attempt: str, confirm_job: str, allow_dirty: bool = False, runner_factory=None,
+           proc: Path = Path("/proc")) -> dict:
+    """Request cancellation of exactly this validation's job (`scancel` by the service, after a fresh check)."""
+
+    api = _open_api(root, allow_dirty=allow_dirty, runner_factory=runner_factory, proc=proc)
+    client, token, evidence = api["client"], api["token"], api["evidence"]
+    attempt_id, digest = _own_attempt(evidence)
+    job = _own_job(evidence, attempt_id)
+    _require(confirm_attempt == attempt_id and confirm_job == job["job_id"],
+             f"--confirm-attempt and --confirm-job must be exactly {attempt_id} and {job['job_id']}; nothing was "
+             "sent.")
+    recorder = Recorder(evidence)
+    route = f"/api/v1/structure-search-attempts/{attempt_id}"
+    status, current = recorder.exchange(client, "before_cancellation", "GET", route, token)
+    _require(status == 200 and current["submission"]["job_id"] == job["job_id"], "the attempt's job changed; stop.")
+    if current["state"] == "CANCEL_REQUESTED":
+        _require((current["cancellation"] or {}).get("status") in RESUMABLE_CANCELLATION,
+                 f"cancellation is {current['cancellation'].get('status')}: nothing to resume; use 'observe'.")
+    else:
+        _require(current["state"] == "SUBMITTED", f"the attempt is {current['state']}; nothing to cancel.")
+    print(f"Requesting cancellation of job {job['job_id']} (attempt {attempt_id}).")
+    body = {"expected_plan_digest": digest, "job_id": job["job_id"], "confirm": True}
+    status, cancelled = recorder.exchange(client, "cancel", "PUT", f"{route}/cancellation", token, body)
+    _stop_on_error(status, cancelled, "cancellation", evidence,
+                   "Report it with the attempt's cancellation record (GET); observe before any new decision.")
+    cancellation = cancelled["cancellation"]
+    summary = {"state": cancelled["state"], "status": cancellation["status"],
+               "command": cancellation["command"]["last"], "check": cancellation.get("last_check")}
+    recorder.save("cancellation_summary", summary)
+    _write_sums(evidence)
+    print(json.dumps(summary, indent=2))
+    _require(cancellation["status"] in ACCEPTED_CANCELLATION,
+             f"STOP: cancellation {cancellation['status']}; report it and observe (do not repeat without a decision).")
+    _require((cancellation.get("last_check") or {}).get("identity") == "verified",
+             "STOP: the job's identity was not verified before the command.")
+    return summary
+
+
 # -- POWER scripts over SSH ----------------------------------------------------------------------
 
 
-def evidence_arguments(root: Path) -> tuple[str, str]:
+def evidence_arguments(root: Path, *, states=frozenset({"STAGED", "PREPARED"})) -> tuple[str, str]:
     """The attempt ID and run name of this validation, checked against each other and the ledger."""
 
     attempt = json.loads((root / "evidence" / "attempt.json").read_text(encoding="utf-8"))["attempt_id"]
@@ -457,7 +793,7 @@ def evidence_arguments(root: Path) -> tuple[str, str]:
     match = RUN_NAME_RE.match(str(run_name))
     _require(bool(ATTEMPT_RE.match(str(attempt))), f"malformed attempt ID {attempt!r}.")
     _require(bool(match) and match["prefix"] == attempt[:8], f"run name {run_name!r} does not match the attempt.")
-    _require(record["state"] in {"STAGED", "PREPARED"}, f"the attempt is {record['state']}, not STAGED or PREPARED.")
+    _require(record["state"] in states, f"the attempt is {record['state']}, not one of {sorted(states)}.")
     return attempt, run_name
 
 
@@ -465,6 +801,19 @@ def remote_command(*arguments: str) -> str:
     """The command the remote login shell runs: ``bash -s -- ARG...`` with every argument quoted."""
 
     return "bash -s -- " + " ".join(shlex.quote(argument) for argument in arguments) if arguments else "bash -s"
+
+
+def acceptance_arguments(root: Path) -> tuple[str, str, str, str]:
+    """The attempt ID, run name and job ID of this validation, checked against each other and the ledger."""
+
+    attempt, run_name = evidence_arguments(root, states={"SUBMITTED", "CANCEL_REQUESTED", *TERMINAL_STATES})
+    job = _own_job(root / "evidence", attempt)
+    record = json.loads((root / "state" / "structure_search" / "attempts" / f"{attempt}.json").read_text())
+    _require(record["submission"]["job_id"] == job["job_id"], "job.json and the ledger name different jobs.")
+    _require(attempt not in HISTORICAL_ATTEMPTS, "a historical validation attempt.")
+    walltime = acceptance_walltime(root)
+    _require(walltime is not None and job.get("walltime") == walltime, "job.json and the root name different walltimes.")
+    return attempt, run_name, job["job_id"], walltime
 
 
 def run_power_script(root: Path, script: str, output_name: str, arguments: tuple[str, ...] = ()) -> int:
@@ -486,6 +835,17 @@ def preflight(root: Path, *, proc: Path = Path("/proc")) -> int:
     return run_power_script(Path(os.path.abspath(root)), "power_preflight.sh", "power_preflight.txt")
 
 
+def acceptance_evidence(root: Path, *, proc: Path = Path("/proc")) -> int:
+    """Read-only POWER evidence of the submitted job; a new numbered output each time (never overwritten)."""
+
+    root = Path(os.path.abspath(root))
+    check_isolation(root, proc=proc)
+    arguments = acceptance_arguments(root)
+    index = 1 + len(list(root.glob("power_acceptance_evidence_*.txt")))
+    return run_power_script(root, "power_acceptance_evidence.sh", f"power_acceptance_evidence_{index:02d}.txt",
+                            arguments)
+
+
 def evidence(root: Path, *, proc: Path = Path("/proc")) -> int:
     root = Path(os.path.abspath(root))
     check_isolation(root, proc=proc)
@@ -501,8 +861,10 @@ def archive_members(root: Path) -> list[Path]:
 
     members = sorted(p for p in (root / "evidence").rglob("*") if p.is_file())
     members += sorted(p for p in (root / "state" / "structure_search" / "preparations").rglob("*") if p.is_file())
+    members += sorted(p for p in (root / "state" / "structure_search" / "observations").rglob("*") if p.is_file())
     members += [root / name for name in ("run.log", "power_preflight.txt", "power_evidence.txt")
                 if (root / name).is_file()]
+    members += sorted(root.glob("power_acceptance_evidence_*.txt"))
     return members
 
 
@@ -537,13 +899,31 @@ def archive(root: Path) -> Path:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("setup", "preflight", "run", "promote", "evidence", "archive"):
+    for name in ("setup", "preflight", "run", "promote", "evidence", "submit", "observe", "cancel",
+                 "acceptance-evidence", "archive"):
         sub.add_parser(name).add_argument("root", type=Path)
-    for name in ("run", "promote"):
+    for name in ("run", "promote", "submit", "observe", "cancel"):
         sub.choices[name].add_argument("--allow-dirty", action="store_true", help=argparse.SUPPRESS)
+    for name in ("submit", "cancel"):
+        sub.choices[name].add_argument("--confirm-attempt", required=True, metavar="ATTEMPT_ID")
+    sub.choices["cancel"].add_argument("--confirm-job", required=True, metavar="JOB_ID")
+    sub.choices["setup"].add_argument("--acceptance-walltime", metavar="HH:MM:SS",
+                                      help="a submission acceptance root: this 10-15 minute walltime (planner override)")
     args = parser.parse_args(argv)
+    if args.command == "submit":
+        submit(args.root, confirm_attempt=args.confirm_attempt, allow_dirty=args.allow_dirty)
+        return 0
+    if args.command == "observe":
+        observe(args.root, allow_dirty=args.allow_dirty)
+        return 0
+    if args.command == "cancel":
+        cancel(args.root, confirm_attempt=args.confirm_attempt, confirm_job=args.confirm_job,
+               allow_dirty=args.allow_dirty)
+        return 0
+    if args.command == "acceptance-evidence":
+        return acceptance_evidence(args.root)
     if args.command == "setup":
-        setup(args.root)
+        setup(args.root, acceptance_walltime=args.acceptance_walltime)
         return 0
     if args.command == "run":
         run(args.root, allow_dirty=args.allow_dirty)

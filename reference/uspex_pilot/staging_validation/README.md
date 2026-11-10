@@ -1,8 +1,10 @@
-# USPEX steps 4C and 4D-2: staging and promotion POWER validation (one Si search)
+# USPEX steps 4C and 4D: staging, promotion and submission acceptance on POWER (one Si search)
 
-Validates managed remote staging end to end on POWER for one Si structure
-search and **stops at remote `STAGED`**. Nothing is submitted: no `sbatch`,
-no USPEX, no VASP. Production workflows and the production ledger are not
+Parts B and C validate managed remote staging and promotion end to end on
+POWER for one Si structure search and **stop at remote `STAGED` /
+`SEARCH_PREPARED`**: nothing is submitted, no `sbatch`, no USPEX, no VASP.
+Part D is the controlled acceptance of submission, monitoring and
+cancellation with a new attempt, behind two separate approval gates. Production workflows and the production ledger are not
 used: the run has its own state directory, token and principal
 (`uspex-4c-validation`), and drives the machine API in-process through its
 authenticated router.
@@ -182,22 +184,125 @@ finding. The validation token has `submit` scope for promotion; the kit calls
 no submission route. The staged and promoted run stays on POWER as evidence;
 it can only be submitted by a later step, after a fresh verification.
 
-## D. First controlled submission (step 4D-3; planned, not part of this kit yet)
+## D. Controlled submission and cancellation acceptance (steps 4D-3 and 4D-4; VM, bash)
 
-Not implemented here; recorded so the first acceptance test includes it.
-After one approved submission of a promoted Si attempt, check read-only on
-POWER, as `bmdguest`, and keep the output with the attempt ID:
+The first live managed submission. It uses a **new** Si attempt made by a new
+validation root (never `5ead0670` or `14bfbbac`; the kit refuses them), runs
+`sbatch` once and `scancel` at most for that one job, each only after its own
+written approval. The kit never runs `sbatch` or `scancel` itself: it calls the
+service's routes in-process with the validation's own ledger and token, and
+the service runs them after its own fresh verification. Every kit step stops
+(non-zero, `STOP:` or `VALIDATION FAILED:`) on an unexpected status, an
+identity that is not verified, inconsistent times, a contradiction, an
+uncertain submission or a broken evidence chain. On any stop: keep
+everything, run nothing else, report.
 
-- `scontrol show config | grep -i AccountingStoreFlags` (does accounting
-  keep job comments?);
-- while queued: `squeue -j <job> -o '%i|%j|%k|%Z|%T'` shows comment
-  `bmd_attempt:<attempt_id>`, name `bmds-<attempt[:8]>` and the run
-  directory;
-- after it ends: `sacct -X -n -P -j <job> -o
-  JobID,JobName,Comment,WorkDir,State` shows the same three. If the comment
-  is empty there, report it: reconciliation then cannot verify a finished
-  job, by design, and needs a decision before production use;
-- remote state `SEARCH_SUBMITTED` naming the same job ID.
+The acceptance search asks for a **15-minute** allocation, not the default
+168 hours. It is set once, at `setup --acceptance-walltime 00:15:00`, and
+reaches the plan only through the planner's own Advanced walltime override
+(`search.walltime` in the planning request). Nothing else in the plan
+differs from the default Si plan: the INCAR ladder, POTCARs, validity rules
+and USPEX settings are the same, and the runtime package is the commit's.
+The walltime is therefore part of the plan digest, the acknowledged
+resource request, the frozen job script (`#SBATCH --time=00:15:00`, its only
+time directive) and, through the job script's SHA-256, the remote submission
+record. `submit` refuses a root without it (the kit never submits a 168-hour
+allocation) and, before the request, re-plans to confirm the digest is the
+planner's for 15 minutes (and differs from the default's), and checks the
+acknowledgement and the rebuilt job script; any mismatch stops with nothing
+sent. `sbatch` runs with no options, so SLURM enforces 15 minutes whenever
+the job starts; `acceptance-evidence` reads the job's time limit back from
+`squeue` and `sacct`.
+
+The reviewed commit reaches the VM as a Git bundle when it is not in the
+VM's clones: compare the bundle's SHA-256 with the one reported, then make a
+new clone from the bundle (cloning reads and checks the bundle; `git bundle
+verify` works only inside an existing repository) and check out the exact
+commit, detached, before anything else.
+
+```bash
+# D0. New acceptance root and attempt, with the reviewed commit: B0-B1, then this setup instead
+#     of B2, then B3-B4 and C1-C3. Stop unless C2 ends with EVIDENCE CHECKS PASSED and
+#     "remote state:  SEARCH_PREPARED", and C1 printed "#SBATCH --time=00:15:00".
+VROOT=~/bmd-validation/uspex-4d-acceptance-$(date -u +%Y%m%dT%H%M%SZ)
+env -u BMD_API_STATE_DIR -u BMD_API_TOKENS_FILE "$BMD_PY" $K setup "$VROOT" --acceptance-walltime 00:15:00
+#     ... B3, B4 and C1-C3 with this VROOT ...
+ATTEMPT=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['attempt_id'])" "$VROOT/evidence/attempt.json")
+echo "$ATTEMPT"
+
+# D1. Read-only checks on POWER (as bmdguest): accounting configuration, UTC printing, the queue.
+ssh powerslurm-bmdguest 'scontrol show config | grep -i -E "^(AccountingStoreFlags|MinJobAge)";
+  date -u +%FT%T; date +%z;
+  TZ=UTC SLURM_TIME_FORMAT=standard sacct -X -n -P -j 23406856 -o JobID,Submit,End;
+  SLURM_TIME_FORMAT=standard sacct -X -n -P -j 23406856 -o JobID,Submit,End;
+  sinfo -p leeburton-pool; squeue -u bmdguest' | tee "$VROOT/d1_readonly.txt"
+#     Diagnostic only: record the UTC and local sacct times and the date +%z offset as printed. If the
+#     difference is not the offset, flag it for review (do not assume a relationship); it is not a stop.
+```
+
+**Gate 1, submission.** Lee's written approval for one `sbatch` of `$ATTEMPT`
+with a 15-minute allocation (the job script SHA-256 and `#SBATCH` lines are
+those C1 printed and C2 verified). Without it, stop here.
+
+```bash
+# D2. The one submission. Verifies the 15-minute allocation (digest, acknowledgement, job script),
+#     prints the job script SHA-256 and #SBATCH lines, then sends one request.
+#     Expect a job ID. "STOP: UNCERTAIN SUBMISSION": do not repeat, do not run sbatch; report.
+"$BMD_PY" $K submit "$VROOT" --confirm-attempt "$ATTEMPT" 2>&1 | tee -a "$VROOT/run.log"
+JOB=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['job_id'])" "$VROOT/evidence/job.json")
+
+# D3. Observe at once (queued or running): identity "verified", times "consistent",
+#     binding "sbatch", scheduler source squeue. Repeat after 60 s if rate-limited.
+"$BMD_PY" $K observe "$VROOT" 2>&1 | tee -a "$VROOT/run.log"
+
+# D4. Independent read-only POWER evidence while the job is queued or running:
+#     "RESULT comment while queued: present" is the comment-persistence check in the queue.
+"$BMD_PY" $K acceptance-evidence "$VROOT"
+```
+
+**Gate 2, cancellation.** Lee's written approval for one `scancel` of `$JOB`
+for `$ATTEMPT`. (If the job has already ended, skip D5 and go to D6.)
+
+```bash
+# D5. Cancellation: a fresh identity check by the service, then scancel <JOB>.
+#     Expect "command_sent" (or "not_sent_job_not_active" if it ended first).
+"$BMD_PY" $K cancel "$VROOT" --confirm-attempt "$ATTEMPT" --confirm-job "$JOB" 2>&1 | tee -a "$VROOT/run.log"
+
+# D6. Observe until settled (at least 120 s after the job ended): expect SEARCH_CANCELLED with
+#     cancellation "observed" (or SLURM's own terminal state if the job ended first).
+"$BMD_PY" $K observe "$VROOT" 2>&1 | tee -a "$VROOT/run.log"
+
+# D7. Independent read-only POWER evidence after the end: "RESULT comment in accounting:
+#     present|absent" is the comment-persistence check in accounting; "RESULT UTC/local diagnostic"
+#     records the submit time in UTC and in local time with POWER's offset (a mismatch is a REVIEW
+#     line to report, not a failure).
+"$BMD_PY" $K acceptance-evidence "$VROOT"
+
+# D8. The archive (evidence, observation evidence chain, POWER reports; never a token or POTCAR).
+"$BMD_PY" $K archive "$VROOT"
+```
+
+Expected: `submit` prints "Short allocation verified: 00:15:00 ..." and one job ID; the
+acceptance-evidence reports show the time limit `00:15:00` (`15:00` in `squeue`); every `observe` shows identity
+`verified` (`partial` only once the job has left the queue and accounting
+keeps no comment), times `consistent` and binding `sbatch`; `cancel` shows
+`command_sent` with a verified identity; the final observation shows
+`SEARCH_CANCELLED` (or SLURM's terminal state); both acceptance-evidence
+reports end with `ACCEPTANCE EVIDENCE CHECKS PASSED`.
+
+Stop conditions (each is a finding): any `STOP:`/`VALIDATION FAILED:` line;
+any HTTP status other than 200; `submission_uncertain`/`unverified`/
+`ambiguous`/`conflict`; identity `contradicted`, `unverified` or
+`not_reported` (after a wait for accounting); `operator_review`; a `FAIL` in
+an acceptance-evidence report; more than one job or run directory for the
+attempt. Nothing is reset or removed; the run directory and the job's
+records stay on POWER as evidence.
+
+Report back: the commit, attempt ID, job ID, the `submit`, `observe` and
+`cancel` outputs, both acceptance-evidence reports (in particular the RESULT
+lines on comment persistence, the UTC/local diagnostic and `AccountingStoreFlags`, and any
+`REVIEW` lines), and the
+archive's SHA-256.
 
 ## What the evidence contains
 
