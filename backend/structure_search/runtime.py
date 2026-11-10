@@ -410,29 +410,48 @@ def default_slurm_version() -> str | None:
 # -- job-start check ----------------------------------------------------------------------
 
 
+RUNTIME_CHECK_SCOPES = ("job", "login_node")
+# What only the compute node a job runs on can show: the MPI library srun steps
+# load, and the SLURM version srun --exact needs (read there with srun --version).
+COMPUTE_NODE_ONLY_CHECKS = ("i_mpi_pmi_library", "slurm_version")
+
+
 def search_runtime_check(
     prepared: Any,
     *,
     slurm_version_lookup: Callable[[], str | None] | None = None,
+    scope: str = "job",
 ) -> dict[str, Any]:
     """Check on POWER that the prepared USPEX runtime is in place.
 
     ``prepared`` is the ``structure_search.runtime`` record from
     ``submission.json``. Returns ``{"status", "problems", "prepared",
-    "observed"}`` and never raises for a problem it can describe; the caller
-    stops the run if ``problems`` is not empty. Nothing is unpacked or
+    "observed", "scope"}`` and never raises for a problem it can describe; the
+    caller stops the run if ``problems`` is not empty. Nothing is unpacked or
     started here.
+
+    ``scope="job"`` (the default) is the full job-start check, on the compute
+    node the job runs on. ``scope="login_node"`` is the readiness check at
+    promotion, on the login node: the runtime settings, the USPEX payload
+    identity and version, the unpacked cache and its writability, and the
+    Singularity executable, but not the compute-node-only items
+    (``COMPUTE_NODE_ONLY_CHECKS``), which it lists as deferred to the job
+    start. It runs no SLURM command.
     """
 
+    if scope not in RUNTIME_CHECK_SCOPES:
+        raise ValueError(f"scope must be one of {RUNTIME_CHECK_SCOPES}")
     settings, problems = settings_from_record(prepared)
     observed: dict[str, Any] = {}
     if settings is not None:
-        observed = _observe(settings, problems, slurm_version_lookup or default_slurm_version)
+        observed = _observe(settings, problems, slurm_version_lookup or default_slurm_version,
+                            compute_node=scope == "job")
     return {
         "status": "failed" if problems else "passed",
         "problems": problems,
         "prepared": prepared if isinstance(prepared, Mapping) else None,
         "observed": observed,
+        "scope": scope,
     }
 
 
@@ -440,6 +459,8 @@ def _observe(
     settings: SearchRuntimeSettings,
     problems: list[str],
     slurm_version_lookup: Callable[[], str | None],
+    *,
+    compute_node: bool = True,
 ) -> dict[str, Any]:
     sandbox = Path(settings.sandbox_dir)
     program = settings.program_path
@@ -500,6 +521,9 @@ def _observe(
     if not observed["singularity"]["executable"]:
         problems.append(f"Singularity {settings.singularity} does not exist or is not executable.")
 
+    if not compute_node:
+        observed["deferred_to_job_start"] = list(COMPUTE_NODE_ONLY_CHECKS) if settings.launch_mode == "srun_steps" else []
+        return observed
     slurm_output = slurm_version_lookup()
     slurm_version = parse_slurm_version(slurm_output)
     observed["slurm_version"] = slurm_output

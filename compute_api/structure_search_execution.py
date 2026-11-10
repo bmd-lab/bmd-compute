@@ -83,6 +83,7 @@ STATE_PREPARING = "PREPARING"
 STATE_PREPARED_LOCALLY = "PREPARED_LOCALLY"
 STATE_STAGING = "STAGING"
 STATE_STAGED = "STAGED"
+STATE_PREPARED = "PREPARED"  # submission-ready (step 4D-2): last verified on POWER
 REMOTE_STATE_STAGING = "STAGING"
 REMOTE_STATE_STAGED = "STAGED"
 STAGED_REMOTE_INTEGRITY = "last_verified"
@@ -298,7 +299,8 @@ def _complete(ledger, record: dict[str, Any], plan) -> dict[str, Any]:
     return record
 
 
-def search_attempt_response(record: Mapping[str, Any], *, integrity: str | None = None) -> dict[str, Any]:
+def search_attempt_response(record: Mapping[str, Any], *, integrity: str | None = None,
+                            resources: Mapping[str, Any] | None = None) -> dict[str, Any]:
     preparation = record["preparation"]
     return {
         "schema": RESPONSE_SCHEMA,
@@ -320,8 +322,49 @@ def search_attempt_response(record: Mapping[str, Any], *, integrity: str | None 
         },
         "remote_staging_available": record["state"] in {STATE_PREPARED_LOCALLY, STATE_STAGING},
         "staging": _staging_response(record.get("staging")),
+        "resources": dict(resources) if resources is not None else None,
+        "promotion_available": record["state"] == STATE_STAGED,
+        "promotion": _promotion_response(record.get("promotion"), state=record["state"]),
+        # PREPARED: verified and ready when last checked on POWER (step 4D-2);
+        # submission itself is not available yet.
+        "submission_ready": record["state"] == STATE_PREPARED,
         "submission_available": False,
     }
+
+
+def _promotion_response(promotion: Mapping[str, Any] | None, *, state: str) -> dict[str, Any] | None:
+    if not promotion:
+        return None
+    acknowledgement = promotion["acknowledgement"]
+    return {
+        "remote_state": (promotion.get("result") or {}).get("remote_state"),
+        "started_at": promotion.get("started_at"),
+        "verified_at": promotion.get("verified_at"),
+        # Like STAGED: what POWER last verified, not current integrity.
+        "remote_integrity": STAGED_REMOTE_INTEGRITY if promotion.get("verified_at") else None,
+        "job_script": dict(promotion["job_script"]),
+        "acknowledgement": {
+            "acknowledgement_sha256": acknowledgement["acknowledgement_sha256"],
+            "resources_sha256": promotion["resources_sha256"],
+            "principal": acknowledgement["principal"],
+            "acknowledged_at": acknowledgement["acknowledged_at"],
+        },
+        "modules": list(promotion["modules"]),
+        "runtime_check": (promotion.get("result") or {}).get("runtime_check"),
+        "in_progress": state == STATE_STAGED and not promotion.get("verified_at"),
+    }
+
+
+def search_resources(ledger, record: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The provisional resource request a user acknowledges, from the local frozen plan (local only)."""
+
+    from backend.structure_search.job import resource_request_sha256, resource_request_view
+    from backend.structure_search.search_plan import PLAN_FILE, load_plan_text
+
+    if record["state"] not in (STATE_STAGED, STATE_PREPARED):
+        return None
+    plan = load_plan_text((_preparation_dir(ledger, record) / PLAN_FILE).read_text(encoding="utf-8"))
+    return {**resource_request_view(plan), "resources_sha256": resource_request_sha256(plan)}
 
 
 def _staging_response(staging: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -360,7 +403,7 @@ def _stored(ledger: SearchAttemptLedger, record: Mapping[str, Any]) -> dict[str,
             "This attempt's prepared files no longer match its record; they are not replaced. "
             "Use a new attempt ID.",
         )
-    return search_attempt_response(record, integrity="verified")
+    return search_attempt_response(record, integrity="verified", resources=search_resources(ledger, record))
 
 
 def prepare_search_attempt(*, search_planner, principal: str, attempt_id: str, shape) -> dict[str, Any]:
@@ -433,7 +476,8 @@ def lookup_search_attempt(*, principal: str, attempt_id: str) -> dict[str, Any]:
     intact = _verified(directory, record["plan_digest"]) is not None and (
         _manifest_sha256(directory) == record["preparation"]["manifest_sha256"]
     )
-    return search_attempt_response(record, integrity="verified" if intact else "damaged")
+    resources = search_resources(ledger, record) if intact else None
+    return search_attempt_response(record, integrity="verified" if intact else "damaged", resources=resources)
 
 
 # ---------------------------------------------------------------- remote staging (4C)
@@ -561,7 +605,7 @@ class _RemoteStaging:
     (``submission_attempts/<id>.lock``) is held.
     """
 
-    def __init__(self, *, spec, plan, local_manifest, sources, manifest):
+    def __init__(self, *, spec, plan, local_manifest, sources, manifest, extra_files=None):
         from backend.config import NOTEBOOK_DEFAULTS
         from backend.structure_search.potcar import POTCAR_FUNCTIONAL_DIR
         from backend.structure_search.runtime import SearchRuntimeSettings
@@ -575,6 +619,8 @@ class _RemoteStaging:
         self.layout = staging_layout(spec["run_name"], workspace_dir=paths["flows_dir"], logs_dir=paths["logs_dir"])
         staged_files = staged_search_files(plan, local_manifest, bridge_path=spec["structure_search"]["bridge_path"])
         self.uploads = _uploads(spec, staged_files, sources)
+        # Files promotion adds at the top of the run directory (job script, acknowledgement).
+        self.uploads += sorted((dict(extra_files or {})).items())
         self.expected = {path: sha256_hex(text) for path, text in self.uploads}
         self.potcars = {
             posixpath.join(SEARCH_SUBDIR, row["staged_at_execution_as"]): row["dataset_sha256"][:16]
@@ -631,13 +677,13 @@ class _RemoteStaging:
                 runner.put_text(temporary, text, mode=UPLOAD_MODE)  # creates, or supersedes our own partial copy
             runner._replace_file(temporary, target)  # atomic; the target is absent under the claim
 
-    def finalize(self, runner, *, copy_potcars: bool) -> dict[str, Any]:
+    def finalize(self, runner, *, copy_potcars: bool, options: Mapping[str, Any] | None = None) -> dict[str, Any]:
         from backend.structure_search.staging import build_finalize_script, parse_finalize_output
         from backend.submission import RUNTIME_PACKAGE_GUARD_MODULE
         import shlex
 
         script = instrument_finalize_script(build_finalize_script(
-            {**self.request, "copy_potcars": copy_potcars},
+            {**self.request, **dict(options or {}), "copy_potcars": copy_potcars},
             runtime_sources=self.sources, guard_module=RUNTIME_PACKAGE_GUARD_MODULE,
         ))
         command = f"cd {shlex.quote(self.layout['run_dir'])}\n{self._python()} - <<'PY'\n{script}PY"
@@ -657,8 +703,11 @@ class _RemoteStaging:
         self.last_finalize_timings = timings
         result = parse_finalize_output(output.stdout)
         if not result.get("ok"):
-            raise _staging_failed(str(result.get("code") or "staging_failed"),
-                                  str(result.get("message") or "Staging on POWER failed."))
+            error = _staging_failed(str(result.get("code") or "staging_failed"),
+                                    str(result.get("message") or "Staging on POWER failed."))
+            if result.get("problems"):
+                error.details["problems"] = [str(problem)[:500] for problem in result["problems"][:20]]
+            raise error
         bindings = result.get("bindings") or {}
         if (
             result.get("plan_digest") != self.plan.digest
@@ -670,10 +719,10 @@ class _RemoteStaging:
             raise _staging_failed("staging_unconfirmed", "POWER did not confirm the staged files.")
         return result
 
-    def verify(self, runner) -> dict[str, Any]:
+    def verify(self, runner, *, options: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Read-only verification of the complete staged run directory. Writes nothing."""
 
-        result = self.finalize(runner, copy_potcars=False)
+        result = self.finalize(runner, copy_potcars=False, options=options)
         self.reconcile(runner, complete=True)
         return result
 
@@ -690,7 +739,7 @@ class _RemoteStaging:
         if runner.is_dir(run_dir) or runner.is_file(run_dir):
             raise _staging_failed("run_directory_exists",
                                   "The run directory already exists; it is never reused or replaced.")
-        runner._write_submission_attempt_state(self.spec, REMOTE_STATE_STAGING, output="")
+        _write_search_state(runner, self.spec, REMOTE_STATE_STAGING, output="")
         self.create_run_directory(runner)
 
     def create_run_directory(self, runner) -> None:
@@ -703,8 +752,62 @@ class _RemoteStaging:
                                   "The run directory already exists; it is never reused or replaced.")
 
 
+def search_state_payload(spec: Mapping[str, Any], state: str, *, output: str = "") -> dict[str, Any]:
+    """A remote search attempt state, in the calculation attempt-state format.
+
+    The same fields as ``ParamikoRemoteRunner._write_submission_attempt_state``
+    writes, so its reader and fingerprint check accept it; only the state names
+    differ (``backend.structure_search.lifecycle``).
+    """
+
+    from backend.submission import (
+        SUBMISSION_ATTEMPT_STATE_VERSION,
+        submission_attempt_comment,
+        submission_attempt_fingerprint,
+        submission_attempt_id,
+        submission_attempt_metadata,
+    )
+
+    from copy import deepcopy
+
+    return {
+        "version": SUBMISSION_ATTEMPT_STATE_VERSION,
+        "attempt_id": submission_attempt_id(dict(spec)),
+        "state": state,
+        "fingerprint": submission_attempt_fingerprint(dict(spec)),
+        "metadata": submission_attempt_metadata(dict(spec)),
+        "attempt_comment": submission_attempt_comment(dict(spec)),
+        "run_name": spec.get("run_name"),
+        "run_dir": (spec.get("paths") or {}).get("run_dir"),
+        "remote_script": (spec.get("paths") or {}).get("remote_script"),
+        "updated_at": isoformat(utc_now()),
+        "output": output,
+        "provenance": deepcopy(spec.get("provenance")),
+    }
+
+
+def _write_search_state(runner, spec: Mapping[str, Any], state: str, *, output: str = "") -> None:
+    """Replace the remote search attempt state atomically.
+
+    The new state is written to an attempt-bound temporary name beside the
+    state file (``.<id>.json.bmdstage-<id>-<sha16>.part``) and renamed over it,
+    so a reader sees the old state or the new one, never a partial file. An
+    interruption leaves the old state in place; a leftover temporary belongs to
+    this attempt and is superseded by the next write of the same content.
+    Calculation attempt states are not written this way and are unchanged.
+    """
+
+    from backend.structure_search.staging import UPLOAD_MODE, staging_temporary_path
+
+    path = posixpath.join(spec["paths"]["submission_attempts_dir"], f"{spec['submission']['attempt_id']}.json")
+    text = json.dumps(search_state_payload(spec, state, output=output), indent=2, sort_keys=True)
+    temporary = staging_temporary_path(path, spec["submission"]["attempt_id"], sha256_hex(text))
+    runner.put_text(temporary, text, mode=UPLOAD_MODE)
+    runner._replace_file(temporary, path)
+
+
 @contextmanager
-def _claimed_runner(spec):
+def _claimed_runner(spec, *, busy_code: str = "staging_in_progress"):
     from backend.remote_runtime import connected_remote_runner, connection_profile_from_cluster
     from compute_api import execution
 
@@ -714,7 +817,7 @@ def _claimed_runner(spec):
     ) as runner:
         runner.ensure_directory(spec["paths"]["submission_attempts_dir"])
         if not runner._claim_submission_attempt(spec):
-            raise _staging_failed("staging_in_progress", "This attempt is being staged by another request; retry.")
+            raise _staging_failed(busy_code, "Another request is working on this attempt on POWER; retry.")
         try:
             yield runner
         finally:
@@ -761,8 +864,7 @@ def _stage_remote(*, spec, plan, local_manifest, sources, manifest) -> dict[str,
                 "potcars": result["potcars"],
                 "bridge_path_bound": True,
             }
-            runner._write_submission_attempt_state(spec, REMOTE_STATE_STAGED,
-                                                   output=json.dumps(summary, sort_keys=True))
+            _write_search_state(runner, spec, REMOTE_STATE_STAGED, output=json.dumps(summary, sort_keys=True))
             outcome = "staged"
             return {**result, "remote_state": REMOTE_STATE_STAGED}
     finally:
@@ -876,9 +978,9 @@ def stage_search_attempt(*, principal: str, attempt_id: str, shape) -> dict[str,
         raise ExecutionError(409, "plan_digest_mismatch", "This attempt was prepared for a different plan digest.")
     if record["state"] == STATE_PREPARING:
         raise ExecutionError(409, "attempt_not_prepared", "This attempt has not been prepared locally yet.")
-    _stored(ledger, record)  # the local preparation must still be intact
-    if record["state"] == STATE_STAGED:
-        return search_attempt_response(record, integrity="verified")
+    stored = _stored(ledger, record)  # the local preparation must still be intact
+    if record["state"] in (STATE_STAGED, STATE_PREPARED):
+        return stored
 
     plan, local_manifest, sources, manifest, manifest_digest = _staging_inputs(ledger, record)
     bridge_sha256 = plan.record["execution"]["bridge"]["sha256"]
@@ -886,8 +988,8 @@ def stage_search_attempt(*, principal: str, attempt_id: str, shape) -> dict[str,
     with ledger.locked():
         record = ledger.read(attempt_id)
         _authorize_record(record, principal)
-        if record["state"] == STATE_STAGED:
-            return search_attempt_response(record, integrity="verified")
+        if record["state"] in (STATE_STAGED, STATE_PREPARED):
+            return search_attempt_response(record, integrity="verified", resources=search_resources(ledger, record))
         if record["state"] == STATE_PREPARED_LOCALLY:
             started = isoformat(utc_now())
             spec = build_search_submission_spec(
@@ -939,7 +1041,7 @@ def stage_search_attempt(*, principal: str, attempt_id: str, shape) -> dict[str,
             }
             record["updated_at"] = staged_at
             ledger.replace(record)
-    return search_attempt_response(record, integrity="verified")
+    return search_attempt_response(record, integrity="verified", resources=search_resources(ledger, record))
 
 
 __all__ = [

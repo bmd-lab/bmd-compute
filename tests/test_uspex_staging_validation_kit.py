@@ -9,6 +9,7 @@ the fake tree. Nothing contacts POWER.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -334,3 +335,52 @@ def test_kit_never_submits_or_starts_a_program():
             assert forbidden not in code, (name, forbidden)
     copies = evidence.split("# 2. Copies", 1)[1].split("# 3.", 1)[0]
     assert "POTCAR_" not in copies and "Specific/INCAR_*" in copies
+
+
+# --- promotion-only validation (step 4D-2) ------------------------------------------------------
+
+
+def test_promotion_only_validation_stops_at_search_prepared(kit, tmp_path, cluster, clean_env, fake_ssh):
+    root = tmp_path / "validation"
+    summary = staged_validation(kit, root, cluster, clean_env)
+    promoted = kit.promote(root, allow_dirty=True, runner_factory=cluster.factory, proc=root / "no-proc")
+    for name in ("BMD_API_STATE_DIR", "BMD_API_TOKENS_FILE"):
+        clean_env.delenv(name)
+    assert promoted["result"].startswith("SEARCH_PREPARED") and promoted["calculation_ledger_entries"] == []
+    assert promoted["attempt_id"] == summary["attempt_id"] and promoted["runtime_check"]["status"] == "passed"
+    state = json.loads(cluster.at(summary["remote_state_file"]).read_text())
+    assert state["state"] == "SEARCH_PREPARED"
+    run_dir = cluster.at(summary["run_dir"])
+    script = (run_dir / "bmd_search_job.sbatch").read_bytes()
+    assert hashlib.sha256(script).hexdigest() == promoted["job_script"]["sha256"]
+    assert cluster.sbatch_calls == 0
+
+    again = kit.promote(root, allow_dirty=True, runner_factory=cluster.factory, proc=root / "no-proc")
+    for name in ("BMD_API_STATE_DIR", "BMD_API_TOKENS_FILE"):
+        clean_env.delenv(name)
+    assert again["job_script"] == promoted["job_script"]  # the stored result
+
+    before = tree(run_dir)
+    kit.evidence(root, proc=root / "no-proc")
+    report = (root / "power_evidence.txt").read_text()
+    for line in ("remote state:  SEARCH_PREPARED",
+                 "PASS  the job script is the one the promotion record names",
+                 "PASS  the resource acknowledgement is the one the promotion record names",
+                 "PASS  bash can parse the job script",
+                 "PASS  no job has started in the run directory",
+                 "PASS  the run directory is unchanged"):
+        assert line in report, line
+    assert tree(run_dir) == before
+    [out_dir] = list(cluster.at(EVIDENCE_PARENT).iterdir())
+    assert (out_dir / "files" / "bmd_search_job.sbatch").read_bytes() == script
+    target = kit.archive(root)
+    with tarfile.open(target) as tar:
+        names = tar.getnames()
+    assert any(name.endswith("-promotion_summary.json") for name in names)
+
+
+def test_promotion_validation_needs_a_staged_attempt(kit, tmp_path, cluster, clean_env):
+    root = tmp_path / "validation"
+    kit.setup(root)
+    with pytest.raises(SystemExit, match="run 'run' first"):
+        kit.promote(root, allow_dirty=True, runner_factory=cluster.factory, proc=root / "no-proc")

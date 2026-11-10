@@ -498,3 +498,67 @@ def test_unpack_once_reports_a_missing_singularity(fresh_power):
 def test_command_line_prints_the_record(capsys):
     assert runtime.main(["record"]) == 0
     assert json.loads(capsys.readouterr().out) == prepared_search_runtime()
+
+
+# -- login-node readiness (promotion) versus compute-node execution readiness (job start) ----------
+
+
+def _login(settings):
+    def never():
+        raise AssertionError("the login-node check runs no SLURM command")
+
+    return search_runtime_check(prepared_search_runtime(settings), scope="login_node", slurm_version_lookup=never)
+
+
+def test_login_node_check_does_not_need_compute_node_only_items(power):
+    Path(power.i_mpi_pmi_library).unlink()  # present only on compute nodes
+    login = _login(power)
+    assert login["status"] == "passed" and login["scope"] == "login_node"
+    assert login["observed"]["deferred_to_job_start"] == ["i_mpi_pmi_library", "slurm_version"]
+    assert "slurm_version" not in login["observed"] and "i_mpi_pmi_library_exists" not in login["observed"]
+    job = _check(power, slurm=None)  # the job's own check on the same layout still requires both
+    assert job["status"] == "failed" and job["scope"] == "job"
+    assert any("I_MPI_PMI_LIBRARY" in problem for problem in job["problems"])
+    assert any("SLURM version could not be read" in problem for problem in job["problems"])
+
+
+def test_job_scope_is_the_default_and_unchanged(power):
+    default = search_runtime_check(prepared_search_runtime(power), slurm_version_lookup=lambda: "slurm 26.05.5")
+    assert default["scope"] == "job" and default["status"] == "passed"
+    assert default["observed"]["i_mpi_pmi_library_exists"] is True
+    assert default["observed"]["slurm_version"] == "slurm 26.05.5"
+    assert "deferred_to_job_start" not in default["observed"]
+
+
+@pytest.mark.parametrize("damage, message", [
+    (lambda s: Path(s.sandbox_dir, "opt", "uspex", "uspex").write_bytes(_extractor(sha=OTHER_SHA)), "has changed"),
+    (lambda s: Path(s.sandbox_dir, "opt", "uspex", "uspex").write_bytes(_extractor(banner="USPEX v24.1")),
+     "BMD Compute runs USPEX 25.0"),
+    (lambda s: Path(s.cache_dir, "uspex_sfx", SHA, ".ready").unlink(), "not unpacked"),
+    (lambda s: Path(s.cache_dir, "uspex_sfx", SHA, "uspex_core", "uspex").unlink(), "has no uspex_core/uspex"),
+    (lambda s: Path(s.singularity).unlink(), "Singularity"),
+])
+def test_login_node_check_still_requires_payload_cache_and_singularity(power, damage, message):
+    damage(power)
+    login = _login(power)
+    assert login["status"] == "failed" and any(message in problem for problem in login["problems"]), login["problems"]
+
+
+def test_login_node_check_still_requires_a_writable_cache(power, monkeypatch):
+    from backend.structure_search import runtime
+
+    monkeypatch.setattr(runtime, "writable_directory_problem", lambda path: f"{path} is not writable.")
+    login = _login(power)
+    assert login["status"] == "failed" and any("not writable" in problem for problem in login["problems"])
+
+
+def test_login_node_check_still_validates_the_runtime_settings(power):
+    record = prepared_search_runtime(power)
+    record["uspex"]["version"] = "24.1"
+    login = search_runtime_check(record, scope="login_node")
+    assert login["status"] == "failed" and login["problems"]
+
+
+def test_unknown_scope_is_refused(power):
+    with pytest.raises(ValueError, match="scope"):
+        search_runtime_check(prepared_search_runtime(power), scope="anywhere")

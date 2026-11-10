@@ -1,4 +1,4 @@
-# USPEX step 4C: staging-only POWER validation (one Si search)
+# USPEX steps 4C and 4D-2: staging and promotion POWER validation (one Si search)
 
 Validates managed remote staging end to end on POWER for one Si structure
 search and **stops at remote `STAGED`**. Nothing is submitted: no `sbatch`,
@@ -148,6 +148,34 @@ or edit anything in the run directory or the attempt state. If a request
 died while holding the claim (`staging_in_progress` on every retry), report
 it before removing anything. Outputs are never overwritten: `preflight`,
 `evidence` and `archive` refuse to run twice into the same root.
+
+## C. Promotion-only validation (step 4D-2; VM, bash)
+
+Stops at remote `SEARCH_PREPARED`: the job script is uploaded and verified,
+nothing is submitted (there is no submission route yet, and the kit never
+runs `sbatch`, `srun`, USPEX or VASP). It needs a new attempt staged with the
+promotion code: a new validation root, steps B0–B4 with the 4D-2 commit, then:
+
+```bash
+# C1. Acknowledge the attempt's provisional resource request and promote it.
+#     It prints the #SBATCH lines being acknowledged. Stop on any 409.
+"$BMD_PY" $K promote "$VROOT" 2>&1 | tee -a "$VROOT/run.log"
+
+# C2. Independent, read-only POWER evidence: remote state SEARCH_PREPARED, the job
+#     script and acknowledgement match the promotion record, bash can parse the
+#     script, no job has started, and the run directory is unchanged.
+"$BMD_PY" $K evidence "$VROOT"
+
+# C3. The archive.
+"$BMD_PY" $K archive "$VROOT"
+```
+
+Expected: `promote` prints the attempt, run name and job script SHA-256;
+`EVIDENCE CHECKS PASSED` with `remote state:  SEARCH_PREPARED`. A 503 is
+retried by running C1 again (it resumes the same promotion); any 409 is a
+finding. The validation token has `submit` scope for promotion; the kit calls
+no submission route. The staged and promoted run stays on POWER as evidence;
+it can only be submitted by a later step, after a fresh verification.
 
 ## What the evidence contains
 

@@ -82,6 +82,10 @@ class FakePower:
         self.fail_inventory = 0
         self.finalize_timeout = None  # "before" or "after": the finalize command times out (once)
         self.timeouts: list[tuple[str, object]] = []  # (command kind, timeout_s) of every command
+        self.replaced: list[str] = []  # destinations of atomic renames
+        # The USPEX runtime readiness check promotion runs on the login node (a stand-in here).
+        self.runtime_problems: list[str] = []
+        self.runtime_checks = 0
         self.fail_put = None  # (target suffix, "partial" | "before_chmod" | "before_rename")
         self.after_uploads = None
 
@@ -153,7 +157,8 @@ class FakePowerRunner(ParamikoRemoteRunner):
                 self.power.finalize_timeout = None
                 raise TimeoutError("timed out")  # as Paramiko's stdout.read() on POWER
             result = staging.finalize_staged_search(
-                request, filesystem_root=str(self.power.root), potcar_identity=fake_identity
+                request, filesystem_root=str(self.power.root), potcar_identity=fake_identity,
+                runtime_check=self._runtime_check,
             )
             if self.power.finalize_timeout == "after":  # POWER finished, but after the client gave up
                 self.power.finalize_timeout = None
@@ -161,6 +166,14 @@ class FakePowerRunner(ParamikoRemoteRunner):
             return RemoteCommandResult(command=command, returncode=0,
                                        stdout=staging.RESULT_MARKER + json.dumps(result) + "\n")
         raise AssertionError(f"unexpected remote command: {command[:80]}")
+
+    def _runtime_check(self, runtime_record):
+        self.power.runtime_checks += 1
+        assert runtime_record["schema"] == "bmd_compute.structure_search_runtime"
+        problems = list(self.power.runtime_problems)
+        return {"status": "failed" if problems else "passed", "problems": problems,
+                "observed": {"payload_sha256": runtime_record["uspex"]["payload_sha256"], "banner_version": "25.0",
+                             "ready_marker_exists": True, "slurm_version": "slurm 23.02.7"}}
 
     def _run_inventory(self, command):
         """Run the generated inventory script itself, on the fake tree."""
@@ -220,7 +233,9 @@ class FakePowerRunner(ParamikoRemoteRunner):
         if self._failing(destination, "before_rename"):
             raise SimulatedCrash("connection lost before the upload was moved into place")
         assert staging.parse_staging_temporary(posixpath.basename(source))  # only attributable temporaries
-        assert not self.power.at(destination).exists()  # never replaces a file
+        if not destination.startswith(f"{SEARCH_LOGS}/submission_attempts/"):
+            assert not self.power.at(destination).exists()  # never replaces a staged file
+        self.power.replaced.append(destination)
         os.replace(self.power.at(source), self.power.at(destination))
 
     def submit_batch(self, request):

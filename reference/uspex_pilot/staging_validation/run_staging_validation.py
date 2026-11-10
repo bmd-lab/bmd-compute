@@ -1,12 +1,13 @@
-"""Staging-only POWER validation of one Si structure search (USPEX step 4C).
+"""Staging and promotion POWER validation of one Si structure search (USPEX steps 4C, 4D-2).
 
 Run on the BMD Compute VM, from a separate checkout of the reviewed commit
 (never the live deployment directory), with the interpreter of the service
-environment. Five steps, each a subcommand taking the same new ROOT:
+environment. Each step is a subcommand taking the same new ROOT:
 
     setup ROOT       create a new, private validation root (it must not exist)
     preflight ROOT   read-only POWER checks (power_preflight.sh over SSH)
     run ROOT         plan -> prepare -> stage -> read back -> fresh re-verification
+    promote ROOT     acknowledge the resource request -> promote to SEARCH_PREPARED (no sbatch)
     evidence ROOT    independent read-only POWER evidence (power_evidence.sh over SSH)
     archive ROOT     ROOT.tgz with the evidence, checked to hold no secret or POTCAR text
 
@@ -15,14 +16,15 @@ Validation root (all private to the user)::
     ROOT/VALIDATION_ROOT.json   marks the root as this validation's
     ROOT/state/                 the only BMD_API_STATE_DIR used (0700)
     ROOT/tokens.json            the only BMD_API_TOKENS_FILE used: one principal,
-                                scopes plan, prepare, read (0600)
+                                scopes plan, prepare, read, submit (0600)
     ROOT/client_token           that principal's bearer token (0600; never archived)
     ROOT/evidence/              requests and responses (no token, no headers)
 
-``run`` drives the machine API in-process, through its authenticated router
-(loopback client, bearer token) with this validation's own ledger. It stops
-at remote ``STAGED``: it never calls a calculation route, never asks for
-submission and never runs sbatch, USPEX or VASP. Re-running it after an
+``run`` and ``promote`` drive the machine API in-process, through its
+authenticated router (loopback client, bearer token) with this validation's
+own ledger. ``run`` stops at remote ``STAGED``; ``promote`` stops at
+``SEARCH_PREPARED``. Neither calls a calculation or submission route, nor runs
+sbatch, srun, USPEX or VASP. Re-running it after an
 interruption resumes the same attempt. It refuses to start if any
 ``BMD_API_*`` variable is set, if the root is not one ``setup`` made, if the
 state directory holds anything but this validation's own attempt, or if a
@@ -48,7 +50,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PRINCIPAL = "uspex-4c-validation"
-SCOPES = ("plan", "prepare", "read")
+# submit: promotion (step 4D-2) needs it. The kit never calls a submission route (none exists yet).
+SCOPES = ("plan", "prepare", "read", "submit")
 FORMULA = "Si"
 LOOPBACK = ("127.0.0.1", 50000)
 SSH_HOST = "powerslurm-bmdguest"
@@ -242,7 +245,9 @@ def _check_no_potcar_contents(payload) -> None:
         _require(marker not in text, f"a response contains POTCAR text ({marker}).")
 
 
-def run(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc: Path = Path("/proc")) -> dict:
+def _open_api(root: Path, *, allow_dirty: bool, runner_factory, proc: Path) -> dict:
+    """The machine API in-process, with this validation's own ledger and token only."""
+
     root = Path(os.path.abspath(root))
     paths = check_isolation(root, proc=proc)
     state, tokens_file, evidence = paths["state"], paths["tokens_file"], paths["evidence"]
@@ -277,7 +282,22 @@ def run(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc: Pat
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         client = TestClient(main.app, client=LOOPBACK)
+    return {"client": client, "token": token, "state": state, "evidence": evidence, "commit": commit,
+            "dirty": dirty, "reverify_staged_search": reverify_staged_search}
 
+
+def _write_sums(evidence: Path) -> None:
+    sums = [f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}"
+            for p in sorted(evidence.iterdir()) if p.is_file() and p.name != "SHA256SUMS"]
+    sums_path = evidence / "SHA256SUMS"
+    sums_path.unlink(missing_ok=True)
+    _private_file(sums_path, "\n".join(sums) + "\n")
+
+
+def run(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc: Path = Path("/proc")) -> dict:
+    api = _open_api(root, allow_dirty=allow_dirty, runner_factory=runner_factory, proc=proc)
+    client, token, state, evidence = api["client"], api["token"], api["state"], api["evidence"]
+    commit, dirty, reverify_staged_search = api["commit"], api["dirty"], api["reverify_staged_search"]
     recorder = Recorder(evidence)
     attempt_file = evidence / "attempt.json"
     if not attempt_file.exists():
@@ -351,12 +371,77 @@ def run(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc: Pat
     _require(summary["calculation_ledger_entries"] == [], "a calculation attempt was created.")
     recorder.save("local_record", record)  # identity signature redacted
     recorder.save("summary", summary)
-    sums = [f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}"
-            for p in sorted(evidence.iterdir()) if p.is_file() and p.name != "SHA256SUMS"]
-    sums_path = evidence / "SHA256SUMS"
-    sums_path.unlink(missing_ok=True)
-    _private_file(sums_path, "\n".join(sums) + "\n")
+    _write_sums(evidence)
     print(json.dumps({key: summary[key] for key in ("attempt_id", "run_name", "plan_digest")}, indent=2))
+    return summary
+
+
+def promote(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc: Path = Path("/proc")) -> dict:
+    """Promote this validation's STAGED attempt to submission-ready (SEARCH_PREPARED). Never submits.
+
+    Reads the attempt's provisional resource request, acknowledges exactly
+    that request, and promotes. Repeating it after an interruption resumes
+    the same promotion; on an attempt already PREPARED it returns the stored
+    result. It calls no submission route (there is none) and starts nothing.
+    """
+
+    api = _open_api(root, allow_dirty=allow_dirty, runner_factory=runner_factory, proc=proc)
+    client, token, state, evidence = api["client"], api["token"], api["state"], api["evidence"]
+    attempt_file = evidence / "attempt.json"
+    _require(attempt_file.is_file(), "no attempt: run 'run' first.")
+    attempt = json.loads(attempt_file.read_text(encoding="utf-8"))
+    attempt_id, digest = attempt["attempt_id"], attempt["plan_digest"]
+    route = f"/api/v1/structure-search-attempts/{attempt_id}"
+    recorder = Recorder(evidence)
+
+    status, current = recorder.exchange(client, "before_promotion", "GET", route, token)
+    _require(status == 200 and current["state"] in {"STAGED", "PREPARED"},
+             f"the attempt is {current.get('state')}, not STAGED or PREPARED.")
+    resources = current["resources"]
+    _require(resources["status"] == "provisional_estimate" and resources["approved"] is False,
+             "unexpected resource status.")
+    print(f"Acknowledging the provisional resource request {resources['resources_sha256']}:")
+    print("  " + " ".join(resources["sbatch_directives"]))
+
+    body = {"expected_plan_digest": digest,
+            "resource_acknowledgement": {"acknowledged": True, "resources_sha256": resources["resources_sha256"]}}
+    status, promoted = recorder.exchange(client, "promote", "PUT", f"{route}/promotion", token, body)
+    if status != 200:
+        code = (promoted.get("error") or {}).get("code")
+        raise ValidationFailed(
+            f"Promotion returned {status} ({code}). Evidence is in {evidence}. A transport interruption (503) "
+            "may be retried by running 'promote' again; any other code is a finding: stop and report it."
+        )
+    promotion = promoted["promotion"]
+    _require(promoted["state"] == "PREPARED" and promoted["submission_ready"] is True, "not submission-ready.")
+    _require(promoted["submission_available"] is False, "submission must not be available.")
+    _require(promotion["remote_state"] == "SEARCH_PREPARED", "POWER did not record SEARCH_PREPARED.")
+    _require(promotion["remote_integrity"] == "last_verified", "PREPARED must be reported as last verified.")
+    _require((promotion["runtime_check"] or {}).get("status") == "passed", "the readiness check did not pass.")
+    _check_no_potcar_contents(promoted)
+    status, read_back = recorder.exchange(client, "after_promotion", "GET", route, token)
+    _require(status == 200 and read_back == promoted, "read-back differs from the promotion response.")
+
+    record = json.loads((state / "structure_search" / "attempts" / f"{attempt_id}.json").read_text(encoding="utf-8"))
+    summary = {
+        "result": "SEARCH_PREPARED (submission-ready); nothing submitted",
+        "commit": api["commit"],
+        "attempt_id": attempt_id,
+        "plan_digest": digest,
+        "run_name": record["staging"]["run_name"],
+        "job_script": promotion["job_script"],
+        "acknowledgement_sha256": promotion["acknowledgement"]["acknowledgement_sha256"],
+        "resources_sha256": promotion["acknowledgement"]["resources_sha256"],
+        "modules": promotion["modules"],
+        "verified_at": promotion["verified_at"],
+        "runtime_check": promotion["runtime_check"],
+        "calculation_ledger_entries": sorted(p.name for p in (state / "attempts").glob("*.json")),
+    }
+    _require(summary["calculation_ledger_entries"] == [], "a calculation attempt was created.")
+    recorder.save("promoted_record", record)
+    recorder.save("promotion_summary", summary)
+    _write_sums(evidence)
+    print(json.dumps({key: summary[key] for key in ("attempt_id", "run_name", "job_script")}, indent=2))
     return summary
 
 
@@ -372,7 +457,7 @@ def evidence_arguments(root: Path) -> tuple[str, str]:
     match = RUN_NAME_RE.match(str(run_name))
     _require(bool(ATTEMPT_RE.match(str(attempt))), f"malformed attempt ID {attempt!r}.")
     _require(bool(match) and match["prefix"] == attempt[:8], f"run name {run_name!r} does not match the attempt.")
-    _require(record["state"] == "STAGED", f"the attempt is {record['state']}, not STAGED.")
+    _require(record["state"] in {"STAGED", "PREPARED"}, f"the attempt is {record['state']}, not STAGED or PREPARED.")
     return attempt, run_name
 
 
@@ -452,15 +537,19 @@ def archive(root: Path) -> Path:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("setup", "preflight", "run", "evidence", "archive"):
+    for name in ("setup", "preflight", "run", "promote", "evidence", "archive"):
         sub.add_parser(name).add_argument("root", type=Path)
-    sub.choices["run"].add_argument("--allow-dirty", action="store_true", help=argparse.SUPPRESS)
+    for name in ("run", "promote"):
+        sub.choices[name].add_argument("--allow-dirty", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.command == "setup":
         setup(args.root)
         return 0
     if args.command == "run":
         run(args.root, allow_dirty=args.allow_dirty)
+        return 0
+    if args.command == "promote":
+        promote(args.root, allow_dirty=args.allow_dirty)
         return 0
     if args.command == "archive":
         archive(args.root)

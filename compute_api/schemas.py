@@ -433,3 +433,46 @@ def parse_structure_search_staging_request(document: Any) -> StructureSearchStag
     if errors:
         raise PlanRequestError(errors)
     return StructureSearchStagingRequestShape(expected_plan_digest=expected)
+
+
+@dataclass(frozen=True)
+class StructureSearchPromotionRequestShape:
+    expected_plan_digest: str
+    resources_sha256: str
+
+
+def parse_structure_search_promotion_request(document: Any) -> StructureSearchPromotionRequestShape:
+    """Validate a ``PUT /api/v1/structure-search-attempts/{id}/promotion`` body.
+
+    ``{"expected_plan_digest": "sha256:...", "resource_acknowledgement":
+    {"acknowledged": true, "resources_sha256": "sha256:..."}}``: the attempt's
+    plan digest and an explicit acknowledgement of exactly the provisional
+    resource request the attempt reports (``resources.resources_sha256``).
+    Nothing else is accepted; in particular there is no ``submit``.
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    for key in sorted(set(document) - {"expected_plan_digest", "resource_acknowledgement"}, key=str):
+        _error(errors, str(key), "submission_not_available" if key == "submit" else "unknown_field")
+    expected = document.get("expected_plan_digest")
+    if "expected_plan_digest" not in document or expected is None:
+        _error(errors, "expected_plan_digest", "required")
+    elif not isinstance(expected, str) or not _PLAN_DIGEST.fullmatch(expected):
+        _error(errors, "expected_plan_digest", "must_be_sha256_digest")
+    acknowledgement = document.get("resource_acknowledgement")
+    resources_sha256 = None
+    if not isinstance(acknowledgement, dict):
+        _error(errors, "resource_acknowledgement", "required" if acknowledgement is None else "must_be_object")
+    else:
+        for key in sorted(set(acknowledgement) - {"acknowledged", "resources_sha256"}, key=str):
+            _error(errors, f"resource_acknowledgement.{key}", "unknown_field")
+        if acknowledgement.get("acknowledged") is not True:
+            _error(errors, "resource_acknowledgement.acknowledged", "must_be_true")
+        resources_sha256 = acknowledgement.get("resources_sha256")
+        if not isinstance(resources_sha256, str) or not _PLAN_DIGEST.fullmatch(resources_sha256):
+            _error(errors, "resource_acknowledgement.resources_sha256", "must_be_sha256_digest")
+    if errors:
+        raise PlanRequestError(errors)
+    return StructureSearchPromotionRequestShape(expected_plan_digest=expected, resources_sha256=resources_sha256)

@@ -11,6 +11,7 @@ bmd-run:
 | `PUT /api/v1/structure-search-attempts/{attempt_id}` | `prepare` | Prepare a search plan locally in the API state root (`PREPARED_LOCALLY`); idempotent per attempt ID; no remote staging or submission |
 | `GET /api/v1/structure-search-attempts/{attempt_id}` | `read` | Read a structure-search attempt back |
 | `PUT /api/v1/structure-search-attempts/{attempt_id}/staging` | `prepare` | Stage a `PREPARED_LOCALLY` attempt on POWER and verify it there (`STAGED`); idempotent; never submits |
+| `PUT /api/v1/structure-search-attempts/{attempt_id}/promotion` | `submit` | Acknowledge the resource request and promote a `STAGED` attempt to submission-ready (`PREPARED` / `SEARCH_PREPARED`); idempotent; never submits |
 | `PUT /api/v1/attempts/{attempt_id}` | `prepare` (prepare only) or `submit` (prepare and submit) | Prepare, or prepare and submit, one calculation; idempotent per attempt ID |
 | `GET /api/v1/attempts/{attempt_id}` | `read` | The attempt's authoritative state, job identity and scheduler state |
 
@@ -430,6 +431,85 @@ submission, before an attempt can become submission-ready; until then
 
 `STAGED` is not the calculation `PREPARED` state: the existing claim and
 `sbatch` paths refuse it. Submission is a later step.
+
+## Structure-search promotion (step 4D-2)
+
+`PUT /api/v1/structure-search-attempts/{attempt_id}/promotion` (scope
+`submit`, the attempt's owner) takes a `STAGED` attempt to `PREPARED`:
+submission-ready, freshly verified on POWER. It never runs `sbatch`, `srun`,
+USPEX or VASP; submission is not available yet (`submission_available:
+false`).
+
+Body, exactly:
+
+```json
+{"expected_plan_digest": "sha256:...",
+ "resource_acknowledgement": {"acknowledged": true, "resources_sha256": "sha256:..."}}
+```
+
+`resources_sha256` is the `resources.resources_sha256` that `GET` reports for
+a `STAGED` or `PREPARED` attempt: the SHA-256 of the acknowledgement statement
+and the plan's exact provisional resource request (`status`, `approved`,
+`request`, `sbatch_directives`; `job.resource_request_view`). Echoing it is
+the user's explicit acknowledgement of exactly that request. `submit` is
+refused (`submission_not_available`).
+
+Sequence:
+
+1. Local checks, without contacting POWER: owner (403), plan digest (409
+   `plan_digest_mismatch`), `STAGED` (409 `attempt_not_staged`; a
+   `PREPARED` attempt returns its stored result), intact local preparation,
+   plan still current (409 `plan_changed`), today's runtime package equal to
+   the staged one (409 `runtime_package_changed`), and the echoed resource
+   hash (409 `resources_changed`, with the current `resources_sha256`).
+2. The first request freezes the promotion in the local record: the
+   resource acknowledgement (schema
+   `bmd_compute.structure_search_resource_acknowledgement` v1; principal from
+   the token, server time, SHA-256 over the record), the VASP module snapshot
+   (`backend.config.MODULES`) and the job script's SHA-256. The record stays
+   `STAGED` until POWER confirms; retries rebuild the same script from the
+   frozen inputs (409 `job_script_changed` if they cannot) and a different
+   acknowledgement is refused (409 `acknowledgement_mismatch`).
+3. On POWER, under the attempt's claim (409 `promotion_in_progress`) and the
+   operation limiter, with the remote fingerprint checked: from `STAGED`, the
+   run directory is reconciled as in staging with `bmd_search_job.sbatch` and
+   `resource_acknowledgement.json` added to the expected files (an unfinished
+   upload of this attempt is completed; a differing script, a `job_started`
+   or any other foreign file gives 409 `staging_damaged` and is kept), the two
+   files are uploaded only where absent (mode 0640), then a fresh read-only
+   verification: runtime package (guard), frozen plan, bound bridge, POTCAR
+   identities, staged inputs, the job script's SHA-256 and `bash -n`, the USPEX
+   readiness check on the login node (payload SHA-256 and version, cache
+   ready marker and unpacked program, cache writability, Singularity, runtime
+   settings; not the compute-node-only MPI library and SLURM `srun` version,
+   which the job checks on its compute node; it runs no SLURM command; 409
+   `runtime_check_failed` with its `problems`), and a complete
+   inventory. Only then is the remote state replaced atomically with
+   `SEARCH_PREPARED` and a promotion record (schema
+   `bmd_compute.structure_search_promotion` v1: job script name, SHA-256 and
+   schema, acknowledgement and resource hashes, modules, runtime-package and
+   plan digests, verification time, readiness check, verified files and
+   POTCAR identities). A remote `SEARCH_PREPARED` with this attempt's frozen
+   script and acknowledgement (an earlier request finished on POWER) is
+   adopted after the same verification; other identities give 409
+   `promotion_mismatch`; any other remote state 409 `transition_not_allowed`.
+4. The local record becomes `PREPARED`.
+
+Remote search attempt states (`STAGING`, `STAGED`, `SEARCH_PREPARED`) are
+written atomically: to an attempt-bound temporary file beside the state file,
+then renamed over it, so an interruption leaves the previous complete state.
+Calculation attempt states are written as before.
+
+The response adds `promotion` (`remote_state`, `started_at`, `verified_at`,
+`remote_integrity: "last_verified"`, `job_script`, `acknowledgement`,
+`modules`, `runtime_check`, `in_progress`), `promotion_available` and
+`submission_ready`. `PREPARED`, like `STAGED`, is what POWER last verified,
+not current integrity: reads never contact POWER, and submission (step 4D-3)
+verifies again under its own claim. The job's own start (on the compute node)
+repeats the input and runtime checks independently.
+
+Other errors are as for staging; a transport failure is 503
+`promotion_unavailable`, after which the same request resumes.
 
 ## Plan digest
 

@@ -611,6 +611,19 @@ cancellation are steps 4D-2 to 4D-4.
 Adding the job module changes the runtime package, so attempts staged before
 4D (including the 7 Nov 2026 validation attempt) cannot be submitted.
 
+### Submission-ready promotion (USPEX integration step 4D-2)
+
+`PUT /api/v1/structure-search-attempts/{id}/promotion` (`docs/machine_api.md`)
+takes a `STAGED` attempt to `PREPARED` (`SEARCH_PREPARED` on POWER) after the
+owner explicitly acknowledges the plan's provisional resource request. It
+freezes the acknowledgement, the module snapshot and the job script's
+identity, uploads the job script and `resource_acknowledgement.json` without
+replacing anything, verifies the whole run directory afresh (including the
+job script and the USPEX readiness check on the login node), and only then
+records the transition, atomically. It never submits. The frozen plan, ladder,
+POTCAR policy and validity rules are untouched. The promotion-only POWER
+validation is part C of `reference/uspex_pilot/staging_validation/README.md`.
+
 ## 9. Open questions
 
 - Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks

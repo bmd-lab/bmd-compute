@@ -673,3 +673,14 @@ def test_job_stops_before_uspex_when_allocated_memory_is_not_established(rig, va
     assert execution["outcome"] == "launch_setup_failed" and execution["code"] == "node_memory_unavailable"
     assert rig.singularity_calls() == [] and rig.srun_env() == []
 
+
+@needs_bash
+def test_the_job_still_checks_compute_node_execution_readiness(rig):
+    (rig.root / "lib" / "libpmi2.so").unlink()  # passes at promotion (login node), not at job start
+    assert rig.run().returncode == search_job.EXIT_RUNTIME_CHECK_FAILED
+    status = rig.status()
+    assert status["execution"]["outcome"] == "runtime_check_failed"
+    assert any("I_MPI_PMI_LIBRARY" in problem for problem in status["execution"]["problems"])
+    check = json.loads((rig.run_dir / "runtime_check.json").read_text())
+    assert check["scope"] == "job"
+    assert rig.singularity_calls() == []

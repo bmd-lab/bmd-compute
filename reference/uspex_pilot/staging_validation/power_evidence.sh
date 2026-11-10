@@ -62,11 +62,35 @@ for name in INPUT.txt prepared_inputs.json search_plan.json POTCAR.spec; do
     cp -p "$RUN/search/$name" "$OUT/files/search/"
 done
 cp -p "$RUN"/search/Specific/INCAR_* "$OUT/files/search/Specific/"
+for name in resource_acknowledgement.json bmd_search_job.sbatch; do  # present once promoted (step 4D-2)
+    if [ -f "$RUN/$name" ] && [ ! -L "$RUN/$name" ]; then cp -p "$RUN/$name" "$OUT/files/"; fi
+done
 
 # 3. Independent checks (not using BMD's runtime package).
-check "remote attempt state is STAGED for this attempt" "$PY" -I -c "
+REMOTE_STATE=$("$PY" -I -c "import json; print(json.load(open('$STATE')).get('state'))" 2>/dev/null)
+echo "remote state:  $REMOTE_STATE"
+check "remote attempt state is STAGED or SEARCH_PREPARED for this attempt" "$PY" -I -c "
 import json, sys; s = json.load(open('$STATE'))
-sys.exit(not (s['state'] == 'STAGED' and s['attempt_id'] == '$ATTEMPT' and s['run_dir'] == '$RUN'))"
+sys.exit(not (s['state'] in ('STAGED', 'SEARCH_PREPARED') and s['attempt_id'] == '$ATTEMPT' and s['run_dir'] == '$RUN'))"
+if [ "$REMOTE_STATE" = "SEARCH_PREPARED" ]; then
+    # Promotion (step 4D-2): the frozen job script and acknowledgement, nothing started.
+    check "the job script is the one the promotion record names" "$PY" -I -c "
+import hashlib, json, os, stat, sys
+record = json.loads(json.load(open('$STATE'))['output'])
+path = os.path.join('$RUN', record['job_script']['name'])
+sys.exit(not (stat.S_ISREG(os.lstat(path).st_mode)
+              and hashlib.sha256(open(path, 'rb').read()).hexdigest() == record['job_script']['sha256']))"
+    check "the resource acknowledgement is the one the promotion record names" "$PY" -I -c "
+import hashlib, json, sys
+record = json.loads(json.load(open('$STATE'))['output'])
+ack = json.load(open('$RUN/resource_acknowledgement.json'))
+claimed = ack.pop('acknowledgement_sha256')
+own = hashlib.sha256(json.dumps(ack, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
+sys.exit(not (claimed == own == record['acknowledgement_sha256'] and ack['attempt_id'] == '$ATTEMPT'))"
+    check "bash can parse the job script" bash -n "$RUN/bmd_search_job.sbatch"
+    check "no job has started in the run directory" \
+        bash -c "[ ! -e '$RUN/job_started' ] && [ ! -e '$RUN/search_status.json' ] && [ -z \"\$(find '$RUN' -maxdepth 1 -name 'slurm-*.out')\" ]"
+fi
 check "no claim left behind" test ! -e "${STATE%.json}.lock"
 check "no hidden or temporary file anywhere in the run directory" \
     bash -c "[ -z \"\$(find '$RUN' -name '.*' ! -path '*/__pycache__/*')\" ]"

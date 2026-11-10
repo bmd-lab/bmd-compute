@@ -488,8 +488,16 @@ def finalize_staged_search(
     *,
     filesystem_root: str = "/",
     potcar_identity: Callable[[Any], Mapping[str, Any]] | None = None,
+    runtime_check: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Copy and verify POTCARs, then verify the whole staged search. Never runs USPEX or VASP.
+
+    Optional checks for promotion (step 4D-2), both read-only: ``job_script``
+    (``{"name", "sha256"}``: a regular file in the run directory with that
+    SHA-256 that ``bash -n`` accepts) and ``runtime_check`` (true: the
+    login-node USPEX readiness check of the frozen plan's runtime record,
+    :func:`promotion_runtime_check`; the job repeats the full check on its
+    compute node).
 
     ``request``: ``run_dir``, ``package_dir``, ``search_dir``, ``bridge_path``,
     ``manifest`` (runtime package), ``plan_digest``, ``potcar_library``,
@@ -560,6 +568,14 @@ def finalize_staged_search(
             potcars="staged",
             potcar_identity=identify,
         )
+        job_script = _verify_job_script(request, filesystem_root) if request.get("job_script") else None
+        readiness = None
+        if request.get("runtime_check"):
+            readiness = dict((runtime_check or promotion_runtime_check)(plan.record["runtime"]))
+            if readiness.get("status") != "passed":
+                return {"ok": False, "code": "runtime_check_failed",
+                        "message": "The USPEX runtime readiness check failed on POWER.",
+                        "problems": [str(problem) for problem in readiness.get("problems") or []]}
     except StagingError as exc:
         return {"ok": False, "code": exc.code, "message": exc.message}
     except SearchPlanError as exc:
@@ -583,6 +599,60 @@ def finalize_staged_search(
             for row in plan.record["potcar"]["elements"]
         ],
         "contains_potcar_contents": False,
+        **({"job_script": job_script} if job_script is not None else {}),
+        **({"runtime_check": _readiness_summary(readiness)} if readiness is not None else {}),
+    }
+
+
+def _verify_job_script(request: Mapping[str, Any], filesystem_root: str) -> dict[str, Any]:
+    """The uploaded job script is a regular file with the expected SHA-256 that bash can parse."""
+
+    import subprocess
+
+    expected = request["job_script"]
+    name = str(expected["name"])
+    if "/" in name or name.startswith("."):
+        raise StagingError("job_script_invalid", "The job script name is not a plain file name.")
+    path = _on(filesystem_root, posixpath.join(request["run_dir"], name))
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        raise StagingError("job_script_missing", "The job script is not in the run directory.") from None
+    if not stat.S_ISREG(info.st_mode):
+        raise StagingError("job_script_invalid", "The job script is not a regular file.")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != expected["sha256"]:
+        raise StagingError("job_script_mismatch", "The job script on POWER is not the one this attempt froze.")
+    checked = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True, timeout=60, check=False)
+    if checked.returncode != 0:
+        raise StagingError("job_script_invalid", "bash cannot parse the job script.")
+    return {"name": name, "sha256": digest, "syntax": "ok"}
+
+
+def promotion_runtime_check(runtime_record: Mapping[str, Any]) -> dict[str, Any]:
+    """The USPEX readiness check at promotion, on the login node (scope ``login_node``).
+
+    The payload identity, cache, Singularity and runtime settings; not the
+    compute-node-only MPI library or SLURM capability, which the job checks
+    when it starts on its compute node. Runs no SLURM command.
+    """
+
+    from backend.structure_search.runtime import search_runtime_check
+
+    return search_runtime_check(runtime_record, scope="login_node")
+
+
+def _readiness_summary(check: Mapping[str, Any]) -> dict[str, Any]:
+    observed = check.get("observed") or {}
+    return {
+        "status": check.get("status"),
+        "payload_sha256": observed.get("payload_sha256"),
+        "banner_version": observed.get("banner_version"),
+        "ready_marker_exists": observed.get("ready_marker_exists"),
+        "unpacked_program_exists": observed.get("unpacked_program_exists"),
+        "singularity_executable": (observed.get("singularity") or {}).get("executable"),
+        "scope": check.get("scope"),
+        "deferred_to_job_start": list(observed.get("deferred_to_job_start") or []),
     }
 
 

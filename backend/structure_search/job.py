@@ -116,6 +116,18 @@ def _resources_of(plan) -> dict[str, Any]:
     }
 
 
+def resource_request_view(plan) -> dict[str, Any]:
+    """What a user acknowledges: the statement and the plan's exact provisional resource request."""
+
+    return {"statement": ACKNOWLEDGEMENT_STATEMENT, **_resources_of(plan)}
+
+
+def resource_request_sha256(plan) -> str:
+    """``sha256:`` of :func:`resource_request_view`; the client echoes it to acknowledge exactly this request."""
+
+    return "sha256:" + _sha256_text(_canonical(resource_request_view(plan)))
+
+
 def build_resource_acknowledgement(plan, *, attempt_id: str, principal: str, acknowledged_at: str) -> dict[str, Any]:
     """The frozen record of a user's explicit acknowledgement of the plan's resource request."""
 
@@ -561,6 +573,8 @@ __all__ = [
     "JobDefinitionError",
     "build_job_script",
     "build_resource_acknowledgement",
+    "resource_request_sha256",
+    "resource_request_view",
     "job_main",
     "job_script_sha256",
     "request_from_job_script",
