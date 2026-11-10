@@ -86,6 +86,14 @@ class FakePower:
         # The USPEX runtime readiness check promotion runs on the login node (a stand-in here).
         self.runtime_problems: list[str] = []
         self.runtime_checks = 0
+        # A fake SLURM for submission (step 4D-3).
+        self.sbatch_mode = "accept"  # accept, reject, lost_before, lost_after, garbled, exit255
+        self.sbatch_runs = 0
+        self.jobs: dict[str, dict] = {}
+        self.next_job = 9001
+        self.extra_jobs: list[dict] = []  # other jobs SLURM reports (job_id, job_name, comment, workdir, state)
+        self.scheduler_comments = True  # False: SLURM reports no comments
+        self.scheduler_answers = True
         self.fail_put = None  # (target suffix, "partial" | "before_chmod" | "before_rename")
         self.after_uploads = None
 
@@ -142,6 +150,10 @@ class FakePowerRunner(ParamikoRemoteRunner):
             except OSError:
                 return RemoteCommandResult(command=command, returncode=1)
             return RemoteCommandResult(command=command, returncode=0)
+        if command.startswith("cd ") and " && sbatch --parsable " in command:
+            return self._sbatch(command)
+        if command.startswith("squeue ") or command.startswith("sacct "):
+            return self._scheduler_query(command)
         if staging.INVENTORY_DIR_MARKER in command:
             if self.power.fail_inventory:
                 self.power.fail_inventory -= 1
@@ -166,6 +178,59 @@ class FakePowerRunner(ParamikoRemoteRunner):
             return RemoteCommandResult(command=command, returncode=0,
                                        stdout=staging.RESULT_MARKER + json.dumps(result) + "\n")
         raise AssertionError(f"unexpected remote command: {command[:80]}")
+
+    def _sbatch(self, command):
+        parts = shlex.split(command)
+        assert parts[2:5] == ["&&", "sbatch", "--parsable"] and len(parts) == 6, parts  # no option overrides
+        power = self.power
+        power.sbatch_runs += 1
+        script = power.at(posixpath.join(parts[1], parts[5])).read_text()
+        directives = dict(line[len("#SBATCH --"):].split("=", 1) for line in script.splitlines()
+                          if line.startswith("#SBATCH --") and "=" in line)
+
+        def create():
+            job_id = str(power.next_job)
+            power.next_job += 1
+            power.jobs[job_id] = {"job_id": job_id, "job_name": directives["job-name"],
+                                  "comment": directives["comment"], "workdir": directives["chdir"],
+                                  "state": "PENDING", "directives": directives}
+            return job_id
+
+        mode = power.sbatch_mode
+        if mode == "accept":
+            return RemoteCommandResult(command=command, returncode=0, stdout=f"{create()}\n")
+        if mode == "reject":
+            return RemoteCommandResult(command=command, returncode=1, stderr=(
+                "sbatch: error: Batch job submission failed: Invalid account or account/partition combination "
+                "specified\n"))
+        if mode == "lost_before":
+            raise TimeoutError("timed out")
+        if mode == "lost_after":
+            create()
+            raise TimeoutError("timed out")
+        if mode == "garbled":
+            create()
+            return RemoteCommandResult(command=command, returncode=0, stdout="Submitted batch job\n")
+        if mode == "exit255":
+            return RemoteCommandResult(command=command, returncode=255, stderr="")
+        raise AssertionError(mode)
+
+    def _scheduler_query(self, command):
+        power = self.power
+        if not power.scheduler_answers:
+            return RemoteCommandResult(command=command, returncode=1, stderr="slurm_load_jobs error")
+        jobs = list(power.jobs.values()) + list(power.extra_jobs)
+        squeue = command.startswith("squeue ")
+        lines = []
+        for job in jobs:
+            if squeue and job["state"] not in ("PENDING", "RUNNING"):
+                continue
+            hidden = job.get("hidden")  # True: not yet visible anywhere; "sacct": accounting lags behind squeue
+            if hidden is True or (hidden == "sacct" and not squeue):
+                continue
+            comment = job["comment"] if (squeue or power.scheduler_comments) else ""
+            lines.append("|".join([job["job_id"], job["job_name"], comment, job["workdir"], job["state"]]))
+        return RemoteCommandResult(command=command, returncode=0, stdout="\n".join(lines) + ("\n" if lines else ""))
 
     def _runtime_check(self, runtime_record):
         self.power.runtime_checks += 1

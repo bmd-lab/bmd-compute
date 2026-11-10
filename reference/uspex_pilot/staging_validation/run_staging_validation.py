@@ -414,7 +414,7 @@ def promote(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc:
         )
     promotion = promoted["promotion"]
     _require(promoted["state"] == "PREPARED" and promoted["submission_ready"] is True, "not submission-ready.")
-    _require(promoted["submission_available"] is False, "submission must not be available.")
+    _require(promoted["submission_available"] is True, "not ready to submit (the kit never submits it).")
     _require(promotion["remote_state"] == "SEARCH_PREPARED", "POWER did not record SEARCH_PREPARED.")
     _require(promotion["remote_integrity"] == "last_verified", "PREPARED must be reported as last verified.")
     _require((promotion["runtime_check"] or {}).get("status") == "passed", "the readiness check did not pass.")

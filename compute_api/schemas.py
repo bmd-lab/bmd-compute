@@ -476,3 +476,86 @@ def parse_structure_search_promotion_request(document: Any) -> StructureSearchPr
     if errors:
         raise PlanRequestError(errors)
     return StructureSearchPromotionRequestShape(expected_plan_digest=expected, resources_sha256=resources_sha256)
+
+
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True)
+class StructureSearchSubmissionRequestShape:
+    expected_plan_digest: str
+    job_script_sha256: str
+    resources_sha256: str
+
+
+def parse_structure_search_submission_request(document: Any) -> StructureSearchSubmissionRequestShape:
+    """Validate a ``PUT /api/v1/structure-search-attempts/{id}/submission`` body.
+
+    ``{"expected_plan_digest": "sha256:...", "job_script_sha256": "<64 hex>",
+    "resource_acknowledgement": {"acknowledged": true, "resources_sha256":
+    "sha256:..."}}``: the attempt's plan digest, the job script it was promoted
+    with, and again the explicit acknowledgement of exactly its resource
+    request. Nothing else is accepted.
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    allowed = {"expected_plan_digest", "job_script_sha256", "resource_acknowledgement"}
+    for key in sorted(set(document) - allowed, key=str):
+        _error(errors, str(key), "unknown_field")
+    expected = document.get("expected_plan_digest")
+    if not isinstance(expected, str) or not _PLAN_DIGEST.fullmatch(expected):
+        _error(errors, "expected_plan_digest", "required" if expected is None else "must_be_sha256_digest")
+    script = document.get("job_script_sha256")
+    if not isinstance(script, str) or not _SHA256_HEX.fullmatch(script):
+        _error(errors, "job_script_sha256", "required" if script is None else "must_be_sha256_hex")
+    acknowledgement = document.get("resource_acknowledgement")
+    resources_sha256 = None
+    if not isinstance(acknowledgement, dict):
+        _error(errors, "resource_acknowledgement", "required" if acknowledgement is None else "must_be_object")
+    else:
+        for key in sorted(set(acknowledgement) - {"acknowledged", "resources_sha256"}, key=str):
+            _error(errors, f"resource_acknowledgement.{key}", "unknown_field")
+        if acknowledgement.get("acknowledged") is not True:
+            _error(errors, "resource_acknowledgement.acknowledged", "must_be_true")
+        resources_sha256 = acknowledgement.get("resources_sha256")
+        if not isinstance(resources_sha256, str) or not _PLAN_DIGEST.fullmatch(resources_sha256):
+            _error(errors, "resource_acknowledgement.resources_sha256", "must_be_sha256_digest")
+    if errors:
+        raise PlanRequestError(errors)
+    return StructureSearchSubmissionRequestShape(expected_plan_digest=expected, job_script_sha256=script,
+                                                 resources_sha256=resources_sha256)
+
+
+_JOB_ID = re.compile(r"^[0-9]{1,20}$")
+
+
+@dataclass(frozen=True)
+class StructureSearchRemoteRecordRequestShape:
+    expected_plan_digest: str
+    job_id: str
+
+
+def parse_structure_search_remote_record_request(document: Any) -> StructureSearchRemoteRecordRequestShape:
+    """Validate a ``PUT /api/v1/structure-search-attempts/{id}/submission/remote-record`` body.
+
+    ``{"expected_plan_digest": "sha256:...", "job_id": "<digits>"}``: the
+    attempt's plan digest and the SLURM job ID its record already holds.
+    Nothing else is accepted.
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    for key in sorted(set(document) - {"expected_plan_digest", "job_id"}, key=str):
+        _error(errors, str(key), "unknown_field")
+    expected = document.get("expected_plan_digest")
+    if not isinstance(expected, str) or not _PLAN_DIGEST.fullmatch(expected):
+        _error(errors, "expected_plan_digest", "required" if expected is None else "must_be_sha256_digest")
+    job_id = document.get("job_id")
+    if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
+        _error(errors, "job_id", "required" if job_id is None else "must_be_slurm_job_id")
+    if errors:
+        raise PlanRequestError(errors)
+    return StructureSearchRemoteRecordRequestShape(expected_plan_digest=expected, job_id=job_id)

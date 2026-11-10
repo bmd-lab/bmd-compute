@@ -325,10 +325,41 @@ def search_attempt_response(record: Mapping[str, Any], *, integrity: str | None 
         "resources": dict(resources) if resources is not None else None,
         "promotion_available": record["state"] == STATE_STAGED,
         "promotion": _promotion_response(record.get("promotion"), state=record["state"]),
-        # PREPARED: verified and ready when last checked on POWER (step 4D-2);
-        # submission itself is not available yet.
+        # PREPARED: verified and ready when last checked on POWER (step 4D-2).
         "submission_ready": record["state"] == STATE_PREPARED,
-        "submission_available": False,
+        "submission_available": record["state"] == STATE_PREPARED,
+        "submission": _submission_response(record.get("submission"), state=record["state"]),
+    }
+
+
+def _submission_response(submission: Mapping[str, Any] | None, *, state: str) -> dict[str, Any] | None:
+    """The SLURM submission (step 4D-3), with scheduler, execution and scientific validity kept apart."""
+
+    if not submission:
+        return None
+    submitted = state == "SUBMITTED"
+    return {
+        "status": submission.get("status"),
+        "job_id": submission.get("job_id"),
+        "job_name": submission.get("job_name"),
+        "attempt_comment": submission.get("comment"),
+        "requested_at": submission.get("requested_at"),
+        "submitted_at": submission.get("submitted_at"),
+        "reconciled": bool(submission.get("reconciled")),
+        "adopted": bool(submission.get("adopted")),
+        "remote_record_pending": bool(submission.get("remote_record_pending")),
+        # PUT …/submission/remote-record completes it (verified against SLURM; never runs sbatch).
+        "remote_record_recovery_available": submitted and bool(submission.get("remote_record_pending")),
+        "remote_record_recovery": submission.get("remote_record_recovery"),
+        "uncertain": state == "SUBMISSION_UNCERTAIN",
+        "uncertain_reason": submission.get("uncertain_reason"),
+        "last_error": submission.get("last_error"),
+        "reconciliation": submission.get("reconciliation"),
+        # Three separate answers, none inferred from another; not refreshed or read here.
+        "scheduler": {"state": None, "refreshed": False} if submitted else None,
+        "execution": {"outcome": None, "read": False} if submitted else None,
+        "scientific_validity": {"status": "not_assessed"},
+        "finalists": {"status": "not_started"},
     }
 
 

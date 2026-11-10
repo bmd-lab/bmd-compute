@@ -182,6 +182,23 @@ finding. The validation token has `submit` scope for promotion; the kit calls
 no submission route. The staged and promoted run stays on POWER as evidence;
 it can only be submitted by a later step, after a fresh verification.
 
+## D. First controlled submission (step 4D-3; planned, not part of this kit yet)
+
+Not implemented here; recorded so the first acceptance test includes it.
+After one approved submission of a promoted Si attempt, check read-only on
+POWER, as `bmdguest`, and keep the output with the attempt ID:
+
+- `scontrol show config | grep -i AccountingStoreFlags` (does accounting
+  keep job comments?);
+- while queued: `squeue -j <job> -o '%i|%j|%k|%Z|%T'` shows comment
+  `bmd_attempt:<attempt_id>`, name `bmds-<attempt[:8]>` and the run
+  directory;
+- after it ends: `sacct -X -n -P -j <job> -o
+  JobID,JobName,Comment,WorkDir,State` shows the same three. If the comment
+  is empty there, report it: reconciliation then cannot verify a finished
+  job, by design, and needs a decision before production use;
+- remote state `SEARCH_SUBMITTED` naming the same job ID.
+
 ## What the evidence contains
 
 - VM, `$VROOT.tgz` (mode 0600): `evidence/` (every request without its

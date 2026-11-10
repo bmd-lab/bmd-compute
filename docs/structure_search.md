@@ -633,6 +633,41 @@ checks; the login-node readiness check passed; no job started and nothing ran.
 Record and evidence checksums:
 `reference/uspex_pilot/staging_validation/RESULTS_20261110_14bfbbac.md`.
 
+### Exactly-once submission (USPEX integration step 4D-3)
+
+`PUT /api/v1/structure-search-attempts/{id}/submission` (`docs/machine_api.md`)
+submits a `PREPARED` attempt to SLURM at most once. Under the attempt's claim
+it verifies the run directory afresh (plan, job script, acknowledgement,
+runtime package, bridge, POTCAR identities, login-node readiness), records
+`SEARCH_SUBMITTING`, then runs `sbatch --parsable` once with no options, so
+the frozen `#SBATCH` lines are the acknowledged request. A job ID gives
+`SEARCH_SUBMITTED`; a definite refusal returns the attempt to submission-ready;
+any other outcome is uncertain and is never resubmitted automatically.
+Repeating the request reconciles read-only through `squeue`/`sacct` by the
+SLURM comment `bmd_attempt:<id>`, with the job name and working directory as
+further checks, and adopts only exactly one job reporting all three, with no
+other candidate or contradiction; there is no automatic reset or retry (the
+future operator procedure is in `docs/machine_api.md`). The job ID is kept
+locally as soon as `sbatch` answers; if POWER's `SEARCH_SUBMITTED` write is
+lost, `PUT …/submission/remote-record` completes it after verifying the job
+against SLURM, without submitting.
+
+**POWER accounting (read-only checks, Nov 2026):** `sacct` on POWER returns
+`JobID`, `JobName`, `State`, `Comment` and `WorkDir` (completed job
+`23406856`; its comment was empty, as that probe set none). No `bmdguest` job
+since 1 November carries a `bmd_attempt:` comment, so whether an explicitly
+supplied `--comment` persists in accounting is unverified. An empty comment
+is therefore never taken as evidence either way, and a job whose comment
+SLURM does not report is never adopted automatically. The first controlled
+POWER submission acceptance test must check, read-only, that the job's
+comment is `bmd_attempt:<attempt_id>` in `squeue` while it is queued and in
+`sacct -X` after it ends (with `scontrol show config | grep -i
+AccountingStoreFlags` recorded), alongside its name and working directory. Scheduler state,
+execution outcome and scientific validity are reported separately and none is
+read or assessed yet; monitoring, cancellation and finalist refinement are
+later steps. The change is service-side only (the runtime package is
+unchanged). The plan, ladder, POTCAR policy and validity rules are untouched.
+
 ## 9. Open questions
 
 - Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks

@@ -110,7 +110,7 @@ def test_promotion_uploads_the_frozen_job_script_and_reaches_search_prepared(cli
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["state"] == "PREPARED" and payload["submission_ready"] is True
-    assert payload["submission_available"] is False and payload["promotion_available"] is False
+    assert payload["submission_available"] is True and payload["promotion_available"] is False
     promotion = payload["promotion"]
     assert promotion["remote_state"] == "SEARCH_PREPARED" and promotion["remote_integrity"] == "last_verified"
     assert promotion["in_progress"] is False and promotion["verified_at"]

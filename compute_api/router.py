@@ -64,6 +64,8 @@ from compute_api.schemas import (
     parse_plan_request,
     parse_structure_search_attempt_request,
     parse_structure_search_promotion_request,
+    parse_structure_search_remote_record_request,
+    parse_structure_search_submission_request,
     parse_structure_search_staging_request,
     parse_structure_search_plan_request,
 )
@@ -379,6 +381,84 @@ def build_machine_api_router(*, planner: Planner, search_planner: Planner | None
             LOGGER.error("Machine API search promotion failed (%s).", type(exc).__name__, exc_info=True)
             return _error_response(_ApiError(503, "promotion_unavailable",
                                              "BMD Compute could not promote this search; retry."))
+        return _json(200, {"api_version": API_VERSION, **response})
+
+    @router.put("/structure-search-attempts/{attempt_id}/submission")
+    async def put_structure_search_submission(attempt_id: str, request: Request):
+        from backend.remote import RemoteOperationBusy, SubmissionAttemptError
+        from backend.structure_search.lifecycle import LifecycleError
+        from backend.structure_search.staging import StagingError
+        from compute_api.structure_search_submission import submit_search_attempt
+
+        try:
+            principal = _authorize(request, scope=SCOPE_SUBMIT)
+            canonical = _canonical_attempt_id(attempt_id)
+            document = await _read_json_body(request)
+            try:
+                shape = parse_structure_search_submission_request(document)
+            except PlanRequestError as exc:
+                raise _ApiError(
+                    422, "invalid_request", "The structure-search submission request is invalid.", fields=exc.errors
+                ) from None
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+
+        try:
+            response = await run_in_threadpool(
+                submit_search_attempt, principal=principal.principal, attempt_id=canonical, shape=shape
+            )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except (StagingError, LifecycleError) as exc:
+            return _error_response(_ApiError(409, exc.code, _bounded(exc.message)))
+        except RemoteOperationBusy:
+            return _error_response(_ApiError(503, "remote_busy", "BMD Compute is busy with other remote operations; retry shortly."))
+        except SubmissionAttemptError:
+            return _error_response(_ApiError(409, "remote_attempt_mismatch", "The remote attempt state does not match this attempt."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            LOGGER.error("Machine API search submission failed (%s).", type(exc).__name__, exc_info=True)
+            return _error_response(_ApiError(503, "submission_unavailable",
+                                             "BMD Compute could not complete this request; query the attempt, "
+                                             "then retry. An uncertain submission is never repeated."))
+        return _json(200, {"api_version": API_VERSION, **response})
+
+    @router.put("/structure-search-attempts/{attempt_id}/submission/remote-record")
+    async def put_structure_search_remote_record(attempt_id: str, request: Request):
+        from backend.remote import RemoteOperationBusy, SubmissionAttemptError
+        from backend.structure_search.lifecycle import LifecycleError
+        from backend.structure_search.staging import StagingError
+        from compute_api.structure_search_submission import recover_remote_record
+
+        try:
+            principal = _authorize(request, scope=SCOPE_SUBMIT)
+            canonical = _canonical_attempt_id(attempt_id)
+            document = await _read_json_body(request)
+            try:
+                shape = parse_structure_search_remote_record_request(document)
+            except PlanRequestError as exc:
+                raise _ApiError(
+                    422, "invalid_request", "The remote-record request is invalid.", fields=exc.errors
+                ) from None
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+
+        try:
+            response = await run_in_threadpool(
+                recover_remote_record, principal=principal.principal, attempt_id=canonical, shape=shape
+            )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except (StagingError, LifecycleError) as exc:
+            return _error_response(_ApiError(409, exc.code, _bounded(exc.message)))
+        except RemoteOperationBusy:
+            return _error_response(_ApiError(503, "remote_busy", "BMD Compute is busy with other remote operations; retry shortly."))
+        except SubmissionAttemptError:
+            return _error_response(_ApiError(409, "remote_attempt_mismatch", "The remote attempt state does not match this attempt."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            LOGGER.error("Machine API search remote-record recovery failed (%s).", type(exc).__name__, exc_info=True)
+            return _error_response(_ApiError(503, "remote_record_unavailable",
+                                             "BMD Compute could not complete the remote record; retry. "
+                                             "Nothing is ever submitted by this request."))
         return _json(200, {"api_version": API_VERSION, **response})
 
     @router.get("/structure-search-attempts/{attempt_id}")

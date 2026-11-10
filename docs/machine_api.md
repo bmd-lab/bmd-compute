@@ -12,6 +12,8 @@ bmd-run:
 | `GET /api/v1/structure-search-attempts/{attempt_id}` | `read` | Read a structure-search attempt back |
 | `PUT /api/v1/structure-search-attempts/{attempt_id}/staging` | `prepare` | Stage a `PREPARED_LOCALLY` attempt on POWER and verify it there (`STAGED`); idempotent; never submits |
 | `PUT /api/v1/structure-search-attempts/{attempt_id}/promotion` | `submit` | Acknowledge the resource request and promote a `STAGED` attempt to submission-ready (`PREPARED` / `SEARCH_PREPARED`); idempotent; never submits |
+| `PUT /api/v1/structure-search-attempts/{attempt_id}/submission` | `submit` | Submit a `PREPARED` attempt to SLURM at most once (`SUBMITTED` / `SEARCH_SUBMITTED`), or reconcile an uncertain submission read-only; never resubmits |
+| `PUT /api/v1/structure-search-attempts/{attempt_id}/submission/remote-record` | `submit` | Complete a lost `SEARCH_SUBMITTED` record for a `SUBMITTED` attempt after verifying its job against SLURM; idempotent; never submits |
 | `PUT /api/v1/attempts/{attempt_id}` | `prepare` (prepare only) or `submit` (prepare and submit) | Prepare, or prepare and submit, one calculation; idempotent per attempt ID |
 | `GET /api/v1/attempts/{attempt_id}` | `read` | The attempt's authoritative state, job identity and scheduler state |
 
@@ -426,8 +428,8 @@ fresh, read-only verification (local preparation, current plan, same
 runtime package, remote state and fingerprint, the guard-verified package,
 plan digest, bound bridge, POTCAR identities and a complete inventory) and
 changes nothing. Step 4D must run it inside the same remote claim as
-submission, before an attempt can become submission-ready; until then
-`submission_available` is always false.
+submission, before an attempt can become submission-ready.
+`submission_available` is true only for a `PREPARED` attempt.
 
 `STAGED` is not the calculation `PREPARED` state: the existing claim and
 `sbatch` paths refuse it. Submission is a later step.
@@ -437,8 +439,7 @@ submission, before an attempt can become submission-ready; until then
 `PUT /api/v1/structure-search-attempts/{attempt_id}/promotion` (scope
 `submit`, the attempt's owner) takes a `STAGED` attempt to `PREPARED`:
 submission-ready, freshly verified on POWER. It never runs `sbatch`, `srun`,
-USPEX or VASP; submission is not available yet (`submission_available:
-false`).
+USPEX or VASP; submission is the separate route below.
 
 Body, exactly:
 
@@ -510,6 +511,160 @@ repeats the input and runtime checks independently.
 
 Other errors are as for staging; a transport failure is 503
 `promotion_unavailable`, after which the same request resumes.
+
+## Structure-search submission (step 4D-3)
+
+`PUT /api/v1/structure-search-attempts/{attempt_id}/submission` (scope
+`submit`, the attempt's owner) submits a `PREPARED` attempt to SLURM at most
+once: locally `PREPARED → SUBMITTING → SUBMITTED`, on POWER `SEARCH_PREPARED
+→ SEARCH_SUBMITTING → SEARCH_SUBMITTED`. It never cancels, monitors, starts
+finalist refinement or interprets results. Ordinary calculation submission
+(`PUT /api/v1/attempts/{id}`) is unchanged and refuses search states.
+
+Body, exactly:
+
+```json
+{"expected_plan_digest": "sha256:...",
+ "job_script_sha256": "<64 hex: promotion.job_script.sha256>",
+ "resource_acknowledgement": {"acknowledged": true, "resources_sha256": "sha256:..."}}
+```
+
+Sequence:
+
+1. Local checks, without contacting POWER: owner (403), plan digest (409
+   `plan_digest_mismatch`), state (409 `attempt_not_prepared` unless
+   `PREPARED`, or a `SUBMITTING`/`SUBMISSION_UNCERTAIN`/`SUBMITTED` attempt
+   being repeated), the echoed job script (409 `job_script_mismatch`) and
+   resource request (409 `acknowledgement_mismatch`) equal to the promotion,
+   intact local preparation, current plan (409 `plan_changed`), the staged
+   runtime package (409 `runtime_package_changed`), and the job script
+   reproduced byte for byte from the frozen inputs (409
+   `job_script_changed`). A `SUBMITTED` attempt returns its stored result.
+   The record then becomes `SUBMITTING`.
+2. On POWER, under the attempt's claim (409 `submission_in_progress`) and the
+   operation limiter, with the fingerprint and the promotion identities
+   checked (409 `promotion_mismatch`):
+   - `SEARCH_PREPARED`: a fresh read-only verification of the whole run
+     directory (as at promotion, including the job script, acknowledgement and
+     login-node readiness check). Then `SEARCH_SUBMITTING` is written
+     atomically, and only then `cd <run_dir> && sbatch --parsable
+     bmd_search_job.sbatch` runs, once, with no command-line options: the
+     resources are the script's frozen `#SBATCH` lines, the acknowledged
+     request. A refusal before `sbatch` (verification, readiness) returns the
+     attempt to `PREPARED` and leaves POWER at `SEARCH_PREPARED`.
+   - `SEARCH_SUBMITTING` (an earlier outcome is unknown): read-only
+     reconciliation, never `sbatch`.
+   - `SEARCH_SUBMITTED`: adopted as recorded.
+3. Outcomes of `sbatch`:
+
+| Outcome | POWER | Local | Response |
+| --- | --- | --- | --- |
+| A job ID | `SEARCH_SUBMITTED` | `SUBMITTED` (recorded locally as soon as `sbatch` answers) | 200 with `submission.job_id` |
+| Definite refusal (`sbatch: error`, or `sbatch` not found; no job ID) | `SEARCH_PREPARED` with `last_submission_error` | `PREPARED` | 502 `submit_rejected` with `sbatch_error` |
+| Anything else (lost connection, timeout, exit 255, unreadable output) | `SEARCH_SUBMITTING` | `SUBMISSION_UNCERTAIN` | 409 `submission_uncertain` |
+| A job ID, but the `SEARCH_SUBMITTED` write failed (or the service stopped) | `SEARCH_SUBMITTING` | `SUBMITTED`, `remote_record_pending: true` | 200; complete with `…/remote-record` |
+
+An uncertain attempt is never submitted again automatically. Repeating the
+request only reconciles: `squeue` and `sacct -X` (this account, last 7 days)
+are read, records are grouped by job ID, and each job concerning the attempt
+(its comment, its run directory, or its job name with no directory) is
+classed:
+
+- **verified**: the SLURM comment `bmd_attempt:<attempt_id>` (the primary
+  identity), the job name `bmds-<attempt_id[:8]>` and the working directory
+  (the run directory) are all reported and all the attempt's;
+- **conflict**: something contradicts the identity (two values for one field
+  of one job, this comment with another name or directory, this directory or
+  name under another comment);
+- **unverified**: nothing contradicts it, but a field (usually the comment,
+  which accounting may not keep) is not reported. It is never adopted.
+
+| Reconciliation | Result |
+| --- | --- |
+| Exactly one verified job, no other candidate | adopted: `SEARCH_SUBMITTED`, local `SUBMITTED`, `reconciled: true` |
+| No job (accounting may lag) | 409 `submission_uncertain`; repeat later |
+| Only unverified candidates | 409 `submission_unverified` |
+| Several candidates, at least one verified | 409 `submission_ambiguous` |
+| Any conflict | 409 `submission_conflict` |
+| `squeue` or `sacct` did not answer | 409 `submission_uncertain` |
+
+Another attempt's job is never a match: its comment and run directory differ,
+so it is not a candidate even when its job name (the first eight characters of
+the UUID) is the same; reported without a directory under that name, it is a
+conflict. Job IDs are compared whole (an array task or range is its own
+candidate). A job ID on its own, supplied or recorded, is never evidence: the
+job must carry the full identity.
+
+Each refusal keeps `SUBMISSION_UNCERTAIN` locally and `SEARCH_SUBMITTING` on
+POWER and carries the `reconciliation` summary (`matches`, `unverified`,
+`conflicts`, `checked_at`). An empty comment is never read as "no job". If the
+record is uncertain but POWER shows `SEARCH_PREPARED`, nothing is submitted
+(409 `submission_uncertain`): only an operator could have reset it.
+
+### Completing a lost remote record
+
+`PUT /api/v1/structure-search-attempts/{attempt_id}/submission/remote-record`
+(scope `submit`, the owner), body exactly `{"expected_plan_digest":
+"sha256:...", "job_id": "<the recorded job ID>"}`, for a `SUBMITTED` attempt
+with `remote_record_pending: true` (`remote_record_recovery_available`). It
+never runs `sbatch`. Locally: owner, plan digest, `SUBMITTED` (409
+`attempt_not_submitted`) and the echoed job ID (409 `job_id_mismatch`); with
+nothing pending it returns the stored response without contacting POWER. On
+POWER, under the attempt's claim:
+
+1. The remote state must be `SEARCH_SUBMITTING` (or `SEARCH_SUBMITTED`) with
+   this promotion and this attempt's frozen job identity (attempt, comment,
+   name, directory, job script), and no other job ID (409
+   `promotion_mismatch`, `submission_conflict`; any other remote state 409
+   `transition_not_allowed`).
+2. SLURM must report the recorded job ID as the one verified job for this
+   identity (as above). Otherwise nothing is written: 409 `job_not_visible`
+   (not reported yet; retry later), `job_identity_unverified` (reported
+   without its comment, name or directory), `submission_ambiguous`,
+   `submission_conflict` (another job ID, or contradictory records); 503
+   `scheduler_unavailable`.
+3. `SEARCH_SUBMITTED` is written atomically, keeping the original
+   submission record (request and verification times), the job ID and its
+   `submitted_at`, and adding `remote_record_recovery` (time, principal,
+   scheduler summary). An existing `SEARCH_SUBMITTED` naming the same job is
+   adopted as is. The local record clears `remote_record_pending`.
+
+### Uncertain submissions: future operator procedure (not implemented)
+
+There is no automatic reset or retry, and no route for either. An attempt in
+`SUBMISSION_UNCERTAIN` stays there until a later, separately reviewed
+operator step. The intended procedure, for that step:
+
+1. Wait beyond any accounting delay, then repeat the submission request
+   (reconciliation only) and keep its `reconciliation` summary.
+2. Read-only on POWER, as `bmdguest`: `squeue -u bmdguest -o
+   '%i|%j|%k|%Z|%T'`, `sacct -X -P -u bmdguest -S <requested_at> -o
+   JobID,JobName,Comment,WorkDir,State,Submit`, `scontrol show job <id>` for
+   any candidate, and the run directory (`job_started`, `search_status.json`,
+   `slurm-*.out`). Record what is found with the attempt ID.
+3. If exactly one job is this attempt's, an operator route (to be designed)
+   would adopt it by explicit job ID, recording who decided and on what
+   evidence.
+4. Only if no job exists, with evidence (no queue or accounting record over
+   the window, no job output, no `job_started`), would an operator route
+   reset the attempt to submission-ready, with an audit record, the remote
+   state moved back explicitly, and a fresh verification before any new
+   `sbatch`. Until then the attempt is not submitted; a new search needs a
+   new attempt ID.
+
+The response adds `submission`: `status`, `job_id`, `job_name`,
+`attempt_comment`, `requested_at`, `submitted_at`, `reconciled`, `adopted`,
+`remote_record_pending`, `remote_record_recovery_available`,
+`remote_record_recovery`, `uncertain`, `uncertain_reason`, `last_error`,
+`reconciliation`, and three outcomes kept apart: `scheduler` (state, not
+refreshed by this release), `execution` (outcome, not read), and
+`scientific_validity: "not_assessed"`; `finalists: "not_started"`. Reads never
+contact POWER. A transport failure is 503 `submission_unavailable`; a held
+claim 409 `submission_in_progress` (the operation limiter, 503
+`remote_busy`).
+
+The submission is service-side code only: the runtime package is unchanged,
+so an attempt promoted by step 4D-2 (such as `14bfbbac`) can be submitted.
 
 ## Plan digest
 
