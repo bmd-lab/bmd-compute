@@ -691,6 +691,18 @@ to `SUBMITTED`; one stopped later stays `CANCEL_REQUESTED` and is resumed only
 by repeating it, with a fresh identity check. There is
 no background poller, resubmission or restart; finalists stay `not_started`.
 
+**Checked on POWER (10 Nov 2026, attempt `c6edaf94`, SLURM job 23576570):**
+a new Si search with a 15-minute allocation (plan `sha256:4c85cec6…0d42f993`,
+job script `71aa6125…6547`, code `364712a`) was submitted once through the
+machine API (HTTP 200), its identity verified through `squeue`, observed three
+times, cancelled through the machine API after a fresh identity check, and
+settled at SLURM `CANCELLED` / `SEARCH_CANCELLED`. The job never started, so
+no USPEX or VASP ran: the operational pathway is validated, scientific
+execution is not. POWER's accounting does not keep the attempt comment (it is
+in `squeue`, not in `sacct`), so a finished job's identity is `partial`, as
+designed. Record and evidence checksums:
+`reference/uspex_pilot/staging_validation/RESULTS_20261110_c6edaf94.md`.
+
 ## 9. Open questions
 
 - Which launch mode, `srun_steps` or `mpirun_pinned`, places 4 × 48 VASP ranks

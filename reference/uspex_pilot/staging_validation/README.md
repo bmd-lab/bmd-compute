@@ -45,6 +45,12 @@ Promotion (part C) run on 10 Nov 2026 for attempt
 `SEARCH_PREPARED`, nothing submitted. Record:
 [`RESULTS_20261110_14bfbbac.md`](RESULTS_20261110_14bfbbac.md).
 
+Submission-and-cancellation acceptance (part D) run on 10 Nov 2026 for attempt
+`c6edaf94-a2ab-4be7-a817-ce52f3d14852`, SLURM job `23576570` (commit
+`364712a`, 15-minute allocation): submitted once, monitored, cancelled,
+settled at `CANCELLED`; the job never started. Record:
+[`RESULTS_20261110_c6edaf94.md`](RESULTS_20261110_c6edaf94.md).
+
 ## Preconditions (stop if any is not met)
 
 1. Step 4C is committed, and that commit is available to the VM's clone (how
