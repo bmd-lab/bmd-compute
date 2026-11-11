@@ -958,13 +958,20 @@ def test_the_calculation_path_refuses_a_cancellation_state(client, tokens, state
     assert cluster.sbatch_calls == 0
 
 
-def test_the_runtime_package_is_unchanged():
-    """4D-4 is service-side only: the package is still the one the 4D-2 validation staged (b7bd184)."""
+def test_the_runtime_package_is_the_reviewed_one():
+    """4D-4 was service-side only (the package the 4D-2 validation staged, b7bd184, ``fca63b4b…``).
+
+    The launcher's scientific evidence archive (``bridge/evidence_archive.py``, launcher changes) is the
+    only runtime change since: 80 files. Attempts staged with the earlier package are refused with
+    ``runtime_package_changed`` and need a new attempt ID.
+    """
 
     from backend.runtime_package import build_runtime_package_manifest, runtime_package_manifest_digest
 
-    assert runtime_package_manifest_digest(build_runtime_package_manifest()) == (
-        "fca63b4b55c572e47c8744b2073288ad82fd3214ab1f5248838110bfa8a6b95c")
+    manifest = build_runtime_package_manifest()
+    assert len(manifest) == 80
+    assert runtime_package_manifest_digest(manifest) == (
+        "92913a28be326eb08e9d7f8929e6db9ea69e3a1457fb4598c2f547aa4b0eb81f")
 
 
 def test_scancel_command_takes_only_a_numeric_job_id():

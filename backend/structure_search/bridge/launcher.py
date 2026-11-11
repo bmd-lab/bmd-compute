@@ -25,6 +25,12 @@ allocation, and runs VASP for each request:
   ``<search>/bmd_step_validity/<id>/`` and renamed in the CalcFold, so
   USPEX cannot read an energy from them. Every step's verdict is appended to
   ``<CalcFold>/bmd_step_validity.jsonl``
+* commit the step's scientific evidence (the verdict as the checker returned
+  it, the input POSCAR and output CONTCAR with their SHA-256, the step log's
+  hash) to the append-only archive ``<search>/bmd_evidence/``
+  (``evidence_archive``), outside the CalcFolds USPEX removes, before the
+  done file: USPEX cannot read the result or remove the CalcFold until then.
+  A failure to archive is journaled and never changes the step's status
 * write ``<spool>/done/<id>.done`` with the exit status, which releases the
   waiting bridge script
 * stop a step when its bridge gives up (``<spool>/cancel/<id>``)
@@ -61,6 +67,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -69,7 +76,7 @@ from pathlib import Path
 from typing import IO
 
 from backend.structure_search import step_validity
-from backend.structure_search.bridge import protocol
+from backend.structure_search.bridge import evidence_archive, protocol
 from backend.structure_search.bridge.protocol import StepRequest
 
 
@@ -101,6 +108,8 @@ MPI_ENVIRONMENT_OVERRIDES = {"I_MPI_DEBUG": "4"}
 FORBIDDEN_STEP_ENVIRONMENT = ("I_MPI_PIN_DOMAIN",)
 EXIT_COMMAND_NOT_STARTED = 127
 LAUNCH_RECORD_FILE = "bmd_launch.jsonl"
+CRITICAL_MARKER = "BMD-LAUNCHER-CRITICAL"
+"""Prefix of a line on the launcher's stderr (the job's SLURM output) when the journal itself cannot be written."""
 
 _MEMORY_PATTERN = re.compile(r"^[1-9][0-9]*[KMGT]?$")
 
@@ -527,6 +536,8 @@ class _RunningStep:
     process: subprocess.Popen
     log: IO[bytes]
     started_wall: float
+    input_structure: dict = field(default_factory=dict)
+    input_bytes: bytes | None = None
     stop_status: int | None = None
     stop_reason: str = ""
     kill_at: float | None = None
@@ -584,6 +595,13 @@ class Launcher:
         )
         if self._removed_environment:
             self.journal("environment_removed", names=self._removed_environment)
+        try:
+            recovered = evidence_archive.recover(evidence_archive.archive_root(self.settings.search_dir))
+        except OSError as exc:
+            self.journal("evidence_recovery_failed", error=f"{type(exc).__name__}: {exc}")
+        else:
+            if any(recovered.values()):
+                self.journal("evidence_recovered", **recovered)
 
         for path in sorted((self.spool / protocol.CLAIMED_DIR).iterdir()):
             request_id = protocol.request_id_from_filename(path.name)
@@ -717,13 +735,18 @@ class Launcher:
         running.log.close()
         reason = running.stop_reason
         validity = None
+        validity_line = None
         if self.settings.step_validity:
-            validity = self._check_validity(request_id, running, returncode)
+            validity, validity_line = self._check_validity(request_id, running, returncode)
             if validity["classification"] != step_validity.VALID:
                 if status == 0:
                     status = _VALIDITY_EXIT_STATUS[validity["classification"]]
                 if not reason:
                     reason = "; ".join(validity["reasons"])
+        finished_wall = time.time()
+        evidence = self._archive_evidence(request_id, running, returncode=returncode, status=status,
+                                          reason=reason, validity=validity, validity_line=validity_line,
+                                          finished=finished_wall)
         self._write_done(
             request_id,
             status,
@@ -733,6 +756,7 @@ class Launcher:
             returncode=returncode,
             reason=reason,
             validity=None if validity is None else validity["classification"],
+            evidence=evidence,
         )
         (self.spool / protocol.CLAIMED_DIR / f"{request_id}{protocol.REQUEST_SUFFIX}").unlink(
             missing_ok=True
@@ -753,10 +777,11 @@ class Launcher:
 
     def _check_validity(
         self, request_id: str, running: _RunningStep, returncode: int | None
-    ) -> dict:
+    ) -> tuple[dict, str | None]:
         """Classify a finished step, withhold its output if it does not count, record it.
 
-        Never raises: a failure of the check itself makes the step invalid.
+        Returns the verdict and the exact line appended to the CalcFold's record (None if
+        that append failed). Never raises: a failure of the check itself makes the step invalid.
         """
 
         try:
@@ -784,12 +809,11 @@ class Launcher:
                 step_validity.write_json_atomically(archive / "validity.json", result)
             except OSError as exc:
                 result["withhold_error"] = f"{type(exc).__name__}: {exc}"
+        line: str | None = json.dumps(result, sort_keys=True, default=str)
         try:
-            _append_line(
-                running.calcfold / step_validity.CALCFOLD_RECORD_FILE,
-                json.dumps(result, sort_keys=True, default=str),
-            )
+            _append_line(running.calcfold / step_validity.CALCFOLD_RECORD_FILE, line)
         except OSError as exc:
+            line = None
             self.journal("validity_record_failed", id=request_id, error=str(exc))
         self.journal(
             "validity",
@@ -798,7 +822,85 @@ class Launcher:
             classification=result["classification"],
             reasons=result.get("reasons", []),
         )
-        return result
+        return result, line
+
+    def _archive_evidence(
+        self,
+        request_id: str,
+        running: _RunningStep,
+        *,
+        returncode: int | None,
+        status: int,
+        reason: str,
+        validity: dict | None,
+        validity_line: str | None,
+        finished: float,
+    ) -> str | None:
+        """Commit the step's evidence record; return its SHA-256, or None if it could not be committed.
+
+        Runs before the done file is written. Never raises and never changes the step's status:
+        a missing record is reported (journal ``evidence_write_failed``) and shows up as missing
+        evidence in the post-run analysis.
+        """
+
+        try:
+            if returncode is None:
+                # A process that never exited may still be writing: its output is not read.
+                output, output_bytes = {"file": evidence_archive.OUTPUT_STRUCTURE, "present": False,
+                                         "reason": "not read: the step's process never exited"}, None
+            else:
+                source = running.calcfold / evidence_archive.OUTPUT_STRUCTURE
+                for entry in (validity or {}).get("files") or []:
+                    if entry.get("name") == evidence_archive.OUTPUT_STRUCTURE and entry.get("withheld_as"):
+                        source = running.calcfold / entry["withheld_as"]
+                output, output_bytes = evidence_archive.read_structure(
+                    source, name=evidence_archive.OUTPUT_STRUCTURE)
+                output["withheld"] = source.name != evidence_archive.OUTPUT_STRUCTURE
+            log_path = self.spool / protocol.LOGS_DIR / f"{request_id}.log"
+            try:
+                step_log = {"file": log_path.name, "bytes": log_path.stat().st_size,
+                            "sha256": evidence_archive.sha256_file(log_path)}
+            except OSError as exc:
+                step_log = {"file": log_path.name, "present": False, "reason": type(exc).__name__}
+            record = evidence_archive.build_record(
+                request_id=request_id, step=running.request.step, calcfold=running.calcfold,
+                created=running.request.created, slot=running.slot, argv=running.argv,
+                started=running.started_wall, finished=finished, returncode=returncode, status=status,
+                reason=reason, validity=validity, validity_record_line=validity_line, step_log=step_log,
+                input_structure=running.input_structure, output_structure=output,
+            )
+            files = {}
+            if running.input_bytes is not None:
+                files[evidence_archive.INPUT_STRUCTURE] = running.input_bytes
+            if output_bytes is not None:
+                files[evidence_archive.OUTPUT_STRUCTURE] = output_bytes
+            result = evidence_archive.commit(
+                evidence_archive.archive_root(self.settings.search_dir), record, files)
+        except Exception as exc:  # noqa: BLE001 - archiving must never change what USPEX is told
+            self._journal_or_report("evidence_write_failed", id=request_id, error=f"{type(exc).__name__}: {exc}")
+            return None
+        self._journal_or_report("evidence", id=request_id, step=running.request.step, outcome=result["outcome"],
+                                record_sha256=result["record_sha256"],
+                                input_sha256=running.input_structure.get("sha256"),
+                                output_sha256=output.get("sha256"))
+        return result["record_sha256"]
+
+    def _journal_or_report(self, event: str, **fields) -> None:
+        """Journal an evidence event; if the journal cannot be written, say so on stderr and carry on.
+
+        The step's status and done file never depend on this: the evidence path must not stop the
+        answer USPEX is waiting for. A line starting with :data:`CRITICAL_MARKER` lands in the job's
+        SLURM output, which the post-run collector copies and the analysis reads.
+        """
+
+        try:
+            self.journal(event, **fields)
+        except Exception as exc:  # noqa: BLE001
+            try:
+                print(f"{CRITICAL_MARKER}: could not journal {event} {json.dumps(fields, sort_keys=True, default=str)}"
+                      f": {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            except Exception:  # noqa: BLE001 - nothing further can be done without stopping the step
+                pass
 
     def _start_requests(self) -> None:
         requests_dir = self.spool / protocol.REQUESTS_DIR
@@ -876,6 +978,9 @@ class Launcher:
             _append_line(calcfold / LAUNCH_RECORD_FILE, json.dumps(launch_record, sort_keys=True))
         except OSError as exc:
             self.journal("launch_record_failed", id=request.request_id, error=str(exc))
+        # The input structure, as it is before VASP starts (VASP does not rewrite POSCAR).
+        input_structure, input_bytes = evidence_archive.read_structure(
+            calcfold / evidence_archive.INPUT_STRUCTURE, name=evidence_archive.INPUT_STRUCTURE)
         log = open(log_path, "ab")
         try:
             process = subprocess.Popen(
@@ -910,6 +1015,8 @@ class Launcher:
             process=process,
             log=log,
             started_wall=started,
+            input_structure=input_structure,
+            input_bytes=input_bytes,
         )
         self.journal(
             "started_step",
@@ -957,6 +1064,7 @@ class Launcher:
         returncode: int | None = None,
         reason: str = "",
         validity: str | None = None,
+        evidence: str | None = None,
     ) -> None:
         lines = [f"status={status}", f"id={request_id}"]
         if request is not None:
@@ -969,6 +1077,8 @@ class Launcher:
             lines += [f"started={started:.3f}", f"finished={time.time():.3f}"]
         if validity is not None:
             lines.append(f"validity={validity}")
+        if evidence is not None:
+            lines.append(f"evidence={evidence}")
         if reason:
             lines.append("reason=" + reason.replace("\n", " "))
         protocol.write_atomically(self.spool, self._done_path(request_id), "\n".join(lines) + "\n")

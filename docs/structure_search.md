@@ -449,6 +449,37 @@ left in place, would be enough (the optional `status_only` run); the
 bridge keeps withholding the files. Evidence and summary:
 `reference/uspex_pilot/validity_probe/results_23406856/`.
 
+### Scientific evidence archive (before the scientific execution test)
+
+USPEX keeps only the last generation's CalcFolds, so the per-step verdicts and
+relaxed structures of earlier generations would be lost with them. After the
+validity check and **before** the done file (so before USPEX can read the
+result or remove the CalcFold), the launcher commits one record per step to
+`<search>/bmd_evidence/steps/<request id>/`
+(`backend/structure_search/bridge/evidence_archive.py`): `record.json` (the
+request, CalcFold, slot, command, return code, status sent to USPEX, the
+verdict exactly as the checker returned it with its reasons and convergence
+evidence, the SHA-256 of the exact line appended to the CalcFold's
+`bmd_step_validity.jsonl`, the step log's SHA-256), the input `POSCAR` as it
+was when the step started and the output `CONTCAR` (withheld or not), each
+with its SHA-256; a valid step 5 is marked `final_relaxed_structure`. Writes
+go to `.staging/`, are flushed, and become visible by one directory rename;
+`index.jsonl` lists each committed record's SHA-256. A record is never
+replaced: an identical repeat is a duplicate, a different one is kept under
+`conflicts/`. A write a killed launcher left unfinished is moved unchanged
+to `interrupted/` on the next start and never completed; a committed record
+missing from the index is indexed then, if its hashes match. A failure to
+archive is journaled (`evidence_write_failed`) and never changes the status
+USPEX receives: the validity decision stays the checker's. If the journal
+itself cannot be written, the launcher prints a `BMD-LAUNCHER-CRITICAL:` line
+to its stderr (the job's SLURM output) and still publishes the done file. A
+record committed by a launcher that died before the done file was never
+delivered: the next launcher answers USPEX "lost" (121), and the record stays
+as it is. USPEX passes the
+bridge no generation, so records carry `generation: null`; the post-run
+analysis binds them to generations through USPEX's listing. Text only and
+small: never POTCAR, WAVECAR, CHGCAR, OUTCAR or `vasprun.xml`.
+
 ### Frozen search plans and local preparation (USPEX integration step 3)
 
 A New structure request is planned as an immutable

@@ -7,6 +7,9 @@ CalcFold (the commandExecutable) and waiting for it. Up to --parallel
 structures are relaxed at once (numParallelCalcs). After each step it reads
 OSZICAR and CONTCAR, and copies CONTCAR to POSCAR for the next step, as
 USPEX does. A step with a non-zero exit status ends that structure's chain.
+With --remove-calcfolds it removes each CalcFold as soon as its chain has
+ended (its last bridge call returned): earlier than USPEX's own clean-up of a
+generation's CalcFolds, so the earliest removal USPEX could make.
 
 Writes <search dir>/fake_uspex_results.json:
     {"CalcFold1": {"exit_codes": [0, 0], "energies": [...], "final_poscar": "..."}}
@@ -15,6 +18,7 @@ Writes <search dir>/fake_uspex_results.json:
 import argparse
 import json
 import os
+import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -32,7 +36,7 @@ Direct
 """
 
 
-def relax(folder: Path, bridge: str, steps: int) -> dict:
+def relax(folder: Path, bridge: str, steps: int, remove: bool = False) -> dict:
     result = {"exit_codes": [], "energies": [], "final_poscar": None}
     for step in range(1, steps + 1):
         (folder / "INCAR").write_text(f"STEP = {step}\n")
@@ -46,6 +50,8 @@ def relax(folder: Path, bridge: str, steps: int) -> dict:
         result["energies"].append(float(last.split("E0=")[1].split()[0]))
         (folder / "POSCAR").write_text((folder / "CONTCAR").read_text())
     result["final_poscar"] = (folder / "POSCAR").read_text().splitlines()[0]
+    if remove:
+        shutil.rmtree(folder)
     return result
 
 
@@ -56,6 +62,7 @@ def main():
     parser.add_argument("--structures", type=int, required=True)
     parser.add_argument("--steps", type=int, required=True)
     parser.add_argument("--parallel", type=int, required=True)
+    parser.add_argument("--remove-calcfolds", action="store_true")
     args = parser.parse_args()
 
     folders = []
@@ -69,7 +76,7 @@ def main():
         results = dict(
             zip(
                 (folder.name for folder in folders),
-                pool.map(lambda folder: relax(folder, args.bridge, args.steps), folders),
+                pool.map(lambda folder: relax(folder, args.bridge, args.steps, args.remove_calcfolds), folders),
             )
         )
 

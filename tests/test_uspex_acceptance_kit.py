@@ -84,7 +84,8 @@ def submit(kit, clean_env, root, cluster, confirm=None):
 
 def test_submit_needs_the_exact_attempt_id_and_sends_one_request(kit, prepared_root, cluster, clean_env):
     root, attempt = prepared_root, attempt_of(prepared_root)
-    for wrong in ("", attempt.upper(), attempt[:-1] + "0", "14bfbbac-8599-48a6-bcc2-cfea917fd967"):
+    altered = attempt[:-1] + ("1" if attempt[-1] == "0" else "0")  # always differs from the attempt
+    for wrong in ("", attempt.upper(), altered, "14bfbbac-8599-48a6-bcc2-cfea917fd967"):
         with pytest.raises(SystemExit, match="--confirm-attempt must be exactly"):
             submit(kit, clean_env, root, cluster, confirm=wrong or "x")
     assert cluster.sbatch_runs == 0 and not (root / "evidence" / "submission_requested.json").exists()
@@ -109,6 +110,7 @@ def test_submit_refuses_an_attempt_that_is_not_promoted(kit, tmp_path, cluster, 
 def test_historical_validation_attempts_are_never_used(kit, tmp_path):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
+    assert "c6edaf94-a2ab-4be7-a817-ce52f3d14852" in kit.HISTORICAL_ATTEMPTS  # the 4D acceptance of 10 Nov 2026
     for attempt in sorted(kit.HISTORICAL_ATTEMPTS):
         (evidence / "attempt.json").write_text(json.dumps({"attempt_id": attempt, "plan_digest": "sha256:x"}))
         with pytest.raises(SystemExit, match="historical validation attempt"):
@@ -210,7 +212,8 @@ def cancel(kit, clean_env, root, cluster, *, attempt=None, job="9001"):
 
 def test_cancel_needs_the_exact_attempt_and_job(kit, submitted_root, cluster, clean_env):
     attempt = attempt_of(submitted_root)
-    for wrong_attempt, wrong_job in ((attempt, "9002"), (attempt, "9001 "), (attempt[:-1] + "0", "9001"),
+    altered = attempt[:-1] + ("1" if attempt[-1] == "0" else "0")  # always differs from the attempt
+    for wrong_attempt, wrong_job in ((attempt, "9002"), (attempt, "9001 "), (altered, "9001"),
                                      (attempt, "bmds-" + attempt[:8])):
         with pytest.raises(SystemExit, match="must be exactly"):
             cancel(kit, clean_env, submitted_root, cluster, attempt=wrong_attempt, job=wrong_job)

@@ -4,20 +4,26 @@ Run on the BMD Compute VM, from a separate checkout of the reviewed commit
 (never the live deployment directory), with the interpreter of the service
 environment. Each step is a subcommand taking the same new ROOT:
 
-    setup ROOT [--acceptance-walltime 00:15:00]
-                     create a new, private validation root (it must not exist); with the option, an
-                     acceptance root whose search uses that 10-15 minute walltime (the planner's override)
+    setup ROOT [--acceptance-walltime 00:15:00 | --execution]
+                     create a new, private validation root (it must not exist); --acceptance-walltime: the
+                     operational acceptance (10-15 minutes); --execution: the scientific execution acceptance
+                     (Si, 2 atoms, 2 generations, 04:00:00, pinned plan digest), both via the planner
     preflight ROOT   read-only POWER checks (power_preflight.sh over SSH)
     run ROOT         plan -> prepare -> stage -> read back -> fresh re-verification
     promote ROOT     acknowledge the resource request -> promote to SEARCH_PREPARED (no sbatch)
     evidence ROOT    independent read-only POWER evidence (power_evidence.sh over SSH)
-    submit ROOT --confirm-attempt ID
-                     the one submission request of this validation (one sbatch, by the service)
+    submit ROOT --confirm-attempt ID [--confirm-walltime 04:00:00]
+                     the one submission request of this validation (one sbatch, by the service); the
+                     execution profile also needs its walltime confirmed
     observe ROOT     one read-only observation (no submission, no cancellation)
     cancel ROOT --confirm-attempt ID --confirm-job JOB
                      request cancellation of exactly that job (scancel, by the service, after a fresh check)
     acceptance-evidence ROOT
                      independent read-only POWER evidence of the job (power_acceptance_evidence.sh over SSH)
+    execution-evidence ROOT
+                     after an execution-profile job has ended: collect its POWER evidence read-only
+                     (execution_validation/power_execution_evidence.sh over SSH), fetch it and analyse it
+                     (execution_validation/analyze_execution.py)
     archive ROOT     ROOT.tgz with the evidence, checked to hold no secret or POTCAR text
 
 Validation root (all private to the user)::
@@ -89,7 +95,10 @@ FORBIDDEN_TEXT = ("VRHFIN", "POMASS", "PSCTR", "LEXCH", "End of Dataset", "PRIVA
                   "Bearer ", "bmdc1.", '"verifier"')
 REDACTED = "<redacted: HMAC submission identity, not archived>"
 # The 4C and 4D-2 validation attempts are evidence and are never submitted.
-HISTORICAL_ATTEMPTS = frozenset({"5ead0670-911a-4c52-9587-9f3ae9539269", "14bfbbac-8599-48a6-bcc2-cfea917fd967"})
+# Earlier validations (4D-2 promotion, 4D-2 staging, the 4D acceptance of 10 Nov 2026): kept as evidence,
+# never submitted, observed or cancelled again by the kit.
+HISTORICAL_ATTEMPTS = frozenset({"5ead0670-911a-4c52-9587-9f3ae9539269", "14bfbbac-8599-48a6-bcc2-cfea917fd967",
+                                 "c6edaf94-a2ab-4be7-a817-ce52f3d14852"})
 JOB_ID_RE = re.compile(r"^[0-9]{1,20}$")
 TERMINAL_STATES = ("SEARCH_COMPLETED", "SEARCH_FAILED", "SEARCH_CANCELLED", "SEARCH_TIMED_OUT")
 UNCERTAIN_CODES = ("submission_uncertain", "submission_unverified", "submission_ambiguous", "submission_conflict")
@@ -99,6 +108,22 @@ RESUMABLE_CANCELLATION = ("remote_request_uncertain", "remote_recorded_command_p
 # plan or a job script), carried by the plan digest, the acknowledgement, the job script and the remote record.
 ACCEPTANCE_WALLTIME_DEFAULT = "00:15:00"
 ACCEPTANCE_WALLTIME_RANGE_S = (10 * 60, 15 * 60)
+# The scientific execution acceptance (execution_validation/DESIGN.md): a fixed, small Si search, set only through
+# the planner's Advanced settings. Its plan digest is pinned: the kit refuses any other plan for this profile.
+EXECUTION_SEARCH = {"min_atoms": 2, "max_atoms": 2, "num_generations": 2, "walltime": "04:00:00"}
+EXECUTION_WALLTIME = "04:00:00"
+EXECUTION_PLAN_DIGEST = "sha256:1989c888f58012590920ebbf4b5ca31c2d5aa0dd53449cc6bcbe3951b9b4898e"
+EXECUTION_DIRECTIVES = (
+    "#SBATCH -p leeburton-pool", "#SBATCH --account=power-leeburton-users_v2", "#SBATCH --qos=owner100d",
+    "#SBATCH --time=04:00:00", "#SBATCH --nodes=1", "#SBATCH --ntasks=192", "#SBATCH --exclusive",
+    "#SBATCH --mem=0", "#SBATCH --exclude=compute-0-[332-333]",
+)
+EXECUTION_SPEC = {"min_atoms": 2, "max_atoms": 2, "num_generations": 2, "population_size": 10,
+                  "initial_population_size": 10, "stop_criterion": 2, "walltime": "04:00:00"}
+EXECUTION_LAUNCH = {"mode": "srun_steps", "parallel_relaxations": 4, "ranks_per_relaxation": 48}
+EXECUTION_STEPS = 5
+EXECUTION_DIR = HERE.parent / "execution_validation"
+POWER_EVIDENCE_PARENT = "/bmd-db/guest/validation"
 
 
 class ValidationFailed(SystemExit):
@@ -140,10 +165,12 @@ def canonical_acceptance_walltime(value: str) -> str:
     return walltime
 
 
-def setup(root: Path, *, acceptance_walltime: str | None = None) -> None:
+def setup(root: Path, *, acceptance_walltime: str | None = None, execution: bool = False) -> None:
     sys.path.insert(0, str(REPO))
     from compute_api.auth import TOKENS_FILE_SCHEMA, TOKENS_FILE_SCHEMA_VERSION, generate_token
 
+    _require(not (execution and acceptance_walltime is not None),
+             "choose one profile: --acceptance-walltime (operational) or --execution (scientific execution).")
     walltime = canonical_acceptance_walltime(acceptance_walltime) if acceptance_walltime is not None else None
     root = Path(os.path.abspath(root))
     _require(root == root.resolve(), f"{root} goes through a symbolic link.")
@@ -164,26 +191,45 @@ def setup(root: Path, *, acceptance_walltime: str | None = None) -> None:
     if walltime is not None:
         marker["acceptance"] = {"walltime": walltime, "search": {"walltime": walltime},
                                 "note": "submission-and-cancellation acceptance: short allocation via the planner"}
+    if execution:
+        marker["acceptance"] = {"profile": "execution", "walltime": EXECUTION_WALLTIME,
+                                "search": dict(EXECUTION_SEARCH), "plan_digest": EXECUTION_PLAN_DIGEST,
+                                "note": "scientific execution acceptance: a 2-atom, two-generation Si search"}
     _private_file(root / "VALIDATION_ROOT.json", json.dumps(marker, indent=2) + "\n")
-    print(f"Validation root ready: {root}" + (f" (acceptance, walltime {walltime})" if walltime else ""))
+    print(f"Validation root ready: {root}" + (f" (acceptance, walltime {walltime})" if walltime else "")
+          + (f" (execution acceptance, walltime {EXECUTION_WALLTIME})" if execution else ""))
 
 
-def acceptance_walltime(root: Path) -> str | None:
+def acceptance_profile(root: Path) -> dict | None:
+    """The root's acceptance profile: None (staging/promotion only), ``operational`` or ``execution``."""
+
     marker = json.loads((root / "VALIDATION_ROOT.json").read_text(encoding="utf-8"))
     acceptance = marker.get("acceptance")
     if acceptance is None:
         return None
+    if acceptance.get("profile") == "execution":
+        _require(acceptance.get("walltime") == EXECUTION_WALLTIME and acceptance.get("search") == EXECUTION_SEARCH
+                 and acceptance.get("plan_digest") == EXECUTION_PLAN_DIGEST,
+                 "the validation root's execution profile is not the approved one.")
+        return {"profile": "execution", "walltime": EXECUTION_WALLTIME, "search": dict(EXECUTION_SEARCH),
+                "plan_digest": EXECUTION_PLAN_DIGEST}
+    _require("profile" not in acceptance, f"unknown acceptance profile {acceptance.get('profile')!r}.")
     walltime = canonical_acceptance_walltime(acceptance.get("walltime"))
     _require(acceptance == {**acceptance, "walltime": walltime, "search": {"walltime": walltime}},
              "the validation root's acceptance settings are inconsistent.")
-    return walltime
+    return {"profile": "operational", "walltime": walltime, "search": {"walltime": walltime}, "plan_digest": None}
+
+
+def acceptance_walltime(root: Path) -> str | None:
+    profile = acceptance_profile(root)
+    return profile["walltime"] if profile else None
 
 
 def search_body(root: Path) -> dict:
-    """The planning request: Si with the search defaults, or with the acceptance's walltime override."""
+    """The planning request: Si with the search defaults, or with the profile's Advanced settings."""
 
-    walltime = acceptance_walltime(root)
-    return {"formula": FORMULA, **({"search": {"walltime": walltime}} if walltime else {})}
+    profile = acceptance_profile(root)
+    return {"formula": FORMULA, **({"search": dict(profile["search"])} if profile else {})}
 
 
 def check_allocation(resources: dict, walltime: str, where: str) -> None:
@@ -399,9 +445,17 @@ def run(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc: Pat
                                          search_body(root))
         _require(status == 200, f"planning returned {status}.")
         digest = plan["plan_digest"]
+        profile = acceptance_profile(root)
+        if profile and profile["profile"] == "execution":
+            _require(digest == EXECUTION_PLAN_DIGEST,
+                     f"the planner gives {digest} for the execution search, not the approved "
+                     f"{EXECUTION_PLAN_DIGEST}; nothing was prepared.")
         attempt_id = str(uuid.uuid4())
         _private_file(attempt_file, json.dumps({"attempt_id": attempt_id, "plan_digest": digest}, indent=2) + "\n")
 
+    profile = acceptance_profile(root)
+    if profile and profile["profile"] == "execution":
+        _require(digest == EXECUTION_PLAN_DIGEST, "this attempt's plan is not the approved execution plan.")
     route = f"/api/v1/structure-search-attempts/{attempt_id}"
     status, prepared = recorder.exchange(client, "prepare", "PUT", route, token,
                                          {**search_body(root), "expected_plan_digest": digest})
@@ -564,8 +618,8 @@ def _stop_on_error(status: int, payload: dict, step: str, evidence: Path, advice
                            f"Evidence is in {evidence}. {advice}")
 
 
-def submit(root: Path, *, confirm_attempt: str, allow_dirty: bool = False, runner_factory=None,
-           proc: Path = Path("/proc")) -> dict:
+def submit(root: Path, *, confirm_attempt: str, confirm_walltime: str | None = None, allow_dirty: bool = False,
+           runner_factory=None, proc: Path = Path("/proc")) -> dict:
     """The one submission request of this validation (one `sbatch`, by the service), never repeated by the kit."""
 
     root = Path(os.path.abspath(root))  # before _open_api changes the working directory
@@ -584,11 +638,18 @@ def submit(root: Path, *, confirm_attempt: str, allow_dirty: bool = False, runne
              f"the attempt is {current.get('state')}, not a submission-ready PREPARED attempt; nothing was sent.")
     promotion = current["promotion"]
     _require(promotion["remote_state"] == "SEARCH_PREPARED", "POWER did not last record SEARCH_PREPARED.")
-    walltime = acceptance_walltime(root)
-    _require(walltime is not None, "this root was not set up for the acceptance ('setup --acceptance-walltime'); "
-                                   "the kit never submits a default (168-hour) allocation. Nothing was sent.")
+    profile = acceptance_profile(root)
+    _require(profile is not None, "this root was not set up for an acceptance ('setup --acceptance-walltime' or "
+                                  "'setup --execution'); the kit never submits a default (168-hour) allocation. "
+                                  "Nothing was sent.")
+    walltime = profile["walltime"]
+    if profile["profile"] == "execution":
+        _require(confirm_walltime == walltime,
+                 f"--confirm-walltime must be exactly {walltime} for the execution acceptance; nothing was sent.")
+    else:
+        _require(confirm_walltime in (None, walltime), f"--confirm-walltime must be {walltime}; nothing was sent.")
     allocation = verify_short_allocation(api, recorder, attempt_id=attempt_id, digest=digest, walltime=walltime,
-                                         current=current)
+                                         current=current, profile=profile)
     body = {"expected_plan_digest": digest, "job_script_sha256": promotion["job_script"]["sha256"],
             "resource_acknowledgement": {"acknowledged": True,
                                          "resources_sha256": promotion["acknowledgement"]["resources_sha256"]}}
@@ -619,8 +680,9 @@ def submit(root: Path, *, confirm_attempt: str, allow_dirty: bool = False, runne
     job = {"attempt_id": attempt_id, "job_id": sub["job_id"], "job_name": sub["job_name"],
            "attempt_comment": sub["attempt_comment"], "run_name": record["staging"]["run_name"],
            "run_dir": record["staging"]["spec"]["paths"]["run_dir"], "requested_at": sub["requested_at"],
-           "submitted_at": sub["submitted_at"], "walltime": walltime,
-           "job_script_sha256": allocation["job_script_sha256"]}
+           "submitted_at": sub["submitted_at"], "walltime": walltime, "profile": profile["profile"],
+           "job_script_sha256": allocation["job_script_sha256"],
+           "acknowledgement_sha256": allocation["acknowledgement_sha256"]}
     _private_file(evidence / "job.json", json.dumps(job, indent=2, sort_keys=True) + "\n")
     recorder.save("submission_summary", {**job, "commit": api["commit"], "state": submitted["state"]})
     _write_sums(evidence)
@@ -631,6 +693,12 @@ def submit(root: Path, *, confirm_attempt: str, allow_dirty: bool = False, runne
 def rebuilt_job_script(state: Path, attempt_id: str) -> str:
     """The job script the service would submit, rebuilt from the frozen inputs (its SHA-256 checked by the service)."""
 
+    return frozen_inputs(state, attempt_id)[4]
+
+
+def frozen_inputs(state: Path, attempt_id: str):
+    """(plan, local manifest, sources, manifest, job script) rebuilt by the service from the frozen inputs."""
+
     from compute_api.execution import ExecutionError
     from compute_api.structure_search_execution import SearchAttemptLedger
     from compute_api.structure_search_submission import _inputs
@@ -639,23 +707,55 @@ def rebuilt_job_script(state: Path, attempt_id: str) -> str:
     _require(ledger.root == state / "structure_search", "the ledger is not the validation's own.")
     inputs = _inputs(ledger, ledger.read(attempt_id))
     if isinstance(inputs, ExecutionError):
-        raise ValidationFailed(f"VALIDATION FAILED: the job script cannot be rebuilt ({inputs.code}); nothing was sent.")
-    return inputs[4]
+        raise ValidationFailed(f"VALIDATION FAILED: the frozen inputs cannot be rebuilt ({inputs.code}); nothing was "
+                               "sent.")
+    return inputs
 
 
-def verify_short_allocation(api: dict, recorder, *, attempt_id: str, digest: str, walltime: str, current: dict) -> dict:
-    """Before the one sbatch: the short walltime in the plan digest, the acknowledgement and the job script."""
+def verify_execution_plan(api: dict, attempt_id: str, digest: str, current: dict) -> dict:
+    """The execution profile's exact plan: pinned digest, resource request, spec and launch settings."""
+
+    _require(digest == EXECUTION_PLAN_DIGEST, f"the attempt's plan {digest} is not the approved execution plan "
+                                              f"{EXECUTION_PLAN_DIGEST}; nothing was sent.")
+    resources = current["resources"]
+    _require(tuple(resources["sbatch_directives"]) == EXECUTION_DIRECTIVES,
+             f"the resource request is {resources['sbatch_directives']}, not the approved one; nothing was sent.")
+    request = resources["request"]
+    _require((request["nodes"], request["ntasks"], request["exclusive"], request["mem"]) == (1, 192, True, "0"),
+             "the resource request is not one exclusive 192-core node with all its memory; nothing was sent.")
+    plan = frozen_inputs(api["state"], attempt_id)[0]
+    _require(plan.digest == EXECUTION_PLAN_DIGEST, "the frozen plan is not the approved execution plan.")
+    spec = plan.record["search"]["spec"]
+    _require({key: spec.get(key) for key in EXECUTION_SPEC} == EXECUTION_SPEC,
+             f"the frozen search settings are not the approved ones: {spec}; nothing was sent.")
+    launch = plan.record["runtime"]["launch"]
+    _require({key: launch.get(key) for key in EXECUTION_LAUNCH} == EXECUTION_LAUNCH,
+             f"the frozen launch settings are not 4 parallel 48-rank steps (srun_steps): {launch}; nothing was sent.")
+    _require(len(plan.record["incar_files"]) == EXECUTION_STEPS, "the frozen plan is not the five-step ladder.")
+    return {"spec": {key: spec.get(key) for key in EXECUTION_SPEC}, "launch": dict(EXECUTION_LAUNCH),
+            "incar_sha256": {name: row["sha256"] for name, row in sorted(plan.record["incar_files"].items())}}
+
+
+def verify_short_allocation(api: dict, recorder, *, attempt_id: str, digest: str, walltime: str, current: dict,
+                            profile: dict | None = None) -> dict:
+    """Before the one sbatch: the profile's walltime (and, for ``execution``, the whole frozen plan) in the plan
+    digest, the acknowledgement and the job script."""
 
     from backend.calculations.resources import walltime_seconds
 
-    low, high = ACCEPTANCE_WALLTIME_RANGE_S
-    _require(low <= walltime_seconds(walltime) <= high, f"walltime {walltime} is outside 10-15 minutes.")
+    profile = profile or {"profile": "operational", "search": {"walltime": walltime}}
+    execution = None
+    if profile["profile"] == "execution":
+        execution = verify_execution_plan(api, attempt_id, digest, current)
+    else:
+        low, high = ACCEPTANCE_WALLTIME_RANGE_S
+        _require(low <= walltime_seconds(walltime) <= high, f"walltime {walltime} is outside 10-15 minutes.")
     check_allocation(current["resources"], walltime, "the attempt's resource request")
     client, token = api["client"], api["token"]
     status, replanned = recorder.exchange(client, "replan_acceptance", "POST", "/api/v1/structure-search-plans",
-                                          token, {"formula": FORMULA, "search": {"walltime": walltime}})
+                                          token, {"formula": FORMULA, "search": dict(profile["search"])})
     _require(status == 200 and replanned["plan_digest"] == digest,
-             "the plan digest is not the planner's digest for this walltime; nothing was sent.")
+             "the plan digest is not the planner's digest for this profile's settings; nothing was sent.")
     status, default = recorder.exchange(client, "replan_default", "POST", "/api/v1/structure-search-plans", token,
                                         {"formula": FORMULA})
     _require(status == 200 and default["plan_digest"] != digest,
@@ -672,11 +772,25 @@ def verify_short_allocation(api: dict, recorder, *, attempt_id: str, digest: str
     script_sha256 = hashlib.sha256(script.encode("utf-8")).hexdigest()
     _require(script_sha256 == record["promotion"]["job_script"]["sha256"],
              "the rebuilt job script is not the promoted one; nothing was sent.")
-    summary = {"walltime": walltime, "plan_digest": digest, "default_plan_digest": default["plan_digest"],
+    if execution is not None:
+        directives = tuple(line.strip() for line in script.splitlines() if line.lstrip().startswith("#SBATCH")
+                           and not line.strip().startswith(("#SBATCH --job-name", "#SBATCH --comment",
+                                                            "#SBATCH --chdir", "#SBATCH --output",
+                                                            "#SBATCH --no-requeue")))
+        _require(directives == EXECUTION_DIRECTIVES,
+                 f"the job script's resource directives are {list(directives)}, not the approved ones; nothing was "
+                 "sent.")
+        check_allocation(acknowledgement["resources"], walltime, "the resource acknowledgement")
+        _require(tuple(acknowledgement["resources"]["sbatch_directives"]) == EXECUTION_DIRECTIVES,
+                 "the resource acknowledgement does not cover exactly the approved request; nothing was sent.")
+    summary = {"profile": profile["profile"], "walltime": walltime, "plan_digest": digest,
+               "default_plan_digest": default["plan_digest"],
                "acknowledgement_sha256": acknowledgement["acknowledgement_sha256"],
-               "job_script_sha256": script_sha256, "job_script_time_directives": times}
-    recorder.save("short_allocation_check", summary)
-    print(f"Short allocation verified: {walltime} in the plan digest, the acknowledgement and the job script.")
+               "job_script_sha256": script_sha256, "job_script_time_directives": times,
+               **({"execution": execution} if execution else {})}
+    recorder.save("short_allocation_check" if execution is None else "execution_allocation_check", summary)
+    print(f"Allocation verified ({profile['profile']}): {walltime} in the plan digest, the acknowledgement and the "
+          "job script.")
     return summary
 
 
@@ -816,13 +930,13 @@ def acceptance_arguments(root: Path) -> tuple[str, str, str, str]:
     return attempt, run_name, job["job_id"], walltime
 
 
-def run_power_script(root: Path, script: str, output_name: str, arguments: tuple[str, ...] = ()) -> int:
+def run_power_script(root: Path, script, output_name: str, arguments: tuple[str, ...] = ()) -> int:
     """Run one kit script on POWER as bmdguest; record its output beside the evidence (never overwritten)."""
 
     output = root / output_name
     _require(not output.exists(), f"{output} exists; it is not overwritten.")
     command = ["ssh", "-o", "BatchMode=yes", SSH_HOST, remote_command(*arguments)]
-    with open(HERE / script, "rb") as stdin:
+    with open(script if isinstance(script, Path) else HERE / script, "rb") as stdin:
         completed = subprocess.run(command, stdin=stdin, capture_output=True)
     text = completed.stdout.decode("utf-8", "replace") + completed.stderr.decode("utf-8", "replace")
     _private_file(output, text)
@@ -846,6 +960,119 @@ def acceptance_evidence(root: Path, *, proc: Path = Path("/proc")) -> int:
                             arguments)
 
 
+# -- scientific execution evidence (execution_validation/) -----------------------------------------------------
+
+
+def execution_arguments(root: Path) -> tuple[str, str, str]:
+    """Attempt ID, run name and job ID of an execution-profile validation whose job has ended."""
+
+    profile = acceptance_profile(root)
+    _require(profile is not None and profile["profile"] == "execution",
+             "this root was not set up for the execution acceptance ('setup --execution').")
+    attempt, run_name = evidence_arguments(root, states=set(TERMINAL_STATES))
+    job = _own_job(root / "evidence", attempt)
+    record = json.loads((root / "state" / "structure_search" / "attempts" / f"{attempt}.json").read_text())
+    _require(record["submission"]["job_id"] == job["job_id"], "job.json and the ledger name different jobs.")
+    _require(record["plan_digest"] == EXECUTION_PLAN_DIGEST, "the attempt's plan is not the approved execution plan.")
+    return attempt, run_name, job["job_id"]
+
+
+def execution_expected(root: Path, attempt: str, job_id: str) -> dict:
+    """What the evidence must show, from the validation's own frozen records (never from the evidence)."""
+
+    record = json.loads((root / "state" / "structure_search" / "attempts" / f"{attempt}.json").read_text())
+    plans = sorted((root / "state" / "structure_search" / "preparations" / attempt).rglob("search_plan.json"))
+    _require(len(plans) == 1, "the frozen plan of this attempt was not found exactly once.")
+    plan = json.loads(plans[0].read_text(encoding="utf-8"))
+    plan_record = plan.get("record", plan)
+    incars = plan_record.get("incar_files") or {}
+    _require(len(incars) == EXECUTION_STEPS, "the frozen plan does not hold the five ladder INCARs.")
+    job = _own_job(root / "evidence", attempt)
+    return {
+        "attempt_id": attempt, "job_id": job_id, "plan_digest": record["plan_digest"],
+        "walltime": EXECUTION_WALLTIME, "parallel": EXECUTION_LAUNCH["parallel_relaxations"],
+        "ranks": EXECUTION_LAUNCH["ranks_per_relaxation"], "steps": EXECUTION_STEPS,
+        "generations": EXECUTION_SEARCH["num_generations"],
+        # One cell size (min_atoms = max_atoms = 2) and zero pressure (admission policy): USPEX's
+        # listed energy is then F per cell, or per atom, never an enthalpy.
+        "cell_atoms": EXECUTION_SEARCH["min_atoms"], "pressure_gpa": 0.0,
+        "job_script_sha256": record["promotion"]["job_script"]["sha256"],
+        "acknowledgement_sha256": record["promotion"]["acknowledgement"]["acknowledgement_sha256"],
+        "incar_sha256": {name: row["sha256"] for name, row in sorted(incars.items())},
+        "job_json": job,
+    }
+
+
+def fetch_power_directory(remote_dir: str, target: Path) -> None:
+    """Copy one evidence directory from POWER (``tar`` over SSH) into a new local directory, links refused."""
+
+    parent, _, leaf = remote_dir.rpartition("/")
+    _require(parent == POWER_EVIDENCE_PARENT and re.fullmatch(r"uspex_execution_4d_[0-9TZ]+_[0-9a-f]{8}_[0-9]+", leaf)
+             is not None, f"unexpected evidence directory {remote_dir!r}.")
+    parent, name = remote_dir.rsplit("/", 1)
+    command = ["ssh", "-o", "BatchMode=yes", SSH_HOST, f"tar -C {shlex.quote(parent)} -czf - {shlex.quote(name)}"]
+    completed = subprocess.run(command, capture_output=True)
+    _require(completed.returncode == 0, f"fetching {remote_dir} failed: {completed.stderr.decode()[-300:]}")
+    target.mkdir(mode=0o700)
+    with tarfile.open(fileobj=io.BytesIO(completed.stdout), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            parts = Path(member.name).parts
+            _require(member.isfile() or member.isdir(), f"{member.name} is not a file or directory.")
+            _require(parts and parts[0] == name and ".." not in parts and not Path(member.name).is_absolute(),
+                     f"{member.name} is outside the evidence directory.")
+            destination = target.joinpath(*parts[1:]) if len(parts) > 1 else target
+            if member.isdir():
+                destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+                continue
+            destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            source = tar.extractfile(member)
+            fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(source.read())
+
+
+def load_analyser():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("analyze_execution", EXECUTION_DIR / "analyze_execution.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def execution_evidence(root: Path, *, proc: Path = Path("/proc")) -> int:
+    """Collect the POWER evidence of the ended execution job (read-only), fetch it, and analyse it locally.
+
+    Returns 0 for PASSED, 1 for FAILED, 2 for INCOMPLETE EVIDENCE (or a collection failure).
+    """
+
+    root = Path(os.path.abspath(root))
+    check_isolation(root, proc=proc)
+    attempt, run_name, job_id = execution_arguments(root)
+    expected = execution_expected(root, attempt, job_id)
+    index = 1 + len(list(root.glob("power_execution_evidence_*.txt")))
+    output = f"power_execution_evidence_{index:02d}.txt"
+    returncode = run_power_script(root, EXECUTION_DIR / "power_execution_evidence.sh", output,
+                                  (attempt, run_name, job_id))
+    text = (root / output).read_text(encoding="utf-8", errors="replace")
+    found = re.findall(r"^EVIDENCE DIRECTORY: (\S+)$", text, flags=re.M)
+    if not found:
+        print("STOP: the collector made no evidence directory (see the output above).")
+        return 2
+    target = root / f"execution_evidence_{index:02d}"
+    fetch_power_directory(found[-1], target)
+    analyser = load_analyser()
+    report = analyser.analyse(target, {key: value for key, value in expected.items() if key != "job_json"})
+    report["collector_returncode"] = returncode
+    report["power_evidence_directory"] = found[-1]
+    _private_file(root / f"execution_analysis_{index:02d}.json", json.dumps(report, indent=2, sort_keys=True) + "\n")
+    print("\n".join(analyser.summary_lines(report)))
+    if returncode != 0:
+        print("STOP: the collector reported a failure; the analysis above is not a pass.")
+        return 1
+    return {"PASSED": 0, "FAILED": 1}.get(report["result"], 2)
+
+
 def evidence(root: Path, *, proc: Path = Path("/proc")) -> int:
     root = Path(os.path.abspath(root))
     check_isolation(root, proc=proc)
@@ -865,6 +1092,9 @@ def archive_members(root: Path) -> list[Path]:
     members += [root / name for name in ("run.log", "power_preflight.txt", "power_evidence.txt")
                 if (root / name).is_file()]
     members += sorted(root.glob("power_acceptance_evidence_*.txt"))
+    members += sorted(root.glob("power_execution_evidence_*.txt")) + sorted(root.glob("execution_analysis_*.json"))
+    for directory in sorted(root.glob("execution_evidence_*")):
+        members += sorted(p for p in directory.rglob("*") if p.is_file())
     return members
 
 
@@ -900,7 +1130,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("setup", "preflight", "run", "promote", "evidence", "submit", "observe", "cancel",
-                 "acceptance-evidence", "archive"):
+                 "acceptance-evidence", "execution-evidence", "archive"):
         sub.add_parser(name).add_argument("root", type=Path)
     for name in ("run", "promote", "submit", "observe", "cancel"):
         sub.choices[name].add_argument("--allow-dirty", action="store_true", help=argparse.SUPPRESS)
@@ -909,9 +1139,14 @@ def main(argv=None) -> int:
     sub.choices["cancel"].add_argument("--confirm-job", required=True, metavar="JOB_ID")
     sub.choices["setup"].add_argument("--acceptance-walltime", metavar="HH:MM:SS",
                                       help="a submission acceptance root: this 10-15 minute walltime (planner override)")
+    sub.choices["setup"].add_argument("--execution", action="store_true",
+                                      help="a scientific execution acceptance root (2-atom, two-generation Si, 4 h)")
+    sub.choices["submit"].add_argument("--confirm-walltime", metavar="HH:MM:SS",
+                                       help="required for the execution profile: exactly its walltime")
     args = parser.parse_args(argv)
     if args.command == "submit":
-        submit(args.root, confirm_attempt=args.confirm_attempt, allow_dirty=args.allow_dirty)
+        submit(args.root, confirm_attempt=args.confirm_attempt, confirm_walltime=args.confirm_walltime,
+               allow_dirty=args.allow_dirty)
         return 0
     if args.command == "observe":
         observe(args.root, allow_dirty=args.allow_dirty)
@@ -922,8 +1157,10 @@ def main(argv=None) -> int:
         return 0
     if args.command == "acceptance-evidence":
         return acceptance_evidence(args.root)
+    if args.command == "execution-evidence":
+        return execution_evidence(args.root)
     if args.command == "setup":
-        setup(args.root, acceptance_walltime=args.acceptance_walltime)
+        setup(args.root, acceptance_walltime=args.acceptance_walltime, execution=args.execution)
         return 0
     if args.command == "run":
         run(args.root, allow_dirty=args.allow_dirty)
