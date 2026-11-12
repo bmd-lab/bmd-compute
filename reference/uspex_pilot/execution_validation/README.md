@@ -8,9 +8,10 @@ its estimates are in [`DESIGN.md`](DESIGN.md). The operational pathway
 | | |
 | --- | --- |
 | Search | Si; `min_atoms` 2, `max_atoms` 2, `num_generations` 2 (the planner's Advanced settings); population 10 and `stopCrit` 2 by policy |
-| Plan digest (pinned in the kit) | `sha256:1989c888f58012590920ebbf4b5ca31c2d5aa0dd53449cc6bcbe3951b9b4898e` |
-| Resources | `-p leeburton-pool --account=power-leeburton-users_v2 --qos=owner100d --time=04:00:00 --nodes=1 --ntasks=192 --exclusive --mem=0 --exclude=compute-0-[332-333]` |
-| Launch | `srun_steps`: 4 parallel relaxations × 48 ranks, per-step memory = 90 % of the allocated node memory / 4 |
+| Profiles | `--execution-shared` (**approved, 12 Nov 2026**): 3 parallel relaxations × 16 ranks = 48 CPUs on a shared node, `--mem=32G`, no `--exclusive`; `--execution`: 4 × 48 = 192 CPUs on one exclusive node (job 23590056's profile) |
+| Plan digest (pinned in the kit) | shared: `sha256:0b3b09de2b115cc8a72ea43b2e22ac5db2545e0d5012ff7057a0b6cbc8469e79`; exclusive: `sha256:1989c888f58012590920ebbf4b5ca31c2d5aa0dd53449cc6bcbe3951b9b4898e` |
+| Resources (shared) | `-p leeburton-pool --account=power-leeburton-users_v2 --qos=owner100d --time=04:00:00 --nodes=1 --ntasks=48 --mem=32G --exclude=compute-0-[332-333]`; request hash `sha256:d4eaedfd…` |
+| Launch (shared) | `srun_steps`: 3 parallel relaxations × 16 ranks, per-step memory = 90 % of 32 GB / 3 = 9830M; no rank reserved for the USPEX master and launcher (batch step); no core numbers set. Concurrent placement and memory on a shared POWER node are still to be validated by this run (`parallel`, `pinning`, `memory`, step `MaxRSS`) |
 | Science | the five-step ladder, KresolStart, Si POTCAR and validity rules, unchanged |
 | Walltime | 4 h is the maximum allocation, not a prediction (estimate 0.5–2 h) |
 
@@ -22,7 +23,7 @@ its estimates are in [`DESIGN.md`](DESIGN.md). The operational pathway
 | `analyze_execution.py` | local analyser of the fetched evidence (standard library; pymatgen for symmetry) |
 
 The kit commands live in `../staging_validation/run_staging_validation.py`
-(`setup --execution`, `run`, `promote`, `evidence`, `submit
+(`setup --execution-shared` or `--execution`, `run`, `promote`, `evidence`, `submit
 --confirm-attempt ID --confirm-walltime 04:00:00`, `observe`, `cancel`,
 `execution-evidence`, `archive`), with the same isolated root, ledger, token
 and principal as every other part of the kit.
@@ -57,13 +58,13 @@ Each check is `verified`, `failed` or `missing` (evidence absent):
 | --- | --- |
 | `collection` | allowlisted records only; run directory unchanged |
 | `slurm_outcome` | SLURM's settled state and exit code (a fact, not the verdict) |
-| `allocation` | 192 CPUs, one node, time limit 04:00:00 |
+| `allocation` | the frozen plan's CPUs (concurrency × ranks: 48 shared, 192 exclusive), one node, time limit 04:00:00 |
 | `runtime_check` | passed on the compute node, MPI library and SLURM version included, 4 × 48 |
-| `memory` | node memory recorded, equal to SLURM's AllocTRES, per-step memory = 90 % / 4 |
+| `memory` | job memory recorded, equal to SLURM's AllocTRES and (explicit `--mem`) to the plan's, per-step memory = 90 % / concurrency |
 | `uspex_startup` | USPEX 25.0 banner, master started, `INPUT.txt` the managed one |
 | `bridge` | every bridge request ran once and was answered; no rejected, lost or abandoned steps |
 | `vasp_steps` | every step an `srun` of 48 ranks with the per-step memory, a SLURM step of 48 CPUs, VASP printed a final F |
-| `parallel` | between 2 and 4 steps at a time |
+| `parallel` | between 2 steps and the plan's concurrency at a time |
 | `pinning` | every step's Intel MPI report lists ranks 0–47 once, on one host, each with cores; concurrent steps on disjoint cores. Overlap fails; an absent, partial or unreadable report is `missing`, never success |
 | `validity_decisions` | one decision per step, the same in journal, done file and status; done status 0 / 118 / 119 / non-zero |
 | `chains` | each candidate ran steps 1, 2, … in order, once each, and stopped at its first step not accepted; a step is accepted only with completion evidence: the `finished` event and the done file USPEX read both say `valid`, status 0 (an archived verdict alone is not delivery) |
@@ -162,7 +163,7 @@ K=reference/uspex_pilot/staging_validation/run_staging_validation.py
 # E1. A new private execution root (Si 2/2 atoms, 2 generations, population 10, 04:00:00, plan digest pinned).
 mkdir -p -m 700 ~/bmd-validation
 VROOT=~/bmd-validation/uspex-execution-$(date -u +%Y%m%dT%H%M%SZ)
-env -u BMD_API_STATE_DIR -u BMD_API_TOKENS_FILE "$BMD_PY" $K setup "$VROOT" --execution
+env -u BMD_API_STATE_DIR -u BMD_API_TOKENS_FILE "$BMD_PY" $K setup "$VROOT" --execution-shared
 
 # E2. Read-only POWER preflight.                      Expect: PREFLIGHT PASSED
 "$BMD_PY" $K preflight "$VROOT"
@@ -174,7 +175,7 @@ python3 -c "import json,glob,sys; s=json.load(open(sorted(glob.glob(sys.argv[1]+
 #     Expect: sha256:1989c888f58012590920ebbf4b5ca31c2d5aa0dd53449cc6bcbe3951b9b4898e  <the reviewed runtime digest>
 
 # E4. Acknowledge the resource request and promote.   Expect the #SBATCH lines of the table above
-#     (--time=04:00:00 --nodes=1 --ntasks=192 --exclusive --mem=0 --exclude=compute-0-[332-333]) and
+#     (--time=04:00:00 --nodes=1 --ntasks=48 --mem=32G --exclude=compute-0-[332-333], no --exclusive) and
 #     the job script SHA-256. Any 409 stops.
 "$BMD_PY" $K promote "$VROOT" 2>&1 | tee -a "$VROOT/run.log"
 
@@ -193,7 +194,7 @@ ssh powerslurm-bmdguest 'date -u +%FT%TZ;
   sacctmgr -n -P show qos owner100d format=name,maxwall,maxtrespu,maxjobspu;
   squeue -u $USER -h -o "%i %j %T %M %l %R"' | tee "$VROOT/e6_slurm_readonly.txt"
 #     Report: MaxTime at least 04:00:00; the account power-leeburton-users_v2 with QOS owner100d
-#     associated; how many 192-CPU nodes other than compute-0-[332-333] are idle; no bmds-* job queued.
+#     associated; which nodes other than compute-0-[332-333] have at least 48 idle cores; no other bmds-* job queued.
 #     Anything else is a finding to report before Gate 1, not something to work around.
 ```
 
@@ -202,7 +203,7 @@ ssh powerslurm-bmdguest 'date -u +%FT%TZ;
 before Gate 1, and `archive` is not run yet (it runs once, at the end).
 
 **Gate 1:** written authorisation of one `sbatch` of this attempt with the
-4-hour, one-node allocation above.
+4-hour, 48-core shared-node allocation above.
 
 ```bash
 "$BMD_PY" $K submit "$VROOT" --confirm-attempt "$ATTEMPT" --confirm-walltime 04:00:00 2>&1 | tee -a "$VROOT/run.log"

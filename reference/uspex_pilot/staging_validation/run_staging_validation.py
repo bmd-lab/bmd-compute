@@ -4,10 +4,12 @@ Run on the BMD Compute VM, from a separate checkout of the reviewed commit
 (never the live deployment directory), with the interpreter of the service
 environment. Each step is a subcommand taking the same new ROOT:
 
-    setup ROOT [--acceptance-walltime 00:15:00 | --execution]
+    setup ROOT [--acceptance-walltime 00:15:00 | --execution | --execution-shared]
                      create a new, private validation root (it must not exist); --acceptance-walltime: the
                      operational acceptance (10-15 minutes); --execution: the scientific execution acceptance
-                     (Si, 2 atoms, 2 generations, 04:00:00, pinned plan digest), both via the planner
+                     (Si, 2 atoms, 2 generations, 04:00:00, pinned plan digest) on one exclusive 192-core node
+                     (4 x 48 ranks); --execution-shared: the same search on 48 cores of a shared node
+                     (3 x 16 ranks, --mem=32G), all via the planner
     preflight ROOT   read-only POWER checks (power_preflight.sh over SSH)
     run ROOT         plan -> prepare -> stage -> read back -> fresh re-verification
     promote ROOT     acknowledge the resource request -> promote to SEARCH_PREPARED (no sbatch)
@@ -123,6 +125,71 @@ EXECUTION_SPEC = {"min_atoms": 2, "max_atoms": 2, "num_generations": 2, "populat
 EXECUTION_LAUNCH = {"mode": "srun_steps", "parallel_relaxations": 4, "ranks_per_relaxation": 48}
 EXECUTION_STEPS = 5
 EXECUTION_DIR = HERE.parent / "execution_validation"
+# Every scientific execution profile: the same search and ladder; only the node request and the launch
+# settings differ. ``configuration`` is applied to backend.config in the kit's own process before the in-process
+# service plans anything (the live service and its configuration are never touched); the job on POWER reads
+# these values from the frozen plan, never from its environment. Each profile's plan digest and resource
+# request hash are pinned: the kit refuses anything else.
+EXECUTION_PROFILES = {
+    "execution": {
+        "flag": "--execution",
+        "note": "scientific execution acceptance: a 2-atom, two-generation Si search on one exclusive node",
+        "plan_digest": EXECUTION_PLAN_DIGEST,
+        "resources_sha256": "sha256:bd5ebc2aa303f062fc84066b8bde8e17a26aaacdcdd5c4000595ac1a1821664a",
+        "directives": EXECUTION_DIRECTIVES,
+        "request": {"nodes": 1, "ntasks": 192, "exclusive": True, "mem": "0"},
+        "launch": EXECUTION_LAUNCH,
+        "configuration": {},
+    },
+    "execution_shared": {
+        "flag": "--execution-shared",
+        "note": "scientific execution acceptance: the same Si search on 48 cores of a shared node (3 x 16 ranks)",
+        "plan_digest": "sha256:0b3b09de2b115cc8a72ea43b2e22ac5db2545e0d5012ff7057a0b6cbc8469e79",
+        "resources_sha256": "sha256:d4eaedfd95cdb2c797dbf637c7abb1264c82a0185ad6652051a413c3b6bea56f",
+        "directives": (
+            "#SBATCH -p leeburton-pool", "#SBATCH --account=power-leeburton-users_v2", "#SBATCH --qos=owner100d",
+            "#SBATCH --time=04:00:00", "#SBATCH --nodes=1", "#SBATCH --ntasks=48", "#SBATCH --mem=32G",
+            "#SBATCH --exclude=compute-0-[332-333]",
+        ),
+        "request": {"nodes": 1, "ntasks": 48, "exclusive": False, "mem": "32G"},
+        "launch": {"mode": "srun_steps", "parallel_relaxations": 3, "ranks_per_relaxation": 16},
+        "configuration": {"STRUCTURE_SEARCH_LAUNCH_MODE": "srun_steps", "STRUCTURE_SEARCH_PARALLEL_RELAXATIONS": 3,
+                          "STRUCTURE_SEARCH_RANKS_PER_RELAXATION": 16, "STRUCTURE_SEARCH_EXCLUSIVE_NODE": False,
+                          "STRUCTURE_SEARCH_JOB_MEMORY": "32G"},
+    },
+}
+_CONFIGURATION_RESTORE: dict = {}
+
+
+def apply_profile_configuration(profile: dict | None) -> dict:
+    """Set the profile's node and launch settings in this process's backend.config (nothing else; never the
+    environment). Returns what was set. Settings an earlier call made are restored first."""
+
+    sys.path.insert(0, str(REPO))
+    from backend import config
+
+    restore_profile_configuration()
+    values = dict(EXECUTION_PROFILES[profile["profile"]]["configuration"]) if profile and \
+        profile["profile"] in EXECUTION_PROFILES else {}
+    for name, value in values.items():
+        _require(hasattr(config, name), f"backend.config has no setting {name}.")
+        _CONFIGURATION_RESTORE[name] = getattr(config, name)
+        setattr(config, name, value)
+    return values
+
+
+def restore_profile_configuration() -> None:
+    from backend import config
+
+    for name, value in _CONFIGURATION_RESTORE.items():
+        setattr(config, name, value)
+    _CONFIGURATION_RESTORE.clear()
+
+
+def execution_profile(profile: dict | None) -> dict | None:
+    """The definition of a scientific execution profile, or None for the other kinds of root."""
+
+    return EXECUTION_PROFILES.get(profile["profile"]) if profile else None
 POWER_EVIDENCE_PARENT = "/bmd-db/guest/validation"
 
 
@@ -165,12 +232,15 @@ def canonical_acceptance_walltime(value: str) -> str:
     return walltime
 
 
-def setup(root: Path, *, acceptance_walltime: str | None = None, execution: bool = False) -> None:
+def setup(root: Path, *, acceptance_walltime: str | None = None, execution: bool | str = False) -> None:
     sys.path.insert(0, str(REPO))
     from compute_api.auth import TOKENS_FILE_SCHEMA, TOKENS_FILE_SCHEMA_VERSION, generate_token
 
+    execution = "execution" if execution is True else (execution or None)
+    _require(execution is None or execution in EXECUTION_PROFILES, f"unknown execution profile {execution!r}.")
     _require(not (execution and acceptance_walltime is not None),
-             "choose one profile: --acceptance-walltime (operational) or --execution (scientific execution).")
+             "choose one profile: --acceptance-walltime (operational), --execution or --execution-shared "
+             "(scientific execution).")
     walltime = canonical_acceptance_walltime(acceptance_walltime) if acceptance_walltime is not None else None
     root = Path(os.path.abspath(root))
     _require(root == root.resolve(), f"{root} goes through a symbolic link.")
@@ -192,12 +262,18 @@ def setup(root: Path, *, acceptance_walltime: str | None = None, execution: bool
         marker["acceptance"] = {"walltime": walltime, "search": {"walltime": walltime},
                                 "note": "submission-and-cancellation acceptance: short allocation via the planner"}
     if execution:
-        marker["acceptance"] = {"profile": "execution", "walltime": EXECUTION_WALLTIME,
-                                "search": dict(EXECUTION_SEARCH), "plan_digest": EXECUTION_PLAN_DIGEST,
-                                "note": "scientific execution acceptance: a 2-atom, two-generation Si search"}
+        definition = EXECUTION_PROFILES[execution]
+        marker["acceptance"] = {"profile": execution, "walltime": EXECUTION_WALLTIME,
+                                "search": dict(EXECUTION_SEARCH), "plan_digest": definition["plan_digest"],
+                                "request": dict(definition["request"]), "launch": dict(definition["launch"]),
+                                "note": definition["note"]}
+        if execution == "execution":  # the 4 x 48 roots made before the shared profile existed carry no more
+            marker["acceptance"].pop("request")
+            marker["acceptance"].pop("launch")
+            marker["acceptance"]["note"] = "scientific execution acceptance: a 2-atom, two-generation Si search"
     _private_file(root / "VALIDATION_ROOT.json", json.dumps(marker, indent=2) + "\n")
     print(f"Validation root ready: {root}" + (f" (acceptance, walltime {walltime})" if walltime else "")
-          + (f" (execution acceptance, walltime {EXECUTION_WALLTIME})" if execution else ""))
+          + (f" ({execution} acceptance, walltime {EXECUTION_WALLTIME})" if execution else ""))
 
 
 def acceptance_profile(root: Path) -> dict | None:
@@ -207,12 +283,16 @@ def acceptance_profile(root: Path) -> dict | None:
     acceptance = marker.get("acceptance")
     if acceptance is None:
         return None
-    if acceptance.get("profile") == "execution":
+    if acceptance.get("profile") in EXECUTION_PROFILES:
+        name = acceptance["profile"]
+        definition = EXECUTION_PROFILES[name]
         _require(acceptance.get("walltime") == EXECUTION_WALLTIME and acceptance.get("search") == EXECUTION_SEARCH
-                 and acceptance.get("plan_digest") == EXECUTION_PLAN_DIGEST,
-                 "the validation root's execution profile is not the approved one.")
-        return {"profile": "execution", "walltime": EXECUTION_WALLTIME, "search": dict(EXECUTION_SEARCH),
-                "plan_digest": EXECUTION_PLAN_DIGEST}
+                 and acceptance.get("plan_digest") == definition["plan_digest"]
+                 and (name == "execution" or (acceptance.get("request") == definition["request"]
+                                              and acceptance.get("launch") == definition["launch"])),
+                 f"the validation root's {name} profile is not the approved one.")
+        return {"profile": name, "walltime": EXECUTION_WALLTIME, "search": dict(EXECUTION_SEARCH),
+                "plan_digest": definition["plan_digest"]}
     _require("profile" not in acceptance, f"unknown acceptance profile {acceptance.get('profile')!r}.")
     walltime = canonical_acceptance_walltime(acceptance.get("walltime"))
     _require(acceptance == {**acceptance, "walltime": walltime, "search": {"walltime": walltime}},
@@ -393,6 +473,8 @@ def _open_api(root: Path, *, allow_dirty: bool, runner_factory, proc: Path) -> d
     sys.path.insert(0, str(REPO))
     import warnings
 
+    configured = apply_profile_configuration(acceptance_profile(root))  # before anything plans
+
     try:
         from starlette.testclient import TestClient
     except ImportError as exc:  # httpx missing: report it, never install into the service environment
@@ -411,7 +493,7 @@ def _open_api(root: Path, *, allow_dirty: bool, runner_factory, proc: Path) -> d
         warnings.simplefilter("ignore")
         client = TestClient(main.app, client=LOOPBACK)
     return {"client": client, "token": token, "state": state, "evidence": evidence, "commit": commit,
-            "dirty": dirty, "reverify_staged_search": reverify_staged_search}
+            "dirty": dirty, "reverify_staged_search": reverify_staged_search, "configuration": configured}
 
 
 def _write_sums(evidence: Path) -> None:
@@ -445,17 +527,17 @@ def run(root: Path, *, allow_dirty: bool = False, runner_factory=None, proc: Pat
                                          search_body(root))
         _require(status == 200, f"planning returned {status}.")
         digest = plan["plan_digest"]
-        profile = acceptance_profile(root)
-        if profile and profile["profile"] == "execution":
-            _require(digest == EXECUTION_PLAN_DIGEST,
+        definition = execution_profile(acceptance_profile(root))
+        if definition:
+            _require(digest == definition["plan_digest"],
                      f"the planner gives {digest} for the execution search, not the approved "
-                     f"{EXECUTION_PLAN_DIGEST}; nothing was prepared.")
+                     f"{definition['plan_digest']}; nothing was prepared.")
         attempt_id = str(uuid.uuid4())
         _private_file(attempt_file, json.dumps({"attempt_id": attempt_id, "plan_digest": digest}, indent=2) + "\n")
 
-    profile = acceptance_profile(root)
-    if profile and profile["profile"] == "execution":
-        _require(digest == EXECUTION_PLAN_DIGEST, "this attempt's plan is not the approved execution plan.")
+    definition = execution_profile(acceptance_profile(root))
+    if definition:
+        _require(digest == definition["plan_digest"], "this attempt's plan is not the approved execution plan.")
     route = f"/api/v1/structure-search-attempts/{attempt_id}"
     status, prepared = recorder.exchange(client, "prepare", "PUT", route, token,
                                          {**search_body(root), "expected_plan_digest": digest})
@@ -639,11 +721,11 @@ def submit(root: Path, *, confirm_attempt: str, confirm_walltime: str | None = N
     promotion = current["promotion"]
     _require(promotion["remote_state"] == "SEARCH_PREPARED", "POWER did not last record SEARCH_PREPARED.")
     profile = acceptance_profile(root)
-    _require(profile is not None, "this root was not set up for an acceptance ('setup --acceptance-walltime' or "
-                                  "'setup --execution'); the kit never submits a default (168-hour) allocation. "
-                                  "Nothing was sent.")
+    _require(profile is not None, "this root was not set up for an acceptance ('setup --acceptance-walltime', "
+                                  "'--execution' or '--execution-shared'); the kit never submits a default "
+                                  "(168-hour) allocation. Nothing was sent.")
     walltime = profile["walltime"]
-    if profile["profile"] == "execution":
+    if execution_profile(profile):
         _require(confirm_walltime == walltime,
                  f"--confirm-walltime must be exactly {walltime} for the execution acceptance; nothing was sent.")
     else:
@@ -712,27 +794,38 @@ def frozen_inputs(state: Path, attempt_id: str):
     return inputs
 
 
-def verify_execution_plan(api: dict, attempt_id: str, digest: str, current: dict) -> dict:
-    """The execution profile's exact plan: pinned digest, resource request, spec and launch settings."""
+def verify_execution_plan(api: dict, attempt_id: str, digest: str, current: dict, profile: dict | None = None) -> dict:
+    """The execution profile's exact plan: pinned digest, resource request and its hash, spec and launch settings."""
 
-    _require(digest == EXECUTION_PLAN_DIGEST, f"the attempt's plan {digest} is not the approved execution plan "
-                                              f"{EXECUTION_PLAN_DIGEST}; nothing was sent.")
+    profile = profile or {"profile": "execution"}
+    definition = EXECUTION_PROFILES[profile["profile"]]
+    pinned = definition["plan_digest"]
+    _require(digest == pinned, f"the attempt's plan {digest} is not the approved execution plan {pinned}; nothing "
+                               "was sent.")
     resources = current["resources"]
-    _require(tuple(resources["sbatch_directives"]) == EXECUTION_DIRECTIVES,
+    _require(tuple(resources["sbatch_directives"]) == definition["directives"],
              f"the resource request is {resources['sbatch_directives']}, not the approved one; nothing was sent.")
     request = resources["request"]
-    _require((request["nodes"], request["ntasks"], request["exclusive"], request["mem"]) == (1, 192, True, "0"),
-             "the resource request is not one exclusive 192-core node with all its memory; nothing was sent.")
+    expected = definition["request"]
+    _require({key: request.get(key) for key in expected} == expected,
+             f"the resource request is not {expected}: {request}; nothing was sent.")
     plan = frozen_inputs(api["state"], attempt_id)[0]
-    _require(plan.digest == EXECUTION_PLAN_DIGEST, "the frozen plan is not the approved execution plan.")
+    _require(plan.digest == pinned, "the frozen plan is not the approved execution plan.")
+    from backend.structure_search.job import resource_request_sha256
+
+    _require(resource_request_sha256(plan) == definition["resources_sha256"],
+             "the frozen plan's resource request is not the approved one (hash); nothing was sent.")
     spec = plan.record["search"]["spec"]
     _require({key: spec.get(key) for key in EXECUTION_SPEC} == EXECUTION_SPEC,
              f"the frozen search settings are not the approved ones: {spec}; nothing was sent.")
     launch = plan.record["runtime"]["launch"]
-    _require({key: launch.get(key) for key in EXECUTION_LAUNCH} == EXECUTION_LAUNCH,
-             f"the frozen launch settings are not 4 parallel 48-rank steps (srun_steps): {launch}; nothing was sent.")
+    _require({key: launch.get(key) for key in definition["launch"]} == definition["launch"],
+             f"the frozen launch settings are not {definition['launch']}: {launch}; nothing was sent.")
+    _require(plan.record["execution"]["input_txt"]["num_parallel_calcs"] == definition["launch"]["parallel_relaxations"],
+             "USPEX's numParallelCalcs is not the profile's concurrency; nothing was sent.")
     _require(len(plan.record["incar_files"]) == EXECUTION_STEPS, "the frozen plan is not the five-step ladder.")
-    return {"spec": {key: spec.get(key) for key in EXECUTION_SPEC}, "launch": dict(EXECUTION_LAUNCH),
+    return {"spec": {key: spec.get(key) for key in EXECUTION_SPEC}, "launch": dict(definition["launch"]),
+            "request": dict(expected), "resources_sha256": definition["resources_sha256"],
             "incar_sha256": {name: row["sha256"] for name, row in sorted(plan.record["incar_files"].items())}}
 
 
@@ -745,8 +838,8 @@ def verify_short_allocation(api: dict, recorder, *, attempt_id: str, digest: str
 
     profile = profile or {"profile": "operational", "search": {"walltime": walltime}}
     execution = None
-    if profile["profile"] == "execution":
-        execution = verify_execution_plan(api, attempt_id, digest, current)
+    if execution_profile(profile):
+        execution = verify_execution_plan(api, attempt_id, digest, current, profile)
     else:
         low, high = ACCEPTANCE_WALLTIME_RANGE_S
         _require(low <= walltime_seconds(walltime) <= high, f"walltime {walltime} is outside 10-15 minutes.")
@@ -777,12 +870,15 @@ def verify_short_allocation(api: dict, recorder, *, attempt_id: str, digest: str
                            and not line.strip().startswith(("#SBATCH --job-name", "#SBATCH --comment",
                                                             "#SBATCH --chdir", "#SBATCH --output",
                                                             "#SBATCH --no-requeue")))
-        _require(directives == EXECUTION_DIRECTIVES,
+        definition = EXECUTION_PROFILES[profile["profile"]]
+        _require(directives == definition["directives"],
                  f"the job script's resource directives are {list(directives)}, not the approved ones; nothing was "
                  "sent.")
         check_allocation(acknowledgement["resources"], walltime, "the resource acknowledgement")
-        _require(tuple(acknowledgement["resources"]["sbatch_directives"]) == EXECUTION_DIRECTIVES,
+        _require(tuple(acknowledgement["resources"]["sbatch_directives"]) == definition["directives"],
                  "the resource acknowledgement does not cover exactly the approved request; nothing was sent.")
+        _require(current["promotion"]["acknowledgement"].get("resources_sha256") == definition["resources_sha256"],
+                 "the resource acknowledgement's request hash is not the approved one; nothing was sent.")
     summary = {"profile": profile["profile"], "walltime": walltime, "plan_digest": digest,
                "default_plan_digest": default["plan_digest"],
                "acknowledgement_sha256": acknowledgement["acknowledgement_sha256"],
@@ -967,13 +1063,15 @@ def execution_arguments(root: Path) -> tuple[str, str, str]:
     """Attempt ID, run name and job ID of an execution-profile validation whose job has ended."""
 
     profile = acceptance_profile(root)
-    _require(profile is not None and profile["profile"] == "execution",
-             "this root was not set up for the execution acceptance ('setup --execution').")
+    definition = execution_profile(profile)
+    _require(definition is not None,
+             "this root was not set up for an execution acceptance ('setup --execution' or '--execution-shared').")
     attempt, run_name = evidence_arguments(root, states=set(TERMINAL_STATES))
     job = _own_job(root / "evidence", attempt)
     record = json.loads((root / "state" / "structure_search" / "attempts" / f"{attempt}.json").read_text())
     _require(record["submission"]["job_id"] == job["job_id"], "job.json and the ledger name different jobs.")
-    _require(record["plan_digest"] == EXECUTION_PLAN_DIGEST, "the attempt's plan is not the approved execution plan.")
+    _require(record["plan_digest"] == definition["plan_digest"],
+             "the attempt's plan is not the approved execution plan.")
     return attempt, run_name, job["job_id"]
 
 
@@ -988,10 +1086,20 @@ def execution_expected(root: Path, attempt: str, job_id: str) -> dict:
     incars = plan_record.get("incar_files") or {}
     _require(len(incars) == EXECUTION_STEPS, "the frozen plan does not hold the five ladder INCARs.")
     job = _own_job(root / "evidence", attempt)
+    # Concurrency, ranks, CPUs and memory from the frozen plan itself (pinned by its digest), not from constants.
+    launch = plan_record["runtime"]["launch"]
+    request = plan_record["resources"]["request"]
+    definition = execution_profile(acceptance_profile(root))
+    _require(definition is not None and {key: launch.get(key) for key in definition["launch"]} == definition["launch"]
+             and {key: request.get(key) for key in definition["request"]} == definition["request"],
+             "the frozen plan's launch settings or resource request are not the profile's.")
+    _require(request["ntasks"] == launch["parallel_relaxations"] * launch["ranks_per_relaxation"],
+             "the frozen plan's tasks are not its concurrency x ranks.")
     return {
         "attempt_id": attempt, "job_id": job_id, "plan_digest": record["plan_digest"],
-        "walltime": EXECUTION_WALLTIME, "parallel": EXECUTION_LAUNCH["parallel_relaxations"],
-        "ranks": EXECUTION_LAUNCH["ranks_per_relaxation"], "steps": EXECUTION_STEPS,
+        "walltime": request["walltime"], "parallel": launch["parallel_relaxations"],
+        "ranks": launch["ranks_per_relaxation"], "ncpus": request["ntasks"], "exclusive": request["exclusive"],
+        "job_memory": request["mem"], "steps": EXECUTION_STEPS,
         "generations": EXECUTION_SEARCH["num_generations"],
         # One cell size (min_atoms = max_atoms = 2) and zero pressure (admission policy): USPEX's
         # listed energy is then F per cell, or per atom, never an enthalpy.
@@ -1140,7 +1248,10 @@ def main(argv=None) -> int:
     sub.choices["setup"].add_argument("--acceptance-walltime", metavar="HH:MM:SS",
                                       help="a submission acceptance root: this 10-15 minute walltime (planner override)")
     sub.choices["setup"].add_argument("--execution", action="store_true",
-                                      help="a scientific execution acceptance root (2-atom, two-generation Si, 4 h)")
+                                      help="a scientific execution acceptance root (2-atom, two-generation Si, 4 h, "
+                                           "one exclusive 192-core node)")
+    sub.choices["setup"].add_argument("--execution-shared", action="store_true",
+                                      help="the same acceptance on 48 cores of a shared node (3 x 16 ranks, 32G)")
     sub.choices["submit"].add_argument("--confirm-walltime", metavar="HH:MM:SS",
                                        help="required for the execution profile: exactly its walltime")
     args = parser.parse_args(argv)
@@ -1160,7 +1271,9 @@ def main(argv=None) -> int:
     if args.command == "execution-evidence":
         return execution_evidence(args.root)
     if args.command == "setup":
-        setup(args.root, acceptance_walltime=args.acceptance_walltime, execution=args.execution)
+        _require(not (args.execution and args.execution_shared), "choose --execution or --execution-shared.")
+        setup(args.root, acceptance_walltime=args.acceptance_walltime,
+              execution="execution_shared" if args.execution_shared else args.execution)
         return 0
     if args.command == "run":
         run(args.root, allow_dirty=args.allow_dirty)

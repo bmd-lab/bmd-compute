@@ -676,9 +676,12 @@ def analyse(evidence: Path, expected: dict[str, Any]) -> dict[str, Any]:
         report.add("slurm_outcome", "SLURM's settled outcome of the job",
                    VERIFIED if slurm_state == "COMPLETED" and main[3] == "0:0" else FAILED,
                    {"state": main[2], "exit_code": main[3], "start": main[4], "end": main[5], "elapsed": main[6]})
-        report.add("allocation", "the job held one exclusive 192-CPU node for the acknowledged walltime",
-                   VERIFIED if main[7] == "192" and main[9] == expected["walltime"] and "node=1" in main[8]
-                   else FAILED, {"ncpus": main[7], "alloc_tres": main[8], "timelimit": main[9]})
+        ncpus = expected.get("ncpus", expected["parallel"] * expected["ranks"])  # from the frozen plan
+        report.add("allocation", "the job held the frozen plan's CPUs on one node for the acknowledged walltime",
+                   VERIFIED if main[7] == str(ncpus) and main[9] == expected["walltime"] and "node=1" in main[8]
+                   and ncpus == expected["parallel"] * expected["ranks"] else FAILED,
+                   {"ncpus": main[7], "expected_ncpus": ncpus, "alloc_tres": main[8], "timelimit": main[9],
+                    "exclusive_requested": expected.get("exclusive")})
 
     # Status, runtime check, memory.
     status = _json(files / "search_status.json")
@@ -704,13 +707,17 @@ def analyse(evidence: Path, expected: dict[str, Any]) -> dict[str, Any]:
                    "search_status.json records no node memory")
     else:
         step_mem = f"{int(node_memory.get('mb', 0) * (1 - MEMORY_MARGIN_FRACTION)) // expected['parallel']}M"
+        planned_mb = _memory_mb(f"mem={expected.get('job_memory') or '0'}")
         consistent = (node_memory.get("mb", 0) > 0 and launch.get("step_mem") == step_mem
-                      and launch.get("mode") == "srun_steps")
+                      and launch.get("mode") == "srun_steps"
+                      and launch.get("parallel_relaxations") in (None, expected["parallel"])
+                      # an explicit --mem: the launcher's amount is exactly the plan's
+                      and (not planned_mb or node_memory.get("mb") == planned_mb))
         status_value = (FAILED if not consistent or (alloc_mb is not None and alloc_mb != node_memory["mb"])
                         else MISSING if alloc_mb is None else VERIFIED)
         report.add("memory", "the allocated node memory and the per-step memory", status_value,
                    {"node_memory": node_memory, "step_mem": launch.get("step_mem"), "expected_step_mem": step_mem,
-                    "sacct_alloc_mem_mb": alloc_mb})
+                    "sacct_alloc_mem_mb": alloc_mb, "planned_job_memory_mb": planned_mb or None})
 
     # The launcher journal, done files and step logs.
     journal = _jsonl(files / "bridge_spool" / "launcher.jsonl")

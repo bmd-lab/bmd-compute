@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from uspex_execution_fakes import Scenario, build_run, run_collector, tree_state
+from uspex_execution_fakes import SHARED_48, Scenario, build_run, run_collector, tree_state
 
 ATTEMPT = "c0ffee00-1111-4222-8333-444455556666"
 RUN_NAME = "uspex_search-20261120-100000-c0ffee00"
@@ -49,7 +49,15 @@ def acknowledgement() -> dict:
     return record
 
 
-def expected() -> dict:
+# The shared-node profile's frozen plan (3 x 16 ranks, 48 CPUs, --mem=32G, no --exclusive).
+SHARED_EXPECTED = {"parallel": 3, "ranks": 16, "ncpus": 48, "exclusive": False, "job_memory": "32G"}
+
+
+def expected(**overrides) -> dict:
+    return {**_expected(), **overrides}
+
+
+def _expected() -> dict:
     return {"attempt_id": ATTEMPT, "job_id": JOB, "plan_digest": DIGEST, "walltime": "04:00:00", "parallel": 4,
             "ranks": 48, "steps": 5, "generations": 2, "cell_atoms": 2, "pressure_gpa": 0.0,
             "job_script_sha256": hashlib.sha256(JOB_SCRIPT.encode()).hexdigest(),
@@ -74,10 +82,10 @@ def make(tmp_path, scenario=None, *, queued=False, sacct_edit=None):
     return code, output, evidence, run
 
 
-def analyse(tmp_path, scenario=None, **options):
+def analyse(tmp_path, scenario=None, expectation=None, **options):
     code, output, evidence, _ = make(tmp_path, scenario, **options)
     assert code == 0, output
-    return load_analyser().analyse(evidence, expected())
+    return load_analyser().analyse(evidence, expected(**(expectation or {})))
 
 
 def status_of(report, check):
@@ -527,3 +535,42 @@ def test_an_ambiguous_generation_association_is_incomplete_evidence(tmp_path):
     assert report["result"] == "INCOMPLETE EVIDENCE"
     rows = next(c for c in report["checks"] if c["check"] == "retention")["detail"]["inferred_generation_association"]
     assert {row["number"] for row in rows["rows"]}.isdisjoint({103, 105})
+
+
+# --- the shared-node profile (3 x 16 ranks, 48 CPUs, --mem=32G) -------------------------------------------
+
+
+def check_detail(report, name):
+    return next(c for c in report["checks"] if c["check"] == name)["detail"]
+
+
+def test_a_shared_node_run_passes_with_expectations_from_its_plan(tmp_path):
+    report = analyse(tmp_path, Scenario(**SHARED_48), SHARED_EXPECTED)
+    assert report["result"] == "PASSED", report["failed"] + report["missing"]
+    allocation = check_detail(report, "allocation")
+    assert allocation["ncpus"] == "48" and allocation["expected_ncpus"] == 48
+    assert allocation["exclusive_requested"] is False
+    memory = check_detail(report, "memory")
+    assert memory["planned_job_memory_mb"] == 32768 and memory["sacct_alloc_mem_mb"] == 32768
+    assert memory["expected_step_mem"] == f"{int(32768 * 0.9) // 3}M" == memory["step_mem"]
+    assert check_detail(report, "parallel") == {"max_concurrent": 3, "limit": 3}
+    pinning = check_detail(report, "pinning")
+    assert pinning["interpretable"] == pinning["steps_ran"] and not pinning["overlaps"]
+
+
+@pytest.mark.parametrize("scenario, expectation, check", [
+    (Scenario(**SHARED_48), {}, "allocation"),  # a 48-CPU job is not the 192-CPU plan
+    (Scenario(), SHARED_EXPECTED, "allocation"),  # nor the other way round
+    (Scenario(**{**SHARED_48, "node_memory_mb": 16384, "alloc_mem": "16G"}), SHARED_EXPECTED, "memory"),
+    (Scenario(**{**SHARED_48, "alloc_mem": "64G"}), SHARED_EXPECTED, "memory"),  # SLURM and the launcher disagree
+    (Scenario(**{**SHARED_48, "parallel": 4}), SHARED_EXPECTED, "parallel"),  # more at once than the plan
+    (Scenario(**{**SHARED_48, "pin": "shared"}), SHARED_EXPECTED, "pinning"),  # concurrent steps on the same cores
+])
+def test_a_resource_mismatch_with_the_shared_plan_fails(tmp_path, scenario, expectation, check):
+    report = analyse(tmp_path, scenario, expectation)
+    assert check in report["failed"] and report["result"] == "FAILED", report["failed"]
+
+
+def test_partial_pinning_on_a_shared_node_is_incomplete_evidence(tmp_path):
+    report = analyse(tmp_path, Scenario(**{**SHARED_48, "pin": "partial"}), SHARED_EXPECTED)
+    assert report["result"] == "INCOMPLETE EVIDENCE" and report["missing"] == ["pinning"]

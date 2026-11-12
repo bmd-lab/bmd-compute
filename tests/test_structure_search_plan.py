@@ -847,3 +847,58 @@ def test_unbound_preparation_is_recorded_and_cannot_run(tmp_path):
         with pytest.raises(SearchPlanError) as info:
             search_plan.verify_execution_binding(tmp_path / "search", bridge_path=path, filesystem_root=str(root))
         assert _code(info) == search_plan.UNBOUND_BRIDGE_CODE
+
+
+# --- node requests: exclusive by default, or a shared node -------------------------------------------------
+
+SHARED_NODE = {"STRUCTURE_SEARCH_PARALLEL_RELAXATIONS": 3, "STRUCTURE_SEARCH_RANKS_PER_RELAXATION": 16,
+               "STRUCTURE_SEARCH_EXCLUSIVE_NODE": False, "STRUCTURE_SEARCH_JOB_MEMORY": "32G"}
+
+
+def _configured(monkeypatch, values):
+    from backend import config
+
+    for name, value in values.items():
+        monkeypatch.setattr(config, name, value)
+
+
+def test_a_shared_node_plan_keeps_the_science_and_changes_only_the_node_request(monkeypatch):
+    default = build_search_plan(_si8_spec())
+    _configured(monkeypatch, SHARED_NODE)
+    shared = build_search_plan(_si8_spec())
+    assert shared.digest != default.digest
+    # the ladder, POTCARs, k-points and validity policy are untouched; the INCAR files are byte-identical
+    for section in ("incar_files", "potcar", "kpoints", "candidate_validity", "search"):
+        assert shared.record[section] == default.record[section], section
+    ladder = {k: v for k, v in shared.record["screening_and_ranking"].items() if k != "ranks_per_relaxation"}
+    assert ladder == {k: v for k, v in default.record["screening_and_ranking"].items() if k != "ranks_per_relaxation"}
+    assert shared.record["screening_and_ranking"]["ranks_per_relaxation"] == 16
+    request = shared.record["resources"]["request"]
+    assert (request["ntasks"], request["exclusive"], request["mem"]) == (48, False, "32G")
+    assert "#SBATCH --exclusive" not in shared.record["resources"]["sbatch_directives"]
+    launch = shared.record["runtime"]["launch"]
+    assert (launch["parallel_relaxations"], launch["ranks_per_relaxation"], launch["mode"]) == (3, 16, "srun_steps")
+    assert shared.record["execution"]["input_txt"]["num_parallel_calcs"] == 3
+    assert default.record["resources"]["request"]["ntasks"] == 192 and default.record["resources"]["request"]["exclusive"]
+
+
+def test_a_runtime_settings_object_also_sets_the_tasks(monkeypatch):
+    settings = SearchRuntimeSettings.from_config()
+    from dataclasses import replace
+
+    plan = build_search_plan(_si8_spec(), runtime_settings=replace(settings, parallel_relaxations=2,
+                                                                   ranks_per_relaxation=16))
+    assert plan.record["resources"]["request"]["ntasks"] == 32  # never the configured 4 x 48
+
+
+@pytest.mark.parametrize("values, code_or_text", [
+    ({**SHARED_NODE, "STRUCTURE_SEARCH_LAUNCH_MODE": "mpirun_pinned"}, "shared_node_needs_srun_steps"),
+    ({**SHARED_NODE, "STRUCTURE_SEARCH_JOB_MEMORY": "0"}, "explicit memory amount"),
+    ({**SHARED_NODE, "STRUCTURE_SEARCH_RANKS_PER_RELAXATION": 8}, "NCORE = 4 does not divide"),
+])
+def test_incompatible_shared_node_configurations_are_refused_at_planning(monkeypatch, values, code_or_text):
+    _configured(monkeypatch, values)
+    with pytest.raises((CalculationValidationError, ValueError)) as info:
+        build_search_plan(_si8_spec())
+    diagnostic = getattr(info.value, "diagnostic", None) or {}
+    assert code_or_text in (diagnostic.get("code") or "") or code_or_text in str(info.value)

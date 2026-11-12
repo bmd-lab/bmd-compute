@@ -480,6 +480,45 @@ bridge no generation, so records carry `generation: null`; the post-run
 analysis binds them to generations through USPEX's listing. Text only and
 small: never POTCAR, WAVECAR, CHGCAR, OUTCAR or `vasprun.xml`.
 
+### Shared-node searches (12 Nov 2026)
+
+A search's node request is configurable; the default is unchanged (one
+exclusive node, `--exclusive --mem=0`, 4 × 48 ranks). `BMD_SEARCH_EXCLUSIVE_NODE=false`
+with `BMD_SEARCH_JOB_MEMORY=<amount>` (for example `32G`) asks for a share of
+one node: no `--exclusive`, an explicit `--mem`, and `--ntasks` = relaxations
+in parallel × ranks per relaxation (`BMD_SEARCH_PARALLEL_RELAXATIONS`,
+`BMD_SEARCH_RANKS_PER_RELAXATION`). Planning refuses `--mem=0` on a shared node
+and any launch mode but `srun_steps` (`mpirun_pinned` pins fixed cores of a
+whole node). The request is part of the plan record, so it is covered by the
+plan digest, the resource acknowledgement and the job script. At job start the
+job refuses (`launch_setup_failed`, before USPEX) an allocation whose
+`SLURM_NTASKS` or explicit memory is not the plan's; the launcher divides the
+memory SLURM actually allocated (`SLURM_MEM_PER_NODE`) among the parallel
+steps, as before. Ranks per relaxation must be a multiple of KPAR × NCORE = 16
+(steps 4–5); the INCAR files do not depend on the rank count.
+
+Resource model of the approved acceptance (3 × 16 ranks, `--ntasks=48
+--mem=32G`): the three `srun --exact -n 16 --mem=9830M` steps take all 48
+tasks and 3 × 9830 MB of the 32768 MB; nothing is reserved for the USPEX master
+and the launcher, which run in the batch step on the job's cores and in its
+remaining memory (about 3.3 GB), as on an exclusive node. No core numbers are
+set on this path (`srun_steps`: SLURM places each step inside the job's cores;
+no `I_MPI_PIN_PROCESSOR_LIST`). This is checked in code and tests only. That
+the three steps really start together on disjoint cores of a shared node, and
+that the master, the launcher and 16-rank VASP fit their memory under
+`ConstrainRAMSpace`, is still to be validated on POWER: the acceptance run's
+`parallel`, `pinning` and `memory` checks and SLURM's per-step `MaxRSS` are that
+validation. (The same no-reserve pattern, 2 × 4 ranks in an 8-core job, ran on
+POWER in validity probe 23406856.)
+
+POWER (checked 12 Nov 2026): `leeburton-pool` shares nodes per core and per
+memory (`SelectTypeParameters=CR_CORE_MEMORY`, partition `Exclusive=NO`),
+jobs are confined to their cores and memory (`ConstrainCores=yes`,
+`ConstrainRAMSpace=yes`), the default is 1 GB per job, and the account and
+`owner100d` QOS set no CPU or memory limits. A shared 8-core, `--mem=24G`
+job (validity probe 23406856) used at most 74 MB per VASP rank and 578 MB for
+the USPEX master and launcher.
+
 ### Frozen search plans and local preparation (USPEX integration step 3)
 
 A New structure request is planned as an immutable

@@ -245,7 +245,14 @@ def test_a_terminal_state_is_recorded_only_after_settling(client, tokens, state_
     payload = observe(client, tokens["runner"], attempt).json()
     assert payload["state"] == "SUBMITTED"
     assert last(payload)["classification"]["blocked"] == "terminal_settling"
-    assert last(payload)["scheduler"]["remaining_s"] == 90
+    # The remaining time is SETTLE_SECONDS less the time from the job's end to POWER's clock as this observation
+    # read it (both whole seconds, both recorded in the observation). Real time passes between writing the end
+    # time (30 s before POWER's clock then) and the observation, so it is at most 90 s, not exactly 90.
+    observed = last(payload)
+    end = datetime.strptime(observed["scheduler"]["end"], SLURM_TIME)
+    now = datetime.strptime(observed["power_clock"]["utc"], SLURM_TIME)
+    assert observed["scheduler"]["remaining_s"] == round(monitoring.SETTLE_SECONDS - (now - end).total_seconds())
+    assert 0 < observed["scheduler"]["remaining_s"] <= 90
     elapse(cluster, state_dir, attempt, job_id, 95)
     payload = observe(client, tokens["runner"], attempt).json()
     assert payload["state"] == "SEARCH_COMPLETED"
@@ -961,9 +968,10 @@ def test_the_calculation_path_refuses_a_cancellation_state(client, tokens, state
 def test_the_runtime_package_is_the_reviewed_one():
     """4D-4 was service-side only (the package the 4D-2 validation staged, b7bd184, ``fca63b4b…``).
 
-    The launcher's scientific evidence archive (``bridge/evidence_archive.py``, launcher changes) is the
-    only runtime change since: 80 files. Attempts staged with the earlier package are refused with
-    ``runtime_package_changed`` and need a new attempt ID.
+    Since then: the launcher's scientific evidence archive (``bridge/evidence_archive.py``, ``92913a28…``,
+    commit 0b9925e), and configurable node exclusivity and job memory for structure searches (shared nodes):
+    80 files. Attempts staged with an earlier package are refused with ``runtime_package_changed`` and need
+    a new attempt ID.
     """
 
     from backend.runtime_package import build_runtime_package_manifest, runtime_package_manifest_digest
@@ -971,7 +979,7 @@ def test_the_runtime_package_is_the_reviewed_one():
     manifest = build_runtime_package_manifest()
     assert len(manifest) == 80
     assert runtime_package_manifest_digest(manifest) == (
-        "92913a28be326eb08e9d7f8929e6db9ea69e3a1457fb4598c2f547aa4b0eb81f")
+        "f31cfab5bf5c2cbc52c03594351b705cf1307922a0eeff001f577487844afc36")
 
 
 def test_scancel_command_takes_only_a_numeric_job_id():

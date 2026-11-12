@@ -71,6 +71,13 @@ class Scenario:
     parallel: int = 4
     pin: str = "disjoint"  # disjoint | shared | none
     alloc_mem: str = "500G"
+    # The frozen plan's node request and launch settings (defaults: 4 x 48 on an exclusive node).
+    planned_parallel: int = 4  # what the plan and the launcher record; ``parallel`` is what actually ran at once
+    ranks: int = 48
+    node_memory_mb: int = 512000  # the job's memory as the launcher established it
+    memory_source: str = "scontrol AllocTRES"
+    cpu_offset: int = 0  # first CPU of the job's cgroup on the node (a shared node: not 0)
+
     runtime_status: str = "passed"
     timelimit: str = "04:00:00"
     # Identity and energy semantics.
@@ -97,6 +104,18 @@ class Scenario:
     crash_before_done: tuple = ()  # (individual, step): record committed, launcher died before the done file
     archive_duplicate: bool = False  # the first step's record offered twice, identically
     critical_line: bool = False  # the launcher could not journal an evidence event (stderr line)
+
+    @property
+    def ncpus(self) -> int:
+        return self.planned_parallel * self.ranks
+
+    @property
+    def step_mem(self) -> str:
+        return f"{int(self.node_memory_mb * 0.9) // self.planned_parallel}M"
+
+
+SHARED_48 = dict(parallel=3, planned_parallel=3, ranks=16, node_memory_mb=32768, alloc_mem="32G",
+                 memory_source="SLURM_MEM_PER_NODE", cpu_offset=72)
 
 
 def energy(individual: int, step: int, scenario: Scenario) -> float:
@@ -133,7 +152,9 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
 
     search = run / "search"
     spool = run / "bridge_spool"
-    journal = [{"event": "started", "time": 1000.0, "max_parallel": scenario.parallel, "ranks": 48},
+    STEP_MEM = scenario.step_mem
+    ranks = scenario.ranks
+    journal = [{"event": "started", "time": 1000.0, "max_parallel": scenario.parallel, "ranks": ranks},
                {"event": "master_started", "time": 1000.1, "pid": 4242, "argv": ["singularity", "exec"]}]
     clock = 1001.0
     slots_free = [clock] * scenario.parallel
@@ -166,7 +187,7 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
                 request_id = f"s{step}-{individual:04d}-{step_index:05d}"
                 calcfold = f"{identity_run_dir}/search/Calculation/Calcfold_{individual}_{step}"
                 seconds = 30.0
-                argv = ["srun", "--exact", "--mpi=pmi2", "-n", "48", f"--mem={STEP_MEM}", "vasp_std"]
+                argv = ["srun", "--exact", "--mpi=pmi2", "-n", str(ranks), f"--mem={STEP_MEM}", "vasp_std"]
                 journal.append({"event": "started_step", "id": request_id, "step": step, "slot": slot,
                                 "calcfold": calcfold, "argv": argv, "time": t, "pid": 1000 + step_index,
                                 "environment_set": {"I_MPI_DEBUG": "4"}})
@@ -179,12 +200,13 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
                     pins = ""
                 elif scenario.pin == "partial" and step_index == 0:
                     pins = "[0] MPI startup(): Rank    Pid      Node name  Pin cpu\n" + "".join(
-                        f"[0] MPI startup(): {r}       {2000 + r}    compute-0-271  {{{48 * slot + r}}}\n"
-                        for r in range(40))
+                        f"[0] MPI startup(): {r}       {2000 + r}    compute-0-271  "
+                        f"{{{scenario.cpu_offset + ranks * slot + r}}}\n" for r in range(ranks - 8))
                 else:
-                    base = 48 * (0 if scenario.pin == "shared" else slot)
+                    base = scenario.cpu_offset + ranks * (0 if scenario.pin == "shared" else slot)
                     pins = "[0] MPI startup(): Rank    Pid      Node name  Pin cpu\n" + "".join(
-                        f"[0] MPI startup(): {r}       {2000 + r}    compute-0-271  {{{base + r}}}\n" for r in range(48))
+                        f"[0] MPI startup(): {r}       {2000 + r}    compute-0-271  {{{base + r}}}\n"
+                        for r in range(ranks))
                 if True:  # written, hashed for the record, then removed if the scenario loses it
                     _write(spool / "logs" / f"{request_id}.log",
                            pins + f"   1 F= {free_energy + 0.1:.8E} E0= {free_energy + 0.1 + E0_SHIFT:.8E}  d E =-.1E+00\n"
@@ -245,7 +267,7 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
                                          "classification": classification, "free_energy_ev": free_energy,
                                          "line": line, "output": output})
                     sacct_steps.append(f"{job}.{step_index}|vasp_std|COMPLETED|0:0|2026-11-20T10:00:00|"
-                                       f"2026-11-20T10:00:30|00:00:30|48|cpu=48,mem={STEP_MEM},node=1|")
+                                       f"2026-11-20T10:00:30|00:00:30|{ranks}|cpu={ranks},mem={STEP_MEM},node=1|")
                     step_index += 1
                     t += seconds
                     break
@@ -260,7 +282,7 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
                                      "classification": classification, "free_energy_ev": free_energy,
                                      "line": line, "output": output})
                 sacct_steps.append(f"{job}.{step_index}|vasp_std|COMPLETED|0:0|2026-11-20T10:00:00|"
-                                   f"2026-11-20T10:00:30|00:00:30|48|cpu=48,mem={STEP_MEM},node=1|")
+                                   f"2026-11-20T10:00:30|00:00:30|{ranks}|cpu={ranks},mem={STEP_MEM},node=1|")
                 step_index += 1
                 t += seconds
                 if classification != "valid":
@@ -349,10 +371,11 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
         "schema": "bmd_compute.structure_search_job_status", "schema_version": 1, "attempt_id": attempt,
         "plan_digest": plan_digest, "slurm_job_id": job, "finished_at": "2026-11-20T11:00:00Z",
         "execution": {"outcome": scenario.outcome, "master_exit_status": scenario.master_status,
-                      "launch": {"mode": "srun_steps", "parallel_relaxations": 4, "ranks_per_relaxation": 48,
+                      "launch": {"mode": "srun_steps", "parallel_relaxations": scenario.planned_parallel,
+                                 "ranks_per_relaxation": ranks,
                                  "step_mem": STEP_MEM, "memory_margin_fraction": 0.1,
-                                 "node_memory": {"mb": NODE_MEMORY_MB, "source": "scontrol AllocTRES",
-                                                 "detail": "AllocTRES mem=500G"}}},
+                                 "node_memory": {"mb": scenario.node_memory_mb, "source": scenario.memory_source,
+                                                 "detail": f"mem={scenario.alloc_mem}"}}},
         "scientific_validity": {"status": "not_assessed", "step_validity_verdicts": verdicts},
         "isolation": {"jobflow": False, "atomate2": False},
     }
@@ -360,14 +383,16 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
     runtime = {"status": scenario.runtime_status, "problems": [],
                "observed": {"slurm_version": "slurm 26.05.5", "i_mpi_pmi_library_exists": True,
                             "banner_version": "25.0"},
-               "prepared": {"launch": {"mode": "srun_steps", "parallel_relaxations": 4, "ranks_per_relaxation": 48}}}
+               "prepared": {"launch": {"mode": "srun_steps", "parallel_relaxations": scenario.planned_parallel,
+                                       "ranks_per_relaxation": ranks}}}
     _write(run / "runtime_check.json", json.dumps(runtime))
 
     sacct = [f"{job}|bmds-{attempt[:8]}|{scenario.slurm_state}|{scenario.exit_code}|2026-11-20T10:00:00|"
-             f"2026-11-20T11:00:00|01:00:00|192|billing=192,cpu=192,mem={scenario.alloc_mem},node=1|"
+             f"2026-11-20T11:00:00|01:00:00|{scenario.ncpus}|billing={scenario.ncpus},cpu={scenario.ncpus},"
+             f"mem={scenario.alloc_mem},node=1|"
              f"{scenario.timelimit}",
              f"{job}.batch|batch|{scenario.slurm_state}|{scenario.exit_code}|2026-11-20T10:00:00|"
-             f"2026-11-20T11:00:00|01:00:00|192|cpu=192,mem={scenario.alloc_mem},node=1|",
+             f"2026-11-20T11:00:00|01:00:00|{scenario.ncpus}|cpu={scenario.ncpus},mem={scenario.alloc_mem},node=1|",
              *sacct_steps]
     return {"sacct": sacct, "steps": step_records}
 
@@ -427,4 +452,4 @@ def tree_state(root: Path) -> dict:
 
 
 __all__ = ["Scenario", "build_run", "run_collector", "install_slurm", "localised_collector", "tree_state",
-           "energy", "STEP_MEM", "shutil"]
+           "energy", "STEP_MEM", "SHARED_48", "shutil"]

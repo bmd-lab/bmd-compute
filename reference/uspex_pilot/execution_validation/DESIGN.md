@@ -134,6 +134,15 @@ settings.
    pinned plan digest is unchanged, but every attempt staged with `fca63b4b…`
    is refused (`runtime_package_changed`) and the test needs a new attempt.
 
+6. Shared node (12 Nov 2026, approved): the kit's `execution_shared`
+   profile asks for 3 × 16 ranks (48 CPUs) and `--mem=32G` on a shared node,
+   with the same search, ladder and validity policy (plan
+   `sha256:0b3b09de…`; INCAR files byte-identical to the 4 × 48 plan's).
+   The kit sets the profile's node settings in its own process before
+   planning; the job reads them from the frozen plan. The analyser takes
+   CPUs, concurrency and job memory from the frozen plan. The 4 × 48
+   exclusive profile stays, unchanged, as a later full-node benchmark.
+
 ## First contact on POWER (risks this test exists to retire)
 
 - 4 × 48-rank `srun_steps` placement on a full node, and Intel MPI pinning

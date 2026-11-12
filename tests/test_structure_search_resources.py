@@ -129,3 +129,47 @@ def test_ordinary_sbatch_script_has_no_search_directives():
     assert "--exclude" not in script
     assert "--mem=0" not in script
     assert "uspex" not in script.lower()
+
+
+# -- structure-search node requests: exclusive (default) or shared --------------------------------------------
+
+
+def test_the_default_structure_search_request_is_still_one_exclusive_node():
+    from backend.calculations.resources import structure_search_resources
+
+    resources = structure_search_resources("04:00:00")
+    assert resources.to_dict()["preset"] == "structure_search_exclusive_node"
+    assert resources.sbatch_directives()[4:8] == ["#SBATCH --nodes=1", "#SBATCH --ntasks=192", "#SBATCH --exclusive",
+                                                  "#SBATCH --mem=0"]
+
+
+def test_a_shared_structure_search_request_needs_explicit_memory():
+    from backend.calculations.registry import CalculationValidationError
+    from backend.calculations.resources import StructureSearchResources
+
+    shared = StructureSearchResources(walltime="04:00:00", ntasks=48, exclusive=False, memory="32g")
+    assert shared.memory == "32G" and shared.to_dict()["preset"] == "structure_search_shared_node"
+    assert "#SBATCH --exclusive" not in shared.sbatch_directives()
+    assert shared.sbatch_directives()[4:7] == ["#SBATCH --nodes=1", "#SBATCH --ntasks=48", "#SBATCH --mem=32G"]
+    for memory in ("0", "", "-1G", "32 G", "lots", "0G"):
+        with pytest.raises(CalculationValidationError):
+            StructureSearchResources(walltime="04:00:00", ntasks=48, exclusive=False, memory=memory)
+    with pytest.raises(CalculationValidationError):
+        StructureSearchResources(walltime="04:00:00", ntasks=48, exclusive="no", memory="32G")
+    with pytest.raises(CalculationValidationError):
+        StructureSearchResources(walltime="04:00:00", ntasks=193, exclusive=False, memory="32G")
+    # an exclusive node may still name its memory explicitly
+    assert StructureSearchResources(walltime="04:00:00", exclusive=True, memory="500G").memory == "500G"
+
+
+def test_structure_search_tasks_come_from_concurrency_and_ranks(monkeypatch):
+    from backend import config
+    from backend.calculations.resources import structure_search_resources
+
+    monkeypatch.setattr(config, "STRUCTURE_SEARCH_PARALLEL_RELAXATIONS", 3)
+    monkeypatch.setattr(config, "STRUCTURE_SEARCH_RANKS_PER_RELAXATION", 16)
+    monkeypatch.setattr(config, "STRUCTURE_SEARCH_EXCLUSIVE_NODE", False)
+    monkeypatch.setattr(config, "STRUCTURE_SEARCH_JOB_MEMORY", "32G")
+    resources = structure_search_resources("04:00:00")
+    assert (resources.ntasks, resources.exclusive, resources.memory) == (48, False, "32G")
+    assert structure_search_resources("04:00:00", ntasks=32).ntasks == 32

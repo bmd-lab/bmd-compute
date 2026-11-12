@@ -428,6 +428,7 @@ def job_main(request: Mapping[str, Any], *, loaded_modules: str = "", environ: M
     from backend.structure_search.bridge.launcher import (
         LauncherSettings,
         NodeMemoryUnavailable,
+        _slurm_memory_mb,
         allocated_node_memory,
         install_stop_signal_handlers,
         run_search,
@@ -504,8 +505,22 @@ def job_main(request: Mapping[str, Any], *, loaded_modules: str = "", environ: M
             if not key.startswith("BMD_") and key not in ("JOBFLOW_CONFIG_FILE", "ATOMATE2_CONFIG_FILE")
         }
         environment["I_MPI_PMI_LIBRARY"] = settings.i_mpi_pmi_library
+        # The allocation must be the frozen plan's: a shared node only with srun_steps, the planned
+        # number of tasks, and (for an explicit --mem) exactly the planned memory.
+        request = plan.record["resources"]["request"]
+        if request.get("exclusive") is False and settings.launch_mode != "srun_steps":
+            raise ValueError(f"a shared-node search needs srun_steps, not {settings.launch_mode}")
+        planned_tasks = settings.parallel_relaxations * settings.ranks_per_relaxation
+        if request.get("ntasks") != planned_tasks:
+            raise ValueError(f"the plan requests {request.get('ntasks')} tasks for {planned_tasks} ranks")
+        slurm_tasks = environ.get("SLURM_NTASKS")
+        if slurm_tasks is not None and slurm_tasks != str(planned_tasks):
+            raise ValueError(f"SLURM allocated {slurm_tasks} tasks; the plan requests {planned_tasks}")
         # The launcher's memory policy, fed with what SLURM allocated (fails closed).
         node_memory = allocated_node_memory(environment) if settings.launch_mode == "srun_steps" else None
+        planned_mb = _slurm_memory_mb(str(request.get("mem", "")))
+        if node_memory is not None and planned_mb and node_memory.mb != planned_mb:
+            raise ValueError(f"SLURM allocated {node_memory.mb} MB of memory; the plan requests {planned_mb} MB")
         launcher_settings = LauncherSettings(
             spool_dir=spool,
             search_dir=search_dir,

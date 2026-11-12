@@ -78,7 +78,7 @@ def _identity(text: str) -> dict:
 class JobRig:
     """One staged Si search under a temporary bind path, with fake POWER tools."""
 
-    def __init__(self, root: Path, monkeypatch):
+    def __init__(self, root: Path, monkeypatch, settings: dict | None = None):
         from backend import config
         from backend.runtime_package import runtime_package_manifest_for_sources
         from backend.structure_search.bridge import master
@@ -116,6 +116,7 @@ class JobRig:
             "STRUCTURE_SEARCH_PMI_LIBRARY": str(root / "lib" / "libpmi2.so"),
             "STRUCTURE_SEARCH_WORKSPACE_DIR": str(self.bind / "searches"),
             "STRUCTURE_SEARCH_LOGS_DIR": str(root / "logs"),
+            **(settings or {}),
         }.items():
             monkeypatch.setattr(config, name, value)
 
@@ -684,3 +685,89 @@ def test_the_job_still_checks_compute_node_execution_readiness(rig):
     check = json.loads((rig.run_dir / "runtime_check.json").read_text())
     assert check["scope"] == "job"
     assert rig.singularity_calls() == []
+
+
+# -- a shared node (no --exclusive, explicit --mem) ------------------------------------------------------------
+
+SHARED = {"STRUCTURE_SEARCH_PARALLEL_RELAXATIONS": 3, "STRUCTURE_SEARCH_RANKS_PER_RELAXATION": 16,
+          "STRUCTURE_SEARCH_EXCLUSIVE_NODE": False, "STRUCTURE_SEARCH_JOB_MEMORY": "32G"}
+
+
+@pytest.fixture
+def shared_rig(tmp_path, monkeypatch):
+    return JobRig(tmp_path, monkeypatch, settings=SHARED)
+
+
+def test_a_shared_node_plan_carries_its_request_into_the_job_script(shared_rig):
+    request = shared_rig.plan.record["resources"]["request"]
+    assert (request["ntasks"], request["exclusive"], request["mem"], request["preset"]) == (
+        48, False, "32G", "structure_search_shared_node")
+    directives = [line for line in shared_rig.script.splitlines() if line.startswith("#SBATCH")]
+    assert "#SBATCH --ntasks=48" in directives and "#SBATCH --mem=32G" in directives
+    assert "#SBATCH --exclusive" not in directives and "#SBATCH --no-requeue" in directives
+    assert shared_rig.acknowledgement["resources"]["request"] == request
+    launch = shared_rig.plan.record["runtime"]["launch"]
+    assert (launch["parallel_relaxations"], launch["ranks_per_relaxation"], launch["mode"]) == (3, 16, "srun_steps")
+    assert shared_rig.plan.record["execution"]["input_txt"]["num_parallel_calcs"] == 3
+
+
+@needs_bash
+def test_a_shared_node_job_divides_the_memory_slurm_allocated(shared_rig):
+    result = shared_rig.run(SLURM_MEM_PER_NODE="32768", SLURM_NTASKS="48")
+    assert result.returncode == 0, result.stdout + result.stderr
+    launch = shared_rig.status()["execution"]["launch"]
+    assert launch["node_memory"] == {"mb": 32768, "source": "SLURM_MEM_PER_NODE", "detail": "SLURM_MEM_PER_NODE=32768"}
+    assert launch["step_mem"] == f"{int(32768 * 0.9) // 3}M" == "9830M"
+    assert (launch["parallel_relaxations"], launch["ranks_per_relaxation"]) == (3, 16)
+    records = [json.loads(p.read_text()) for p in shared_rig.records.glob("*.json")]
+    assert records and all(r["argv"][:5] == ["--exact", "--mpi=pmi2", "-n", "16", "--mem=9830M"] for r in records)
+
+
+@needs_bash
+@pytest.mark.parametrize("environment, message", [
+    ({"SLURM_MEM_PER_NODE": "16384", "SLURM_NTASKS": "48"}, "SLURM allocated 16384 MB of memory; the plan requests 32768"),
+    ({"SLURM_MEM_PER_NODE": "32768", "SLURM_NTASKS": "64"}, "SLURM allocated 64 tasks; the plan requests 48"),
+])
+def test_a_shared_node_job_refuses_an_allocation_that_is_not_the_plans(shared_rig, environment, message):
+    result = shared_rig.run(**environment)
+    assert result.returncode == search_job.EXIT_LAUNCH_SETUP_FAILED, result.stdout + result.stderr
+    execution = shared_rig.status()["execution"]
+    assert execution["outcome"] == "launch_setup_failed" and message in execution["message"]
+    assert shared_rig.singularity_calls() == [] and shared_rig.srun_env() == []
+
+
+@needs_bash
+def test_a_shared_node_job_is_never_started_twice(shared_rig):
+    assert shared_rig.run(SLURM_MEM_PER_NODE="32768", SLURM_NTASKS="48").returncode == 0
+    again = shared_rig.run(SLURM_MEM_PER_NODE="32768", SLURM_NTASKS="48", SLURM_JOB_ID="4243")
+    assert again.returncode == search_job.EXIT_ALREADY_STARTED
+
+
+def test_the_shared_steps_fit_the_allocation_under_srun_exact(shared_rig):
+    """The resource model of a shared-node job, from its frozen plan, without POWER."""
+
+    from backend.structure_search.bridge.launcher import LauncherSettings
+
+    request = shared_rig.plan.record["resources"]["request"]
+    launch = shared_rig.plan.record["runtime"]["launch"]
+    settings = LauncherSettings(spool_dir=shared_rig.root / "spool", search_dir=shared_rig.root / "search",
+                                max_parallel=launch["parallel_relaxations"], ranks=launch["ranks_per_relaxation"],
+                                environment={}, launch_mode=launch["mode"], node_memory_mb=32768)
+    # 48 tasks, 32 GB for the job; three 16-rank steps, each 90 % of the job's memory / 3
+    assert (request["ntasks"], request["mem"]) == (48, "32G")
+    assert settings.max_parallel * settings.ranks == request["ntasks"]  # no rank reserved for the master
+    assert settings.step_mem == "9830M" and 3 * 9830 <= 32768  # all three steps' --mem fit the job's memory
+    argv = settings.argv_for_step(1)
+    assert argv[:6] == ["srun", "--exact", "--mpi=pmi2", "-n", "16", "--mem=9830M"]
+    # no absolute core numbers anywhere on this path: SLURM places each step inside the job's cores
+    assert settings.slot_first_cores is None
+    assert all(settings.environment_for_slot(step, slot) == {} for step in range(1, 6) for slot in range(3))
+
+
+@needs_bash
+def test_a_shared_node_job_sets_no_core_list_and_no_exclusive_node(shared_rig):
+    assert shared_rig.run(SLURM_MEM_PER_NODE="32768", SLURM_NTASKS="48").returncode == 0
+    records = [json.loads(p.read_text()) for p in shared_rig.records.glob("*.json")]
+    assert records and all(r["I_MPI_PIN_PROCESSOR_LIST"] is None and r["I_MPI_PIN_DOMAIN"] is None
+                           and r["tool"] == "srun" and "--exact" in r["argv"] for r in records)
+    assert "#SBATCH --exclusive" not in shared_rig.script

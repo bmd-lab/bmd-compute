@@ -30,7 +30,7 @@ from test_uspex_staging_validation_kit import (  # noqa: F401 - pytest fixtures
     kit,
     staged_validation,
 )
-from uspex_execution_fakes import Scenario, build_run, install_slurm
+from uspex_execution_fakes import SHARED_48, Scenario, build_run, install_slurm
 
 EXECUTION_SEARCH = {"min_atoms": 2, "max_atoms": 2, "num_generations": 2, "walltime": "04:00:00"}
 
@@ -38,6 +38,29 @@ EXECUTION_SEARCH = {"min_atoms": 2, "max_atoms": 2, "num_generations": 2, "wallt
 @pytest.fixture(autouse=True)
 def no_rate_limit(monkeypatch):
     monkeypatch.setattr(monitoring, "MIN_OBSERVATION_INTERVAL_SECONDS", 0)
+
+
+@pytest.fixture(autouse=True)
+def restore_configuration(kit):
+    """The kit sets a profile's node settings in this process's backend.config; undo it after each test."""
+
+    yield
+    kit.restore_profile_configuration()
+
+
+@pytest.fixture
+def shared_digest(kit, tmp_path, cluster, clean_env, monkeypatch):
+    """The fake environment's digest of the approved shared-node search."""
+
+    from backend import config
+    from backend.structure_search.planning import StructureSearchPlanRequest, plan_structure_search
+
+    with monkeypatch.context() as patch:
+        for name, value in kit.EXECUTION_PROFILES["execution_shared"]["configuration"].items():
+            patch.setattr(config, name, value)
+        digest = plan_structure_search(StructureSearchPlanRequest(formula="Si", **EXECUTION_SEARCH)).digest
+    monkeypatch.setitem(kit.EXECUTION_PROFILES["execution_shared"], "plan_digest", digest)
+    return digest
 
 
 @pytest.fixture
@@ -48,12 +71,13 @@ def test_digest(kit, tmp_path, cluster, clean_env, monkeypatch):
 
     digest = plan_structure_search(StructureSearchPlanRequest(formula="Si", **EXECUTION_SEARCH)).digest
     monkeypatch.setattr(kit, "EXECUTION_PLAN_DIGEST", digest)
+    monkeypatch.setitem(kit.EXECUTION_PROFILES["execution"], "plan_digest", digest)
     return digest
 
 
-def execution_root(kit, tmp_path, cluster, clean_env, name="execution"):
+def execution_root(kit, tmp_path, cluster, clean_env, name="execution", profile="execution"):
     root = tmp_path / name
-    kit.setup(root, execution=True)
+    kit.setup(root, execution=True if profile == "execution" else profile)
     step(kit, clean_env, "run", root, cluster)
     step(kit, clean_env, "promote", root, cluster)
     return root
@@ -103,7 +127,7 @@ def test_run_refuses_a_plan_that_is_not_the_pinned_one(kit, tmp_path, cluster, c
                                                       monkeypatch):
     root = tmp_path / "execution"
     kit.setup(root, execution=True)
-    monkeypatch.setattr(kit, "EXECUTION_PLAN_DIGEST", "sha256:" + "0" * 64)
+    monkeypatch.setitem(kit.EXECUTION_PROFILES["execution"], "plan_digest", "sha256:" + "0" * 64)
     marker = json.loads((root / "VALIDATION_ROOT.json").read_text())
     marker["acceptance"]["plan_digest"] = "sha256:" + "0" * 64
     (root / "VALIDATION_ROOT.json").write_text(json.dumps(marker))
@@ -213,8 +237,8 @@ sys.exit(completed.returncode)
 def finished_root(kit, tmp_path, cluster, clean_env, test_digest, monkeypatch):
     """An execution root whose job ran to its natural end (a fake run), observed to SEARCH_COMPLETED."""
 
-    def make(scenario=None):
-        root = execution_root(kit, tmp_path, cluster, clean_env)
+    def make(scenario=None, profile="execution"):
+        root = execution_root(kit, tmp_path, cluster, clean_env, profile=profile)
         submit(kit, clean_env, root, cluster)
         attempt = attempt_of(root)
         record = search_record(root / "state", attempt)
@@ -279,7 +303,7 @@ def test_execution_evidence_needs_an_ended_execution_attempt(kit, tmp_path, clus
         kit.execution_evidence(root, proc=root / "no-proc")
     (tmp_path / "other").mkdir()
     operational = acceptance_root(kit, tmp_path / "other", cluster, clean_env)
-    with pytest.raises(SystemExit, match="not set up for the execution acceptance"):
+    with pytest.raises(SystemExit, match="not set up for an execution acceptance"):
         kit.execution_evidence(operational, proc=operational / "no-proc")
 
 
@@ -288,3 +312,114 @@ def test_fetch_refuses_an_unexpected_evidence_directory(kit, tmp_path):
                    "/bmd/bmdguest/searches/uspex_execution_4d_20261120T100000Z_c0ffee00_1"):
         with pytest.raises(SystemExit, match="unexpected evidence directory"):
             kit.fetch_power_directory(remote, tmp_path / "target")
+
+
+# --- the shared-node profile (3 x 16 ranks, 48 CPUs, --mem=32G) ----------------------------------------------
+
+
+def test_the_pinned_shared_digest_is_the_planners_for_the_approved_settings(kit):
+    """In a clean process, with the profile's settings as configuration, the planner gives the pinned digest."""
+
+    definition = kit.EXECUTION_PROFILES["execution_shared"]
+    code = ("from backend.structure_search.planning import StructureSearchPlanRequest as R, plan_structure_search as p;"
+            "from backend.structure_search.job import resource_request_sha256 as h;"
+            "import json; r = p(R(formula='Si', min_atoms=2, max_atoms=2, num_generations=2, walltime='04:00:00'));"
+            "print(json.dumps([r.digest, h(r.plan), r.plan.record['resources']['sbatch_directives'],"
+            " r.plan.record['resources']['request'], r.plan.record['runtime']['launch']]))")
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("BMD_")}
+    environment.update({"BMD_SEARCH_PARALLEL_RELAXATIONS": "3", "BMD_SEARCH_RANKS_PER_RELAXATION": "16",
+                        "BMD_SEARCH_EXCLUSIVE_NODE": "false", "BMD_SEARCH_JOB_MEMORY": "32G"})
+    result = subprocess.run([sys.executable, "-W", "ignore", "-c", code], capture_output=True, text=True,
+                            cwd=Path(kit.REPO), env=environment)
+    digest, resources_sha256, directives, request, launch = json.loads(result.stdout.strip().splitlines()[-1])
+    assert digest == definition["plan_digest"] == "sha256:0b3b09de2b115cc8a72ea43b2e22ac5db2545e0d5012ff7057a0b6cbc8469e79"
+    assert resources_sha256 == definition["resources_sha256"]
+    assert tuple(directives) == definition["directives"] and "#SBATCH --exclusive" not in directives
+    assert {key: request[key] for key in definition["request"]} == definition["request"]
+    assert {key: launch[key] for key in definition["launch"]} == definition["launch"]
+    assert definition["configuration"] == {
+        "STRUCTURE_SEARCH_LAUNCH_MODE": "srun_steps", "STRUCTURE_SEARCH_PARALLEL_RELAXATIONS": 3,
+        "STRUCTURE_SEARCH_RANKS_PER_RELAXATION": 16, "STRUCTURE_SEARCH_EXCLUSIVE_NODE": False,
+        "STRUCTURE_SEARCH_JOB_MEMORY": "32G"}
+
+
+def test_setup_records_the_shared_profile_and_refuses_a_tampered_one(kit, tmp_path, shared_digest):
+    kit.setup(tmp_path / "root", execution="execution_shared")
+    assert kit.acceptance_profile(tmp_path / "root") == {
+        "profile": "execution_shared", "walltime": "04:00:00", "search": EXECUTION_SEARCH, "plan_digest": shared_digest}
+    marker = json.loads((tmp_path / "root" / "VALIDATION_ROOT.json").read_text())
+    assert marker["acceptance"]["request"] == {"nodes": 1, "ntasks": 48, "exclusive": False, "mem": "32G"}
+    marker["acceptance"]["launch"]["ranks_per_relaxation"] = 48
+    (tmp_path / "root" / "VALIDATION_ROOT.json").write_text(json.dumps(marker))
+    with pytest.raises(SystemExit, match="not the approved one"):
+        kit.acceptance_profile(tmp_path / "root")
+    with pytest.raises(SystemExit, match="choose --execution or --execution-shared"):
+        kit.main(["setup", str(tmp_path / "both"), "--execution", "--execution-shared"])
+    assert not (tmp_path / "both").exists()
+
+
+def test_the_shared_submission_is_the_frozen_48_core_request(kit, tmp_path, cluster, clean_env, shared_digest):
+    from backend import config
+
+    root = tmp_path / "shared"
+    kit.setup(root, execution="execution_shared")
+    first = step(kit, clean_env, "run", root, cluster)
+    resumed = step(kit, clean_env, "run", root, cluster)  # an interrupted run resumes the same attempt and plan
+    assert first["attempt_id"] == resumed["attempt_id"] and resumed["plan_digest"] == shared_digest
+    assert config.STRUCTURE_SEARCH_RANKS_PER_RELAXATION == 16  # set in the kit's own process only
+    step(kit, clean_env, "promote", root, cluster)
+    with pytest.raises(SystemExit, match="--confirm-walltime must be exactly 04:00:00"):
+        submit(kit, clean_env, root, cluster, walltime=None)
+    job = submit(kit, clean_env, root, cluster)
+    assert job["profile"] == "execution_shared" and cluster.sbatch_runs == 1
+    directives = cluster.jobs["9001"]["directives"]
+    assert (directives["time"], directives["ntasks"], directives["mem"]) == ("04:00:00", "48", "32G")
+    attempt = attempt_of(root)
+    run_dir = search_record(root / "state", attempt)["staging"]["spec"]["paths"]["run_dir"]
+    script = (cluster.at(run_dir) / "bmd_search_job.sbatch").read_text()  # the promoted script on POWER
+    assert "#SBATCH --exclusive" not in script and "#SBATCH --ntasks=48" in script
+    [check] = sorted((root / "evidence").glob("*-execution_allocation_check.json"))
+    recorded = json.loads(check.read_text())
+    assert recorded["plan_digest"] == shared_digest
+    assert recorded["execution"]["launch"] == {"mode": "srun_steps", "parallel_relaxations": 3,
+                                               "ranks_per_relaxation": 16}
+    assert recorded["execution"]["request"] == {"nodes": 1, "ntasks": 48, "exclusive": False, "mem": "32G"}
+    assert recorded["execution"]["resources_sha256"] == kit.EXECUTION_PROFILES["execution_shared"]["resources_sha256"]
+    assert len(recorded["execution"]["incar_sha256"]) == 5
+    expected = kit.execution_expected(root, attempt, "9001")
+    assert (expected["parallel"], expected["ranks"], expected["ncpus"], expected["exclusive"],
+            expected["job_memory"], expected["walltime"]) == (3, 16, 48, False, "32G", "04:00:00")
+    kit.restore_profile_configuration()
+    assert config.STRUCTURE_SEARCH_RANKS_PER_RELAXATION == 48
+
+
+def test_the_shared_and_exclusive_incar_ladders_are_identical(kit, tmp_path, cluster, clean_env, test_digest,
+                                                              shared_digest):
+    shared = execution_root(kit, tmp_path, cluster, clean_env, name="shared", profile="execution_shared")
+    kit.restore_profile_configuration()
+    exclusive = execution_root(kit, tmp_path, cluster, clean_env, name="exclusive")
+
+    def incars(root):
+        [path] = (root / "state" / "structure_search" / "preparations" / attempt_of(root)).rglob("search_plan.json")
+        record = json.loads(path.read_text())
+        record = record.get("record", record)
+        return {name: row["sha256"] for name, row in record["incar_files"].items()}
+
+    assert incars(shared) == incars(exclusive) and len(incars(shared)) == 5
+
+
+def test_execution_evidence_end_to_end_on_a_shared_node(kit, finished_root, shared_digest):
+    root, observed = finished_root(Scenario(**SHARED_48), profile="execution_shared")
+    assert observed["state"] == "SEARCH_COMPLETED"
+    assert kit.execution_evidence(root, proc=root / "no-proc") == 0
+    report = json.loads((root / "execution_analysis_01.json").read_text())
+    assert report["result"] == "PASSED", report["checks"]
+    allocation = next(c for c in report["checks"] if c["check"] == "allocation")["detail"]
+    assert allocation["expected_ncpus"] == 48 and allocation["exclusive_requested"] is False
+
+
+def test_a_shared_run_with_a_192_core_record_fails_its_analysis(kit, finished_root, shared_digest):
+    root, _ = finished_root(Scenario(), profile="execution_shared")  # the job looked like the 4 x 48 one
+    assert kit.execution_evidence(root, proc=root / "no-proc") == 1
+    report = json.loads((root / "execution_analysis_01.json").read_text())
+    assert "allocation" in report["failed"]

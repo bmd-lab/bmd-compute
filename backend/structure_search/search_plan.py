@@ -21,7 +21,8 @@ module that owns it:
 * candidate validity: :mod:`backend.structure_search.step_validity`;
 * USPEX program and launch layout: :mod:`backend.structure_search.runtime`;
 * ``INPUT.txt``: :mod:`backend.structure_search.input_writer`;
-* the exclusive-node request: ``backend.calculations.resources.structure_search_resources``.
+* the node request (exclusive by default, or shared with explicit memory):
+  ``backend.calculations.resources.structure_search_resources``.
 
 The only value defined here is the provisional ``sleepSeconds`` of
 ``INPUT.txt`` (:data:`SEARCH_SLEEP_SECONDS`), which the input writer leaves
@@ -472,7 +473,14 @@ def _build(spec, *, request, provenance_request, runtime_settings, generator) ->
         f"{defaults['policy_id']}/{defaults['policy_version']} ({defaults['status']})"
         if from_defaults else "explicit search specification"
     )
-    resources = structure_search_resources(spec.walltime)
+    resources = structure_search_resources(
+        spec.walltime, ntasks=settings.parallel_relaxations * settings.ranks_per_relaxation)
+    if not resources.exclusive and settings.launch_mode != "srun_steps":
+        raise SearchPlanError(
+            f"A structure search on a shared node needs the srun_steps launch mode, not {settings.launch_mode}: "
+            "mpirun_pinned pins fixed cores of a whole node.",
+            code="shared_node_needs_srun_steps",
+        )
 
     record = {
         "schema": PLAN_SCHEMA,

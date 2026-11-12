@@ -221,6 +221,16 @@ STRUCTURE_SEARCH_EXCLUDED_NODES_ENV = "BMD_SEARCH_EXCLUDED_NODES"
 STRUCTURE_SEARCH_EXCLUDED_NODES = _text_env(
     STRUCTURE_SEARCH_EXCLUDED_NODES_ENV, default="compute-0-[332-333]", allow_empty=True
 )
+# The node: a whole exclusive node with all its memory (--exclusive --mem=0, the default), or a
+# share of one with an explicit memory request (no --exclusive, --mem=<amount>, e.g. 32G). A
+# shared node needs a positive amount and the srun_steps launch mode (SLURM places each step's
+# cores inside the job's allocation; mpirun_pinned assumes the whole node). POWER's
+# leeburton-pool shares nodes per core and per memory (CR_CORE_MEMORY, ConstrainCores and
+# ConstrainRAMSpace, checked 12 Nov 2026); its default is 1 GB per job.
+STRUCTURE_SEARCH_EXCLUSIVE_NODE_ENV = "BMD_SEARCH_EXCLUSIVE_NODE"
+STRUCTURE_SEARCH_EXCLUSIVE_NODE = _bool_env(STRUCTURE_SEARCH_EXCLUSIVE_NODE_ENV, default=True)
+STRUCTURE_SEARCH_JOB_MEMORY_ENV = "BMD_SEARCH_JOB_MEMORY"
+STRUCTURE_SEARCH_JOB_MEMORY = _text_env(STRUCTURE_SEARCH_JOB_MEMORY_ENV, default="0")
 
 DEFAULT_POTCAR_FUNCTIONAL = "PBE_64"
 POTCAR_LINK_MAP = {
@@ -303,6 +313,10 @@ __all__ = [
     "STRUCTURE_SEARCH_CORES_PER_SOCKET_ENV",
     "STRUCTURE_SEARCH_EXCLUDED_NODES",
     "STRUCTURE_SEARCH_EXCLUDED_NODES_ENV",
+    "STRUCTURE_SEARCH_EXCLUSIVE_NODE",
+    "STRUCTURE_SEARCH_EXCLUSIVE_NODE_ENV",
+    "STRUCTURE_SEARCH_JOB_MEMORY",
+    "STRUCTURE_SEARCH_JOB_MEMORY_ENV",
     "STRUCTURE_SEARCH_LAUNCH_MODE",
     "STRUCTURE_SEARCH_LOGS_DIR",
     "STRUCTURE_SEARCH_LOGS_DIR_ENV",
