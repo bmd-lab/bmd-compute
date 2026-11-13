@@ -33,7 +33,7 @@ and principal as every other part of the kit.
 Copied (each with its size and SHA-256 in `manifest.json`, bounded, regular
 files only): `search_status.json`, `runtime_check.json`, `job_started`, the
 job script and resource acknowledgement, the USPEX master log, the SLURM
-output, the launcher journal, done files and heartbeat, `INPUT.txt`, the
+output, the job's start-up log (`job_setup.log`), the launcher journal, done files and heartbeat, `INPUT.txt`, the
 frozen plan and preparation manifest, `Specific/INCAR_*`, USPEX's
 `results*/{Individuals, BESTIndividuals, Individuals_all, Individuals_extended,
 gatheredPOSCARS, BESTgatheredPOSCARS, Parameters.txt, generation_properties}`,

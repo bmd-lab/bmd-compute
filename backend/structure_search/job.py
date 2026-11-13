@@ -63,6 +63,7 @@ ACKNOWLEDGEMENT_STATEMENT = (
 JOB_SCRIPT_NAME = "bmd_search_job.sbatch"
 STATUS_FILE = "search_status.json"
 STARTED_MARKER = "job_started"
+SETUP_LOG = "job_setup.log"  # the shell's system and module set-up output, and Python start-up tracebacks
 RUNTIME_CHECK_FILE = "runtime_check.json"
 MASTER_LOG = "uspex_master.log"
 SPOOL_DIRNAME = "bridge_spool"
@@ -256,7 +257,7 @@ def build_job_script(
     _require(PYTHON_END not in guard, "invalid_guard", "The guard source contains the script's end marker.")
     q = shlex.quote
     module_loads = "\n".join(
-        f'module load {q(name)} >/dev/null 2>&1 || fail {EXIT_SETUP_FAILED} setup_failed "module load {name} failed"'
+        f'module load {q(name)} >>"$SETUP_LOG" 2>&1 || fail {EXIT_SETUP_FAILED} setup_failed "module load {name} failed"'
         for name in modules
     )
 
@@ -299,23 +300,84 @@ def build_job_script(
         f"  exit {EXIT_ALREADY_STARTED}",
         "fi",
         f'cd "$RUN_DIR" || fail {EXIT_SETUP_FAILED} setup_failed "the run directory is not accessible"',
+        "# From here until Python starts, an unexpected stop of this shell (an error or an exit inside the system",
+        "# or module scripts) is recorded, never over an existing status record; recording never fails the job.",
+        f'SETUP_LOG="$RUN_DIR/{SETUP_LOG}"',
+        "{ : >>\"$SETUP_LOG\"; } 2>/dev/null || SETUP_LOG=/dev/null  # a log that cannot be written never stops the job",
+        'PHASE="clearing the submitting environment"',
+        "on_shell_exit() {",
+        "  local rc=$?",
+        f'  [ -e "$RUN_DIR/{STATUS_FILE}" ] && return 0',
+        '  local tmp="$RUN_DIR/.search_status.json.shell.$$"',
+        "  printf '{\"schema\": \"%s\", \"schema_version\": %s, \"attempt_id\": \"%s\", \"slurm_job_id\": \"%s\", "
+        "\"execution\": {\"outcome\": \"setup_failed\", \"code\": \"shell_stopped\", \"exit_status\": %s, "
+        "\"message\": \"the job shell stopped during %s, before Python started; see %s\"}, "
+        "\"scientific_validity\": {\"status\": \"not_assessed\"}, \"finalists\": {\"status\": \"not_started\"}}\\n' "
+        f"{q(JOB_STATUS_SCHEMA)} {JOB_STATUS_SCHEMA_VERSION} \"$ATTEMPT\" \"$JOB_ID\" \"$rc\" \"${{PHASE:-set-up}}\" "
+        f"{q(SETUP_LOG)} 2>/dev/null > \"$tmp\" "
+        f'&& ln "$tmp" "$RUN_DIR/{STATUS_FILE}" 2>/dev/null  # ln never replaces an existing file',
+        '  rm -f "$tmp" 2>/dev/null',
+        f'  say "STOPPED: the job shell stopped during ${{PHASE:-set-up}} (exit $rc) before Python started; see {SETUP_LOG}" '
+        "2>/dev/null >&9 || true",
+        "  return 0  # the shell keeps its own exit status",
+        "}",
+        "exec 9>&1  # the SLURM output, for the line above even if the shell stops inside a redirected command",
+        "trap on_shell_exit EXIT",
         "# 2. Nothing from the submitting environment may redirect the job.",
         "for name in $(env | sed -n 's/^\\(BMD_[A-Za-z0-9_]*\\)=.*/\\1/p'); do unset \"$name\"; done",
         "unset JOBFLOW_CONFIG_FILE ATOMATE2_CONFIG_FILE PYTHONPATH PYTHONHOME PYTHONSTARTUP",
-        "# 3. The VASP modules BMD Compute configures (recorded above and in search_status.json).",
-        "if ! type module >/dev/null 2>&1; then source /etc/profile >/dev/null 2>&1 || true; fi",
+        "# 3. The VASP modules BMD Compute configures (recorded above and in search_status.json). The system and",
+        "# module scripts are not written for set -u (an unset variable there would end this shell silently), so",
+        "# they run without it, and their output goes to the set-up log rather than nowhere.",
+        "set +u",
+        'PHASE="system shell initialisation (/etc/profile)"',
+        'if ! type module >/dev/null 2>&1; then source /etc/profile >>"$SETUP_LOG" 2>&1 || true; fi',
+        'PHASE="module set-up"',
         f'type module >/dev/null 2>&1 || fail {EXIT_SETUP_FAILED} setup_failed "the module command is not available"',
-        "module purge >/dev/null 2>&1 || true",
+        'module purge >>"$SETUP_LOG" 2>&1 || true',
         module_loads,
+        "set -u",
+        'PHASE="starting Python"',
         f'[ -x "$PYTHON" ] || fail {EXIT_SETUP_FAILED} setup_failed "the runtime Python is not executable"',
+        "exec 9>&-",
         "# 4. The job entry point, from the runtime package uploaded with this attempt, once verified.",
         f"exec \"$PYTHON\" - \"${{LOADEDMODULES:-}}\" <<'{PYTHON_END}'",
         "import sys",
         'if sys.path and sys.path[0] == "":',
         "    del sys.path[0]",
         "import base64, json, os",
+        "def _bmd_unexpected(where):",
+        "    # An unexpected Python failure: its traceback goes to the set-up log (and still to stderr, by the",
+        "    # caller's re-raise); a status record is written only if none exists. Never raises.",
+        "    try:",
+        "        import traceback",
+        "        request = globals().get('REQUEST') or {}",
+        "        run_dir = request.get('run_dir') or os.getcwd()  # the shell started Python in the run directory",
+        f"        with open(os.path.join(run_dir, {SETUP_LOG!r}), 'a', encoding='utf-8') as handle:",
+        "            handle.write('== Python failure while ' + where + '\\n')",
+        "            traceback.print_exc(file=handle)",
+        f"        path = os.path.join(run_dir, {STATUS_FILE!r})",
+        "        if not os.path.exists(path):",
+        "            record = {'schema': " + repr(JOB_STATUS_SCHEMA) + ", 'schema_version': "
+        + str(JOB_STATUS_SCHEMA_VERSION) + ", 'attempt_id': request.get('attempt_id'),"
+        " 'slurm_job_id': os.environ.get('SLURM_JOB_ID'), 'execution': {'outcome': 'setup_failed',"
+        " 'code': 'python_startup_failed', 'message': 'Python failed while ' + where + '; see "
+        + SETUP_LOG + "'}, 'scientific_validity': {'status': 'not_assessed'}, 'finalists': {'status': 'not_started'}}",
+        "            temporary = path + '.python.' + str(os.getpid())",
+        "            with open(temporary, 'w', encoding='utf-8') as handle:",
+        "                json.dump(record, handle, indent=2, sort_keys=True)",
+        "            try:",
+        "                os.link(temporary, path)  # never over a record written meanwhile",
+        "            finally:",
+        "                os.unlink(temporary)",
+        "    except Exception:",
+        "        pass",
         f"{REQUEST_MARKER}{payload!r}",
-        "REQUEST = json.loads(base64.b64decode(BMD_SEARCH_JOB_REQUEST_B64))",
+        "try:",
+        "    REQUEST = json.loads(base64.b64decode(BMD_SEARCH_JOB_REQUEST_B64))",
+        "except Exception:",
+        "    _bmd_unexpected('reading the job request')",
+        "    raise",
         "# BMD Compute runtime package guard (embedded).",
         guard,
         "# End of embedded runtime package guard.",
@@ -335,8 +397,17 @@ def build_job_script(
         "    _bmd_refused('The uploaded runtime package does not match its manifest; nothing was run.')",
         "    print(exc, file=sys.stderr)",
         f"    sys.exit({EXIT_RUNTIME_PACKAGE_REFUSED})",
-        "from backend.structure_search.job import job_main",
-        "sys.exit(job_main(REQUEST, loaded_modules=sys.argv[1] if len(sys.argv) > 1 else ''))",
+        "try:",
+        "    from backend.structure_search.job import job_main",
+        "except Exception:",
+        "    _bmd_unexpected('importing the job entry point')",
+        "    raise",
+        "try:",
+        "    _bmd_status = job_main(REQUEST, loaded_modules=sys.argv[1] if len(sys.argv) > 1 else '')",
+        "except Exception:",
+        "    _bmd_unexpected('running the job entry point')",
+        "    raise",
+        "sys.exit(_bmd_status)",
         PYTHON_END,
     ]
     return "\n".join(lines) + "\n"

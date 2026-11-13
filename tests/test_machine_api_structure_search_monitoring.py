@@ -969,8 +969,9 @@ def test_the_runtime_package_is_the_reviewed_one():
     """4D-4 was service-side only (the package the 4D-2 validation staged, b7bd184, ``fca63b4b…``).
 
     Since then: the launcher's scientific evidence archive (``bridge/evidence_archive.py``, ``92913a28…``,
-    commit 0b9925e), and configurable node exclusivity and job memory for structure searches (shared nodes):
-    80 files. Attempts staged with an earlier package are refused with ``runtime_package_changed`` and need
+    commit 0b9925e), configurable node exclusivity and job memory for structure searches (shared nodes,
+    ``f31cfab5…``, commit 42a24ce), and the job script's start-up fix (system and module scripts without
+    ``set -u``, start-up failures recorded; job 23616052): 80 files. Attempts staged with an earlier package are refused with ``runtime_package_changed`` and need
     a new attempt ID.
     """
 
@@ -979,7 +980,7 @@ def test_the_runtime_package_is_the_reviewed_one():
     manifest = build_runtime_package_manifest()
     assert len(manifest) == 80
     assert runtime_package_manifest_digest(manifest) == (
-        "f31cfab5bf5c2cbc52c03594351b705cf1307922a0eeff001f577487844afc36")
+        "b7682918959e3079d31a9862c08ffd9f6b1e3b45905c2e323f99fa88b84c79c2")
 
 
 def test_scancel_command_takes_only_a_numeric_job_id():

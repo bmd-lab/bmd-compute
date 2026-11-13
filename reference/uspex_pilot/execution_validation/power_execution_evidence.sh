@@ -124,6 +124,7 @@ for name in ("search_status.json", "runtime_check.json", "job_started", "bmd_sea
     copy(name, cap=4 * MIB)
 copy("uspex_master.log", cap=16 * MIB, keep_tail=12 * MIB)
 copy(f"slurm-{job}.out", cap=4 * MIB, keep_tail=3 * MIB)
+copy("job_setup.log", cap=4 * MIB, keep_tail=3 * MIB)  # the job shell's system/module set-up output
 copy("bridge_spool/launcher.jsonl", cap=64 * MIB)
 copy("bridge_spool/heartbeat", cap=4096)
 for name in ("INPUT.txt", "search_plan.json", "prepared_inputs.json"):

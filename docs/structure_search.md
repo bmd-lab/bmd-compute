@@ -519,6 +519,27 @@ jobs are confined to their cores and memory (`ConstrainCores=yes`,
 job (validity probe 23406856) used at most 74 MB per VASP rank and 578 MB for
 the USPEX master and launcher.
 
+### Job start-up (fixed 13 Nov 2026, after job 23616052)
+
+The first shared-node acceptance job (attempt `fb36402a…`, job 23616052)
+stopped one second after its banner with exit status 1, `job_started`
+written and nothing else. The job script runs `set -u`; POWER's
+`/etc/profile` tests `$HISTCONTROL` without a default (checked read-only on
+POWER: under `set -u` it ends the shell), and its output was sent to
+/dev/null, so the shell ended silently. (An Lmod `module` function that
+expands an unset variable ends it the same way.) The job script now runs
+`/etc/profile`, `module purge` and `module load` without `set -u` and restores
+it afterwards, with their output in `job_setup.log` in the run directory (or
+`/dev/null` if that cannot be written). From the `job_started` guard until
+Python starts, an `EXIT` trap records any unexpected stop of the shell as
+`setup_failed` / `shell_stopped` with the shell's exit status and the step it
+was in, prints a `STOPPED:` line, never replaces an existing status record (it
+links the record into place) and keeps the shell's own exit status. In Python,
+a failure reading the job request, importing or running the entry point
+appends its traceback to `job_setup.log` (it still reaches the SLURM output)
+and writes `python_startup_failed` only if no status record exists. Nothing
+is retried; the runtime-package check and the frozen plan are unchanged.
+
 ### Frozen search plans and local preparation (USPEX integration step 3)
 
 A New structure request is planned as an immutable
