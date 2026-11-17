@@ -219,6 +219,238 @@ def same_structure(a: dict | None, b: dict | None, *, lattice_tol: float = 1e-3,
     return True
 
 
+# -- how USPEX changed a structure between two relaxation steps (stdlib; reported, never judged) ----------------
+
+# Below these a structure is treated as unchanged: the precision to which VASP and USPEX write
+# structures (about 1e-6 in lattice and fractional coordinates), not a scientific tolerance.
+WRITE_PRECISION_STRAIN = 1e-5
+WRITE_PRECISION_DISPLACEMENT_A = 1e-4
+
+
+def _det(m) -> float:
+    return (m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]))
+
+
+def _inverse(m) -> list[list[float]]:
+    d = _det(m)
+    cof = [[m[(j + 1) % 3][(i + 1) % 3] * m[(j + 2) % 3][(i + 2) % 3]
+            - m[(j + 1) % 3][(i + 2) % 3] * m[(j + 2) % 3][(i + 1) % 3] for j in range(3)] for i in range(3)]
+    return [[cof[i][j] / d for j in range(3)] for i in range(3)]
+
+
+def _matmul(a, b) -> list[list[float]]:
+    return [[sum(a[i][k] * b[k][j] for k in range(len(b))) for j in range(len(b[0]))] for i in range(len(a))]
+
+
+def _transpose(m) -> list[list[float]]:
+    return [list(row) for row in zip(*m)]
+
+
+def _symmetric_eigenvalues(c) -> list[float]:
+    """Eigenvalues of a real symmetric 3x3 matrix, ascending (closed form)."""
+
+    import math
+
+    p1 = c[0][1] ** 2 + c[0][2] ** 2 + c[1][2] ** 2
+    q = (c[0][0] + c[1][1] + c[2][2]) / 3
+    if p1 <= 1e-30:
+        return sorted([c[0][0], c[1][1], c[2][2]])
+    p2 = sum((c[i][i] - q) ** 2 for i in range(3)) + 2 * p1
+    p = math.sqrt(p2 / 6)
+    b = [[(c[i][j] - (q if i == j else 0)) / p for j in range(3)] for i in range(3)]
+    r = max(-1.0, min(1.0, _det(b) / 2))
+    phi = math.acos(r) / 3
+    high = q + 2 * p * math.cos(phi)
+    low = q + 2 * p * math.cos(phi + 2 * math.pi / 3)
+    return sorted([low, 3 * q - high - low, high])
+
+
+def _wrapped(v):
+    return [x - round(x) for x in v]
+
+
+def _norm(v) -> float:
+    return sum(x * x for x in v) ** 0.5
+
+
+def _atom_displacements(a: dict, b_frac: list, b_species: list, lattice) -> tuple[float, float, float] | None:
+    """Largest and RMS displacement (Å) of matched atoms with the rigid translation removed, and that
+    translation (Å); None if the atoms cannot be matched. Ties go to the smallest translation."""
+
+    a_species = [s for s, n in zip(a["species"], a["counts"]) for _ in range(n)]
+    best = None
+    first = a_species[0]
+    for j in [j for j, s in enumerate(b_species) if s == first]:
+        shift = [p - q for p, q in zip(b_frac[j], a["coords"][0])]
+        unused = set(range(len(b_frac)))
+        deltas = []
+        for i, coord in enumerate(a["coords"]):
+            options = [(k, _wrapped([p - q - t for p, q, t in zip(b_frac[k], coord, shift)])) for k in unused
+                       if b_species[k] == a_species[i]]
+            if not options:
+                deltas = None
+                break
+            k, delta = min(options, key=lambda o: _norm(_matmul([o[1]], lattice)[0]))
+            unused.discard(k)
+            deltas.append(delta)
+        if deltas is None:
+            continue
+        mean = [sum(d[x] for d in deltas) / len(deltas) for x in range(3)]
+        lengths = [_norm(_matmul([_wrapped([d[x] - mean[x] for x in range(3)])], lattice)[0]) for d in deltas]
+        translation = _norm(_matmul([_wrapped([t + m for t, m in zip(shift, mean)])], lattice)[0])
+        candidate = (round(max(lengths), 9), round((sum(v * v for v in lengths) / len(lengths)) ** 0.5, 9),
+                     round(translation, 9))
+        if best is None or candidate < best:
+            best = candidate
+    return best
+
+
+def structure_transformation(a: dict | None, b: dict | None, *, max_coefficient: int = 2) -> dict[str, Any]:
+    """How structure ``b`` (a step's input) differs from ``a`` (its predecessor's output): measured, not judged.
+
+    The cells are put in correspondence from the lattices alone: the unimodular integer combination
+    of ``b``'s lattice vectors (coefficients up to ``max_coefficient``) whose metric is closest to
+    ``a``'s. Reported: the volume change; the principal Green–Lagrange strains of that correspondence
+    (rotation-free, so a rewritten or reoriented but otherwise identical cell has zero strain); and the
+    displacements of matched atoms of the same species in the corresponding fractional coordinates,
+    converted with ``b``'s cell, after removing the rigid translation (a uniform strain alone moves no
+    atom). Ties go to the smaller displacement, then the correspondence keeping the cell's handedness,
+    then the smaller translation. ``comparable`` is False, with a reason, when a structure is
+    unreadable, the composition differs or no correspondence is found. The split between strain and
+    displacement depends on the correspondence (least strain here; pymatgen's StructureMatcher
+    minimises atomic RMS instead): see the README, "Structural continuity between ladder steps".
+    """
+
+    if a is None or b is None:
+        return {"comparable": False, "reason": "a structure is unreadable"}
+    composition = {"species": a["species"], "counts": a["counts"]}
+    if a["species"] != b["species"] or a["counts"] != b["counts"]:
+        return {"comparable": False, "reason": "the composition differs", "composition_same": False,
+                "before": composition, "after": {"species": b["species"], "counts": b["counts"]}}
+    la, lb = a["lattice"], b["lattice"]
+    volume_a, volume_b = abs(_det(la)), abs(_det(lb))
+    lengths_a = [_norm(row) for row in la]
+    range_ = range(-max_coefficient, max_coefficient + 1)
+    vectors = [(n, _matmul([list(n)], lb)[0]) for n in ((i, j, k) for i in range_ for j in range_ for k in range_)
+               if n != (0, 0, 0)]
+    per_axis = [sorted(vectors, key=lambda v: abs(_norm(v[1]) - length))[:12] for length in lengths_a]
+    inverse_a = _inverse(la)
+    candidates = []
+    for c0 in per_axis[0]:
+        for c1 in per_axis[1]:
+            for c2 in per_axis[2]:
+                m = [list(c0[0]), list(c1[0]), list(c2[0])]
+                if round(abs(_det(m))) != 1:
+                    continue
+                lb_m = [c0[1], c1[1], c2[1]]
+                c = _matmul(_matmul(inverse_a, _matmul(lb_m, _transpose(lb_m))), _transpose(inverse_a))
+                strains = [0.5 * (x - 1) for x in _symmetric_eigenvalues(c)]
+                candidates.append((max(abs(s) for s in strains), strains, m, lb_m))
+    if not candidates:
+        return {"comparable": False, "reason": "no lattice correspondence found", "composition_same": True}
+    least = min(c[0] for c in candidates)
+    b_species = [s for s, n in zip(b["species"], b["counts"]) for _ in range(n)]
+    best = None
+    for strain, strains, m, lb_m in candidates:
+        if strain > least + 1e-9:
+            continue
+        inverse_m = _inverse(m)
+        b_frac = [_matmul([coord], inverse_m)[0] for coord in b["coords"]]
+        moved = _atom_displacements(a, b_frac, b_species, lb_m)
+        # Ties (M and -M have the same metric) go to the correspondence that keeps the cell's handedness.
+        improper = int((_det(lb_m) > 0) != (_det(la) > 0))
+        # Order: displacement, then handedness, then the size of the rigid translation.
+        if moved is not None and (best is None or (moved[0], moved[1], improper, moved[2]) < best[0]):
+            best = ((moved[0], moved[1], improper, moved[2]), strains, m)
+    if best is None:
+        return {"comparable": False, "reason": "atoms could not be matched", "composition_same": True}
+    (largest, rms, _, translation), strains, m = best
+    return {"comparable": True, "composition_same": True, "composition": composition,
+            "volume_before_a3": round(volume_a, 6), "volume_after_a3": round(volume_b, 6),
+            "volume_change_relative": round((volume_b - volume_a) / volume_a, 8),
+            "principal_strains": [round(s, 8) for s in strains],
+            "max_abs_principal_strain": round(max(abs(s) for s in strains), 8),
+            "max_atomic_displacement_a": round(largest, 6), "rms_atomic_displacement_a": round(rms, 6),
+            "rigid_translation_a": round(translation, 6),
+            "lattice_correspondence": [[int(round(x)) for x in row] for row in m],
+            # A mirror image has the same metric: whether the correspondence keeps the handedness of the cell.
+            "orientation_preserving": (_det(_matmul(m, lb)) > 0) == (_det(la) > 0)}
+
+
+def _changed(transition: dict) -> bool | None:
+    """Whether USPEX changed the structure (beyond write precision); None if not quantified."""
+
+    if transition.get("identical_bytes"):
+        return False
+    if not transition.get("comparable"):
+        return None
+    return (transition["max_abs_principal_strain"] > WRITE_PRECISION_STRAIN
+            or transition["max_atomic_displacement_a"] > WRITE_PRECISION_DISPLACEMENT_A)
+
+
+def same_cell_in_another_basis(a: dict | None, b: dict | None,
+                               *, tolerance_a: float = WRITE_PRECISION_DISPLACEMENT_A) -> dict[str, Any]:
+    """Strict continuity: is ``b`` exactly ``a``, possibly written in another lattice basis?
+
+    Established explicitly, never inferred from a match up to symmetry:
+
+    1. the basis change is the integer matrix M = round(L_a L_b^-1); it must be unimodular
+       (|det M| = 1), and M L_b must equal L_a vector by vector in the same Cartesian frame to within
+       ``tolerance_a`` (Å). A strained, rotated or mirrored cell fails here, whatever its metric;
+    2. every atom of ``a`` must have its own atom of ``b`` (same species, one to one), with the
+       fractional coordinates of ``b`` taken into the basis of ``a`` (f_b M^-1) and differences
+       reduced only by whole lattice vectors (periodic wrapping), within ``tolerance_a`` in Cartesian
+       distance. No translation is removed, so an origin shift fails; so does any symmetry-equivalent
+       structure whose atoms are elsewhere.
+    """
+
+    if a is None or b is None:
+        return {"same": None, "reason": "a structure is unreadable"}
+    if a["species"] != b["species"] or a["counts"] != b["counts"]:
+        return {"same": False, "reason": "the composition differs"}
+    la, lb = a["lattice"], b["lattice"]
+    if abs(_det(lb)) < 1e-12 or abs(_det(la)) < 1e-12:
+        return {"same": None, "reason": "a degenerate cell"}
+    real = _matmul(la, _inverse(lb))
+    m = [[round(x) for x in row] for row in real]
+    if abs(_det(m)) != 1:
+        return {"same": False, "reason": "the cell is not a unimodular basis change of its predecessor's",
+                "basis_change": m}
+    mapped = _matmul(m, lb)
+    lattice_residual = max(abs(x - y) for row_m, row_a in zip(mapped, la) for x, y in zip(row_m, row_a))
+    result = {"basis_change": m, "lattice_residual_a": round(lattice_residual, 9)}
+    if lattice_residual > tolerance_a:
+        return {**result, "same": False, "reason": "the cell differs from its predecessor's in the same Cartesian "
+                                                   "frame (strained, rotated or mirrored)"}
+    inverse_m = _inverse(m)
+    b_frac = [_matmul([coord], inverse_m)[0] for coord in b["coords"]]
+    b_species = [sp for sp, n in zip(b["species"], b["counts"]) for _ in range(n)]
+    a_species = [sp for sp, n in zip(a["species"], a["counts"]) for _ in range(n)]
+    unused, worst = set(range(len(b_frac))), 0.0
+    for coord, species in zip(a["coords"], a_species):
+        distances = sorted((_norm(_matmul([_wrapped([p - q for p, q in zip(b_frac[k], coord)])], la)[0]), k)
+                           for k in unused if b_species[k] == species)
+        if not distances or distances[0][0] > tolerance_a:
+            return {**result, "same": False, "reason": "an atom has no counterpart at the same position (moved, "
+                                                       "shifted with the origin, or elsewhere by symmetry)",
+                    "max_atom_residual_a": round(distances[0][0], 6) if distances else None}
+        worst = max(worst, distances[0][0])
+        unused.discard(distances[0][1])
+    return {**result, "same": True, "max_atom_residual_a": round(worst, 9),
+            "reason": "the same cell and atoms" + ("" if m == [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+                                                    else ", written in another lattice basis")}
+
+
+def _statistics(values: list[float]) -> dict[str, Any] | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    median = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+    return {"n": len(ordered), "min": ordered[0], "median": round(median, 8), "max": ordered[-1]}
+
+
 def energy_semantics(individuals: list[dict], tables: dict[str, list[dict] | None], gathered: dict[int, dict],
                      *, cell_atoms: int, pressure_gpa: float) -> dict[str, Any]:
     """What USPEX's listed ``energy`` is: per cell or per atom, from its own tables; never assumed.
@@ -400,13 +632,54 @@ def associate(listed: list[dict], complete: dict[int, dict], every_step: dict[in
             "numbering_counterexamples": counter}
 
 
+INTERMEDIATE_NOTE = ("USPEX changed the structure between intermediate relaxation steps. The changes are "
+                     "measured here; they are not assessed as physically negligible and are not validated "
+                     "by this report. Accepted provisionally (decision D2, 17 Nov 2026) as part of the "
+                     "experimental USPEX search methodology; not an independently validated USPEX algorithm.")
+MAX_TRANSITION_ROWS = 2000
+
+
+def intermediate_findings(transformations: list[dict]) -> dict[str, Any]:
+    """The measured USPEX changes between intermediate steps, by transition, with per-transition rows."""
+
+    intermediate = [t for t in transformations if not t["final_transition"]]
+    by_pair: dict[str, Any] = {}
+    for pair in sorted({tuple(t["steps"]) for t in intermediate}):
+        rows = [t for t in intermediate if tuple(t["steps"]) == pair]
+        quantified = [t for t in rows if t.get("comparable")]
+        by_pair[f"{pair[0]}->{pair[1]}"] = {
+            "transitions": len(rows), "quantified": len(quantified),
+            "changed": sum(1 for t in rows if _changed(t)),
+            "identical_bytes": sum(1 for t in rows if t["identical_bytes"]),
+            "abs_volume_change_relative": _statistics([abs(t["volume_change_relative"]) for t in quantified]),
+            "max_abs_principal_strain": _statistics([t["max_abs_principal_strain"] for t in quantified]),
+            "max_atomic_displacement_a": _statistics([t["max_atomic_displacement_a"] for t in quantified]),
+            "rigid_translation_a": _statistics([t["rigid_translation_a"] for t in quantified]),
+        }
+    return {"note": INTERMEDIATE_NOTE, "transitions": len(intermediate),
+            "changed": sum(1 for t in intermediate if _changed(t)),
+            "not_quantified": sum(1 for t in intermediate if not t.get("comparable") and not t["identical_bytes"]),
+            "composition_changed": sum(1 for t in intermediate if t.get("composition_same") is False),
+            "by_transition": by_pair, "rows": intermediate[:MAX_TRANSITION_ROWS],
+            "rows_total": len(intermediate),
+            "definitions": {
+                "lattice_correspondence": "unimodular integer combination of the later cell's vectors closest "
+                                          "in metric to the earlier cell (coefficients up to 2)",
+                "principal_strains": "Green-Lagrange strain of that correspondence (rotation-free)",
+                "atomic_displacement": "matched atoms of the same species, corresponding fractional coordinates "
+                                       "converted with the later cell, rigid translation removed (a uniform "
+                                       "strain alone moves no atom)",
+                "changed": f"strain above {WRITE_PRECISION_STRAIN} or displacement above "
+                           f"{WRITE_PRECISION_DISPLACEMENT_A} A (write precision, not a scientific tolerance)"}}
+
+
 ARCHIVE = Path("search") / "bmd_evidence"
 F_AGREEMENT_EV = 1e-4  # the checker's vasprun F against VASP's printed F (8 significant decimals)
 
 
 def verify_archive(files: Path, manifest: dict, steps: list[dict], chains: dict[int, list[dict]],
                    complete: dict[int, dict], started: dict, finished: dict, validity_events: dict, done: dict,
-                   logs: dict, journal: list[dict]) -> dict[str, Any]:
+                   logs: dict, journal: list[dict], *, final_step: int = 5) -> dict[str, Any]:
     """Check the launcher's evidence archive against the journal, done files, step logs and surviving CalcFolds.
 
     Each step the journal started must have one committed record whose files match their hashes, whose
@@ -414,9 +687,11 @@ def verify_archive(files: Path, manifest: dict, steps: list[dict], chains: dict[
     ``evidence=``, and whose identity (request, step, CalcFold, slot, command), outcome (return code,
     status) and verdict (classification, reasons) equal the launcher's other records. A surviving
     CalcFold's ``bmd_step_validity.jsonl`` line must be the archived verdict byte for byte, and its
-    step-5 CONTCAR the archived one. The checker's F must equal VASP's printed F; each step must start
-    from the structure its predecessor ended with. Contradictions fail; absent, interrupted or
-    unverifiable records are missing evidence.
+    step-5 CONTCAR the archived one. The checker's F must equal VASP's printed F. The final step must
+    start from exactly the structure its predecessor ended with; an intermediate step must keep its
+    predecessor's candidate and composition, and how USPEX changed the structure is measured
+    (``transformations``) and reported, never treated as negligible or as validated. Contradictions
+    fail; absent, interrupted, unverifiable or unquantifiable records are missing evidence.
     """
 
     root = files / ARCHIVE
@@ -531,22 +806,50 @@ def verify_archive(files: Path, manifest: dict, steps: list[dict], chains: dict[
         if request_id not in contradictions and request_id not in absent:
             verified.add(request_id)
 
-    continuity = []
+    # Structural continuity. The final step (the one whose F is the candidate's energy) must start from
+    # exactly the structure its predecessor ended with. Between intermediate steps USPEX may change the
+    # structure (attempt 209898bc: strained cells and moved atoms on every 1->2, 2->3 and 3->4 transition):
+    # there the candidate and composition must be kept, and the change is measured and reported, not judged.
+    continuity, transformations, uncomparable, basis_rewrites = [], [], [], []
     for individual, chain in chains.items():
         ordered = sorted(chain, key=lambda s_: s_["step"] or 0)
         for before, after in zip(ordered, ordered[1:]):
             a, b = records.get(before["id"]), records.get(after["id"])
             if not a or not b:
                 continue
+            final = after["step"] == final_step
+            identity = [_CALCFOLD.search(str(entry["record"].get("calcfold", ""))) for entry in (a, b)]
+            # The step order itself is the ``chains`` check's; here, the archived records' candidate.
+            if None in identity or int(identity[0].group(1)) != int(identity[1].group(1)):
+                contradict(after["id"], "its archived candidate is not its predecessor's")
             out_sha = (a["record"].get("output_structure") or {}).get("sha256")
             in_sha = (b["record"].get("input_structure") or {}).get("sha256")
-            if out_sha and in_sha and out_sha != in_sha:
-                same = same_structure(parse_poscar(_text(root / "steps" / before["id"] / "CONTCAR")),
-                                      parse_poscar(_text(root / "steps" / after["id"] / "POSCAR")))
+            output = parse_poscar(_text(root / "steps" / before["id"] / "CONTCAR"))
+            given = parse_poscar(_text(root / "steps" / after["id"] / "POSCAR"))
+            identical = bool(out_sha and in_sha and out_sha == in_sha)
+            measured = structure_transformation(output, given)
+            transformations.append({"individual": individual, "steps": [before["step"], after["step"]],
+                                    "before": before["id"], "after": after["id"], "final_transition": final,
+                                    "identical_bytes": identical, **measured})
+            if final:
+                same = True if identical else same_structure(output, given)
+                if same is not True:
+                    strict = same_cell_in_another_basis(output, given)
+                    transformations[-1]["strict_continuity"] = strict
+                    if strict["same"] is True:
+                        same = True
+                        basis_rewrites.append([before["id"], after["id"], strict["basis_change"]])
+                    elif strict["same"] is None and same is False:
+                        same = None
                 if same is not True:
                     continuity.append([before["id"], after["id"]])
-                    contradict(after["id"], "it did not start from its predecessor's output structure"
-                               if same is False else "its input cannot be compared with its predecessor's output")
+                    contradict(after["id"], "the final step did not start from its predecessor's output structure"
+                               if same is False else "the final step's input cannot be compared with its "
+                               "predecessor's output")
+            elif measured.get("composition_same") is False:
+                contradict(after["id"], "its input has a different composition from its predecessor's output")
+            elif not identical and not measured["comparable"]:
+                uncomparable.append([before["id"], after["id"], measured["reason"]])
 
     finals: dict[int, dict] = {}
     for individual, last in complete.items():
@@ -572,17 +875,64 @@ def verify_archive(files: Path, manifest: dict, steps: list[dict], chains: dict[
                 for line in (_text(path) or "").splitlines() if line.startswith("BMD-LAUNCHER-CRITICAL")]
     status = (FAILED if contradictions else
               MISSING if (absent or unverifiable or interrupted or staging or torn or write_failures or undelivered
-                          or critical or not records)
+                          or critical or uncomparable or not records)
               else VERIFIED)
-    return {"status": status, "verified": verified, "finals": finals, "detail": {
+    intermediate = [t for t in transformations if not t["final_transition"]]
+    return {"status": status, "verified": verified, "finals": finals, "transformations": transformations,
+            "detail": {
         "steps": len(steps), "records": len(records), "verified_steps": len(verified),
         "missing_records": sorted(set(absent))[:20], "write_failures": write_failures[:20],
         "archived_but_not_delivered": undelivered[:20], "launcher_critical_lines": critical[:20],
         "unverifiable": unverifiable[:20], "interrupted": interrupted[:20], "unfinished_writes": staging[:20],
-        "conflicts": conflicts[:20], "torn_index_lines": torn, "continuity_breaks": continuity[:20],
+        "conflicts": conflicts[:20], "torn_index_lines": torn,
+        "final_step_continuity_breaks": continuity[:20], "final_step_continuity_breaks_total": len(continuity),
+        "final_step_transitions": len(transformations) - len(intermediate),
+        # The same cell written in another lattice basis (no strain, atom movement or shift beyond write
+        # precision): attempt 209898bc had three such final-step inputs.
+        "final_step_basis_rewrites": basis_rewrites[:20], "final_step_basis_rewrites_total": len(basis_rewrites),
+        "intermediate_transitions": len(intermediate),
+        "intermediate_transitions_changed": sum(1 for t in intermediate if _changed(t)),
+        "intermediate_transitions_not_quantified": uncomparable[:20],
+        "intermediate_transitions_not_quantified_total": len(uncomparable),
+        "contradicted_steps_total": len(contradictions),
         "contradictions": {k: v for k, v in list(contradictions.items())[:20]},
         "final_structures": len(finals),
         "generation": "not part of execution identity: the launcher records none (USPEX does not pass it)"}}
+
+
+# The job records, per package, whether it was imported in the job process (search_status.json "isolation").
+REQUIRED_ISOLATION_KEYS = ("jobflow",)
+# Imports that the job is documented to make: the package, and where and why.
+DOCUMENTED_IMPORTS = {
+    "atomate2": "backend/structure_search/potcar.py (_relax_generator_potcar_table) reads the POTCAR symbol "
+                "table from atomate2.vasp.sets.core.RelaxSetGenerator, so that searches and BMD's relaxations "
+                "cannot use different POTCARs; the job reaches it while checking its prepared inputs "
+                "(verify_execution_binding -> render_input_text -> admission)",
+}
+
+
+def isolation_check(status: dict | None) -> tuple[str, dict[str, Any]]:
+    """No workflow machinery in the job process; a documented import is reported, not counted as a failure.
+
+    The record is one boolean per package: whether the package was imported at all. It does not say
+    which of the package's modules were loaded or by what, so a documented import is accepted as
+    attributed to its documented source, never as proven to be only that.
+    """
+
+    if status is None:
+        return MISSING, {"reason": "no search_status.json"}
+    isolation = status.get("isolation")
+    if not isinstance(isolation, dict) or any(not isinstance(isolation.get(k), bool) for k in REQUIRED_ISOLATION_KEYS):
+        return MISSING, {"recorded": isolation, "reason": f"the record does not state {list(REQUIRED_ISOLATION_KEYS)}"}
+    unexpected = sorted(k for k, loaded in isolation.items() if loaded is not False and k not in DOCUMENTED_IMPORTS)
+    documented = {k: DOCUMENTED_IMPORTS[k] for k, loaded in sorted(isolation.items())
+                  if loaded is True and k in DOCUMENTED_IMPORTS}
+    malformed = sorted(k for k in DOCUMENTED_IMPORTS if k in isolation and not isinstance(isolation[k], bool))
+    detail = {"recorded": isolation, "unexpected_workflow_machinery": unexpected,
+              "documented_imports_recorded": documented,
+              "limitation": "one boolean per package: whether it was imported at all, not which modules or why; "
+                            "a documented import is attributed to its documented source, not proven"}
+    return (FAILED if unexpected or malformed else VERIFIED), detail
 
 
 def _sacct(text: str | None, job: str) -> dict[str, Any]:
@@ -609,6 +959,35 @@ def _cpus(text: str) -> set[int]:
         elif part:
             cpus.add(int(part))
     return cpus
+
+
+def placement_diagnostics(summaries: list[dict | None]) -> dict[str, Any]:
+    """What the step logs show about CPU placement beyond the pinning rows (collector fields, if any).
+
+    Evidence collected before these fields existed (attempt 209898bc) cannot tell whether Intel MPI
+    printed nothing or printed in a format the pinning pattern does not read; that is stated, not guessed.
+    """
+
+    present = [s for s in summaries if s is not None]
+    with_fields = [s for s in present if "mpi_startup_lines" in s]
+    if not with_fields:
+        return {"collected": False, "steps": len(present),
+                "reason": "the collector recorded only pinning rows that matched its pattern; whether Intel MPI "
+                          "printed nothing or printed in another format cannot be told from this evidence"}
+    def count(key):
+        return sum(1 for s in with_fields if s.get(key))
+    rows = [s for s in with_fields if s.get("pin_rows")]
+    other = [s for s in with_fields if s.get("mpi_startup_lines") and not s.get("pin_rows")]
+    return {"collected": True, "steps": len(present), "steps_with_fields": len(with_fields),
+            "steps_with_intel_mpi_version_line": count("intel_mpi_version"),
+            "steps_with_mpi_startup_lines": count("mpi_startup_lines"),
+            "steps_with_pinning_rows": len(rows),
+            "steps_with_mpi_startup_lines_but_no_pinning_rows": len(other),
+            "steps_with_slurm_cpu_bind_lines": count("cpu_bind_lines"),
+            "interpretation": ("no Intel MPI startup output in the step logs" if not count("mpi_startup_lines")
+                               else "Intel MPI startup output not in the recognised pinning format" if other
+                               else "Intel MPI pinning rows present"),
+            "samples": [line for s in with_fields for line in (s.get("placement_samples") or [])][:12]}
 
 
 def _symmetry(poscar: str) -> dict[str, Any]:
@@ -795,12 +1174,15 @@ def analyse(evidence: Path, expected: dict[str, Any]) -> dict[str, Any]:
     no_log = [s["id"] for s in ran if not s["has_log"]]
     no_energy = [s["id"] for s in ran if s["has_log"] and (s["ionic_steps"] in (None, 0) or s["free_energy_ev"] is None)]
     sacct_steps = sacct["steps"]
+    ncpus_planned = expected.get("ncpus", expected["parallel"] * expected["ranks"])
+    steps_what = (f"VASP ran as SLURM steps of {expected['ranks']} MPI ranks each (up to {expected['parallel']} at "
+                  f"once in the {ncpus_planned}-CPU job allocation) with the per-step memory")
     if not steps or not main:
-        report.add("vasp_steps", "VASP ran as 48-rank SLURM steps with the per-step memory", MISSING)
+        report.add("vasp_steps", steps_what, MISSING)
     else:
         sound = (srun_steps and len(srun_steps) == len(steps) and ranks_ok and mem_ok and not no_energy
                  and len(sacct_steps) >= len(srun_steps) and all(r[7] == str(expected["ranks"]) for r in sacct_steps))
-        report.add("vasp_steps", "VASP ran as 48-rank SLURM steps with the per-step memory",
+        report.add("vasp_steps", steps_what,
                    FAILED if not sound else MISSING if no_log else VERIFIED,
                    {"steps": len(steps), "srun_steps": len(srun_steps), "sacct_steps": len(sacct_steps),
                     "ranks_ok": ranks_ok, "mem_ok": mem_ok, "steps_without_energy": no_energy[:20],
@@ -817,7 +1199,7 @@ def analyse(evidence: Path, expected: dict[str, Any]) -> dict[str, Any]:
                    VERIFIED if 2 <= concurrency <= expected["parallel"] else FAILED,
                    {"max_concurrent": concurrency, "limit": expected["parallel"]})
 
-    # Pinning: a step's report is interpretable only if it lists each of its 48 ranks once, on one host.
+    # Pinning: a step's report is interpretable only if it lists each of its MPI ranks once, on one host.
     interpretable, uninterpretable, own_overlap = [], [], []
     for s_ in ran:
         rows = s_["pin_rows"] or []
@@ -839,10 +1221,13 @@ def analyse(evidence: Path, expected: dict[str, Any]) -> dict[str, Any]:
         for b_ in interpretable[i + 1:]:
             if a_["start"] < b_["end"] and b_["start"] < a_["end"] and a_["host"] == b_["host"] and a_["cpus"] & b_["cpus"]:
                 overlap.append([a_["id"], b_["id"], sorted(a_["cpus"] & b_["cpus"])[:8]])
-    report.add("pinning", "concurrent 48-rank VASP steps used disjoint cores (Intel MPI pinning report)",
+    report.add("pinning", f"concurrent VASP steps ({expected['ranks']} MPI ranks each, up to {expected['parallel']} "
+               f"at once in the {ncpus_planned}-CPU allocation) used disjoint cores (Intel MPI pinning report)",
                FAILED if overlap or own_overlap else MISSING if uninterpretable or not ran else VERIFIED,
                {"steps_ran": len(ran), "interpretable": len(interpretable), "uninterpretable": uninterpretable[:10],
-                "overlaps": overlap[:10], "ranks_sharing_a_core": own_overlap[:10]})
+                "uninterpretable_total": len(uninterpretable),
+                "overlaps": overlap[:10], "ranks_sharing_a_core": own_overlap[:10],
+                "placement_diagnostics": placement_diagnostics([logs.get(s_["id"]) for s_ in ran])})
 
     # Validity decisions.
     bad_decisions = []
@@ -901,9 +1286,11 @@ def analyse(evidence: Path, expected: dict[str, Any]) -> dict[str, Any]:
 
     # The launcher's evidence archive, verified against everything else the launcher and VASP left.
     archive = verify_archive(files, manifest, steps, chains, complete, started, finished, validity, done, logs,
-                             journal)
+                             journal, final_step=expected["steps"])
     report.add("evidence_archive", "every step's archived record agrees with the journal, done file, step log "
-               "and surviving CalcFolds", archive["status"], archive["detail"])
+               "and surviving CalcFolds; the final step started from its predecessor's output structure; "
+               "intermediate steps kept their candidate and composition", archive["status"], archive["detail"])
+    findings["intermediate_transformations"] = intermediate_findings(archive["transformations"])
 
     # What USPEX lists, what it means, and which accepted chain each listed candidate is.
     results_dirs = sorted(p.name for p in (files / "search").glob("results*") if p.is_dir())
@@ -1016,10 +1403,13 @@ def analyse(evidence: Path, expected: dict[str, Any]) -> dict[str, Any]:
     else:
         report.add("search_status", "search_status.json for this attempt, job and plan",
                    VERIFIED if status.get("attempt_id") == attempt and str(status.get("slurm_job_id")) == job
-                   and status.get("plan_digest") == expected["plan_digest"] and status.get("finished_at")
-                   and not any((status.get("isolation") or {}).values()) else FAILED,
+                   and status.get("plan_digest") == expected["plan_digest"] and status.get("finished_at") else FAILED,
                    {"outcome": execution.get("outcome"), "master_exit_status": execution.get("master_exit_status"),
-                    "finished_at": status.get("finished_at"), "isolation": status.get("isolation")})
+                    "finished_at": status.get("finished_at")})
+    isolation_status, isolation_detail = isolation_check(status)
+    report.add("isolation", "the job process loaded no workflow machinery (jobflow or any other recorded package); "
+               "a recorded atomate2 import is attributed to the documented POTCAR-table import, not proven by the "
+               "record", isolation_status, isolation_detail)
     script = files / "bmd_search_job.sbatch"
     ack = _json(files / "resource_acknowledgement.json")
     ack_sha = None
@@ -1133,6 +1523,16 @@ def summary_lines(report: dict[str, Any]) -> list[str]:
     if diamond:
         lines.append(f"FINDING   diamond-like structure found: {diamond['found']}; lowest energy: "
                      f"{diamond['is_lowest_energy']} (recorded, not required)")
+    moved = report["findings"].get("intermediate_transformations") or {}
+    if moved.get("transitions"):
+        worst = {key: max(((p.get(key) or {}).get("max") or 0) for p in moved["by_transition"].values())
+                 for key in ("max_abs_principal_strain", "abs_volume_change_relative", "max_atomic_displacement_a")}
+        lines.append(f"FINDING   USPEX changed the structure between intermediate steps in {moved['changed']} of "
+                     f"{moved['transitions']} transitions (largest principal strain "
+                     f"{worst['max_abs_principal_strain']:.3g}, volume change {worst['abs_volume_change_relative']:.3g}, "
+                     f"atomic displacement {worst['max_atomic_displacement_a']:.3g} A; not quantified "
+                     f"{moved['not_quantified']}): measured, not judged negligible or validated; accepted "
+                     f"provisionally as experimental methodology")
     candidates = report["findings"].get("candidates") or {}
     lines.append(f"FINDING   candidates {candidates.get('started')}, completed the ladder "
                  f"{candidates.get('completed_ladder')}, rejected {len(candidates.get('rejected') or {})}")

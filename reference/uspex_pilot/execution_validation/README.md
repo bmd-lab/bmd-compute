@@ -44,7 +44,11 @@ step-5 `CONTCAR` of surviving CalcFolds (a relaxed cell, 1 MiB cap), and the arc
 `POSCAR` and `CONTCAR`, 1 MiB cap each; the names of unfinished writes); the remote attempt state; `sacct` for the
 job and every job step (UTC); the clocks. For every VASP step log only a
 summary: size, SHA-256, final F and E0 and ionic-step count (VASP's own
-`F=`/`E0=` lines), Intel MPI pinning rows, error lines.
+`F=`/`E0=` lines), Intel MPI pinning rows, error lines, and CPU-placement
+diagnostics: counts of `MPI startup()`, Intel MPI version and SLURM `cpu-bind`
+lines and at most 8 sample lines of at most 200 printable characters (added
+after attempt 209898bc, whose evidence cannot tell "Intel MPI printed nothing"
+from "printed in another format").
 
 Never copied: any POTCAR, WAVECAR, CHGCAR, OUTCAR, `vasprun.xml` or other VASP
 output, the step logs themselves, credentials. It refuses to run while the
@@ -59,21 +63,22 @@ Each check is `verified`, `failed` or `missing` (evidence absent):
 | `collection` | allowlisted records only; run directory unchanged |
 | `slurm_outcome` | SLURM's settled state and exit code (a fact, not the verdict) |
 | `allocation` | the frozen plan's CPUs (concurrency × ranks: 48 shared, 192 exclusive), one node, time limit 04:00:00 |
-| `runtime_check` | passed on the compute node, MPI library and SLURM version included, 4 × 48 |
+| `runtime_check` | passed on the compute node, MPI library and SLURM version included, the plan's concurrency × ranks |
 | `memory` | job memory recorded, equal to SLURM's AllocTRES and (explicit `--mem`) to the plan's, per-step memory = 90 % / concurrency |
 | `uspex_startup` | USPEX 25.0 banner, master started, `INPUT.txt` the managed one |
 | `bridge` | every bridge request ran once and was answered; no rejected, lost or abandoned steps |
-| `vasp_steps` | every step an `srun` of 48 ranks with the per-step memory, a SLURM step of 48 CPUs, VASP printed a final F |
+| `vasp_steps` | every step an `srun` of the plan's MPI ranks (16 shared, 48 exclusive) with the per-step memory, a SLURM step of that many CPUs, VASP printed a final F. The job allocation (48 or 192 CPUs) holds up to 3 or 4 such steps at once |
 | `parallel` | between 2 steps and the plan's concurrency at a time |
-| `pinning` | every step's Intel MPI report lists ranks 0–47 once, on one host, each with cores; concurrent steps on disjoint cores. Overlap fails; an absent, partial or unreadable report is `missing`, never success |
+| `pinning` | every step's Intel MPI report lists each of its ranks (0–15 shared, 0–47 exclusive) once, on one host, each with cores; concurrent steps on disjoint cores. Overlap fails; an absent, partial or unreadable report is `missing`, never success. `placement_diagnostics` says whether the logs held no Intel MPI startup output, output in an unrecognised format, or (older evidence) cannot tell |
 | `validity_decisions` | one decision per step, the same in journal, done file and status; done status 0 / 118 / 119 / non-zero |
 | `chains` | each candidate ran steps 1, 2, … in order, once each, and stopped at its first step not accepted; a step is accepted only with completion evidence: the `finished` event and the done file USPEX read both say `valid`, status 0 (an archived verdict alone is not delivery) |
 | `energy_semantics` | the quantity USPEX lists is established from its own tables, not assumed (below) |
 | `listed_energies` | every listed candidate is associated with exactly one accepted chain (five valid steps), at that chain's step-5 F (below) |
-| `evidence_archive` | every step the journal started has one committed, indexed archive record whose files match their hashes and whose identity, outcome and verdict equal the journal, done file and step log; a surviving CalcFold's verdict line and step-5 CONTCAR are the archived ones byte for byte; the checker's F equals VASP's printed F; each step started from its predecessor's output structure. Contradictions and conflicts fail; absent (`evidence_write_failed`), unindexed, interrupted, unverifiable or undelivered records (committed, but no `finished` event: the launcher died before the done file) and `BMD-LAUNCHER-CRITICAL` lines in the SLURM output are `missing`, never a scientific rejection |
+| `evidence_archive` | every step the journal started has one committed, indexed archive record whose files match their hashes and whose identity, outcome and verdict equal the journal, done file and step log; a surviving CalcFold's verdict line and step-5 CONTCAR are the archived ones byte for byte; the checker's F equals VASP's printed F; the final step (4 → 5) started from exactly its predecessor's output structure (the same cell in the same Cartesian frame, atoms and origin to write precision, possibly in another lattice basis established explicitly: see "Structural continuity between ladder steps"); every other step kept its predecessor's candidate and composition. How USPEX changed the structure between intermediate steps is measured (volume change, principal strains, atomic displacements, rigid translation) and reported under `findings.intermediate_transformations`, not judged negligible or validated; a change that cannot be quantified is `missing`. Contradictions and conflicts fail; absent (`evidence_write_failed`), unindexed, interrupted, unverifiable or undelivered records (committed, but no `finished` event: the launcher died before the done file) and `BMD-LAUNCHER-CRITICAL` lines in the SLURM output are `missing`, never a scientific rejection |
 | `retention` | every listed candidate's five steps are verified in the archive and its final relaxed structure kept, including candidates whose CalcFolds USPEX removed; each bound to its generation through USPEX's listing |
 | `generations` | generations 1 and 2 listed, one results folder, master exited 0, not stopped |
-| `search_status` | this attempt, job and plan; finished; jobflow and atomate2 not imported |
+| `search_status` | this attempt, job and plan; finished |
+| `isolation` | the job process imported no jobflow and no other recorded workflow package; a recorded `atomate2` import is attributed to the documented POTCAR-table import (`backend/structure_search/potcar.py`), not proven: the record is one boolean per package. Any other recorded package fails; a record without `jobflow` is `missing` |
 | `identities` | `job_started`, job script, acknowledgement and INCAR ladder are the frozen ones |
 
 Classification: `natural_completion` (SLURM `COMPLETED` 0:0 **and**
@@ -137,6 +142,76 @@ The analysis reports the generation USPEX listed for each associated
 candidate separately, as `inferred_generation_association`, never as part of
 execution identity; a candidate whose association is ambiguous gets none and
 makes the result `INCOMPLETE EVIDENCE`.
+
+## Structural continuity between ladder steps
+
+Decisions of 17 Nov 2026 (Lee Burton), after attempt 209898bc:
+
+- **D1, step 4 → 5 (strict).** The final step must start from exactly the structure step 4 ended
+  with. The structure may be written in another lattice basis, but only when that basis change is
+  established explicitly and nothing else differs beyond write precision (1e-4 Å). A structure that
+  is only symmetry-equivalent, with its atoms in genuinely different positions, is not accepted.
+- **D2, steps 1 → 2, 2 → 3, 3 → 4.** USPEX's changes here are accepted **provisionally** as part of
+  the experimental USPEX search methodology. They are measured and reported with each candidate's
+  lineage. They are not described as physically negligible, and they are not independently
+  validated USPEX behaviour.
+
+**Strict comparator** (`same_cell_in_another_basis`, used only after the byte and the old
+component-by-component comparison have failed):
+
+1. Basis change M = round(L₄ L₅⁻¹), where the rows of L₄ and L₅ are the lattice vectors of step 4's
+   CONTCAR and step 5's POSCAR. M must be unimodular (|det M| = 1). M L₅ must equal L₄ vector by
+   vector in the same Cartesian frame, to within 1e-4 Å. A strained, rotated or mirrored cell fails,
+   even when its metric is identical.
+2. Every step-4 atom must have its own step-5 atom of the same species (one to one). Step 5's
+   fractional coordinates are taken into step 4's basis (f M⁻¹). Differences are reduced only by
+   whole lattice vectors (periodic wrapping), and must be within 1e-4 Å in Cartesian distance.
+   Nothing else is subtracted, so an origin shift fails, a moved atom fails, and so does a
+   symmetry-equivalent structure whose atoms are elsewhere.
+
+There is no limit on the size of M's coefficients. A failed comparison says which of the two
+conditions failed. In 209898bc, 3 of the 21 step-5 inputs were step 4's output in another basis
+(M = [[1,1,0],[0,1,0],[0,0,1]], [[1,−1,0],[0,1,0],[0,0,1]], [[1,0,0],[−1,1,0],[1,0,1]]). Both
+residuals were within write precision; the other 18 were byte- or component-identical.
+
+**Measurement of the intermediate changes** (`structure_transformation`, standard library):
+
+1. *Cell correspondence:* among the unimodular integer combinations of the later cell's vectors
+   (coefficients −2…2; for each earlier vector, the 12 closest in length), take the one whose metric
+   is closest to the earlier cell's, i.e. the least maximum principal Green–Lagrange strain
+   E = ½(L₁⁻¹ G₂′ L₁⁻ᵀ − I). This is rotation-free, so a reoriented or rebased but otherwise
+   identical cell has zero strain.
+2. *Atoms:* each earlier atom is matched to its own later atom of the same species, using
+   corresponding fractional coordinates converted with the later cell. The rigid translation (the
+   mean difference) is removed and reported separately as `rigid_translation_a`. A uniform strain
+   alone moves no atom.
+3. *Ties* are decided by displacement, then by keeping the cell's handedness
+   (`orientation_preserving`), then by the smallest translation.
+
+Reported per transition: volume change, principal strains, largest and RMS displacement, rigid
+translation, correspondence matrix, handedness, composition, candidate and step identifiers. A
+transition whose change cannot be quantified (no correspondence within the search, or atoms
+unmatched) is `missing` evidence.
+
+The rigid translation depends on the chosen correspondence and on the origin convention. It is a
+description of how the cell was rewritten, not a physical displacement.
+
+**Why these numbers differ from the earlier pymatgen comparison.** For a two-atom cell, the split of
+a structural change into "strain" and "atomic displacement" is not unique: it depends on which cell
+correspondence is used. The earlier read-only comparison used pymatgen's `StructureMatcher`
+(`ltol=0.3, stol=0.5, angle_tol=10, scale=False`, `get_s2_like_s1`). That method accepts any
+lattice within its tolerances and minimises the atomic RMS, so it can choose a correspondence with
+more strain and less displacement. This analyser takes the least strain first.
+
+On the 66 intermediate transitions of 209898bc:
+
+- 35 transitions give the same result by both methods (strain within 1e-4, displacement within 1e-3 Å).
+- In all 31 others, pymatgen's correspondence has more strain and less displacement.
+- Largest strain: 10.4 % (pymatgen) vs 2.3 % (here).
+- Largest displacement: 0.054 Å (pymatgen) vs 0.084 Å (here).
+- Median strain: 1.6 % vs 1.3 %.
+
+Neither method is "the" transformation. The figures describe the change under a stated convention.
 
 ## Procedure (VM, bash; stops before each gate)
 

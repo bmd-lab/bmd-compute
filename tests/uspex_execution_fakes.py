@@ -69,7 +69,7 @@ class Scenario:
     stopped: bool = False
     unfinished_after: int | None = None  # individuals above this never ran (walltime)
     parallel: int = 4
-    pin: str = "disjoint"  # disjoint | shared | none
+    pin: str = "disjoint"  # disjoint | shared | partial | none | unrecognised (startup lines, no {cpus}) | version_only
     alloc_mem: str = "500G"
     # The frozen plan's node request and launch settings (defaults: 4 x 48 on an exclusive node).
     planned_parallel: int = 4  # what the plan and the launcher record; ``parallel`` is what actually ran at once
@@ -104,6 +104,10 @@ class Scenario:
     crash_before_done: tuple = ()  # (individual, step): record committed, launcher died before the done file
     archive_duplicate: bool = False  # the first step's record offered twice, identically
     critical_line: bool = False  # the launcher could not journal an evidence event (stderr line)
+    # (individual, step) -> rewrite_poscar() options: the step's input is its predecessor's output as USPEX
+    # rewrote it (another basis, a strain, moved atoms, a rigid shift, another composition).
+    input_changes: dict = field(default_factory=dict)
+    isolation: dict = field(default_factory=lambda: {"jobflow": False, "atomate2": False})
 
     @property
     def ncpus(self) -> int:
@@ -136,6 +140,45 @@ def structure(individual: int, scenario: Scenario, header: str) -> str:
     if individual == scenario.best and scenario.diamond:
         return DIAMOND_PRIMITIVE.format(header=header)
     return OTHER_STRUCTURE.format(header=header, c=f"{3.0 + 0.05 * individual:.4f}")
+
+
+def rewrite_poscar(poscar: bytes, *, basis=((1, 0, 0), (0, 1, 0), (0, 0, 1)), strain=(0.0, 0.0, 0.0),
+                   move_first_atom_a=0.0, shift=(0.0, 0.0, 0.0), species=None, rotate_z_deg=0.0,
+                   mirror_x=False, wrap=True, lattice_offsets=None, reverse_atoms=False) -> bytes:
+    """A structure as USPEX might hand it to the next step: in another lattice basis (unimodular ``basis``),
+    stretched along x, y, z by ``strain``, its first atom moved ``move_first_atom_a`` Å along the first
+    cell vector, every atom shifted by fractional ``shift``, optionally with other ``species``; the whole
+    crystal rotated about z or mirrored in x (Cartesian); coordinates wrapped into [0, 1) or not, with
+    whole lattice vectors ``lattice_offsets`` (one per atom) added; atoms listed in reverse order."""
+
+    import numpy as np
+
+    lines = poscar.decode().splitlines()
+    scale = float(lines[1].split()[0])
+    lattice = np.array([[float(v) for v in lines[i].split()[:3]] for i in (2, 3, 4)]) * scale
+    names, counts = lines[5].split(), [int(v) for v in lines[6].split()]
+    frac = np.array([[float(v) for v in lines[8 + i].split()[:3]] for i in range(sum(counts))])
+    deform = np.diag([1 + e for e in strain])
+    angle = np.radians(rotate_z_deg)
+    rotation = np.array([[np.cos(angle), -np.sin(angle), 0], [np.sin(angle), np.cos(angle), 0], [0, 0, 1]])
+    if mirror_x:
+        rotation = np.diag([-1.0, 1.0, 1.0]) @ rotation
+    lattice = lattice @ deform.T @ rotation.T
+    frac[0, 0] += move_first_atom_a / np.linalg.norm(lattice[0])
+    frac = frac + np.array(shift)
+    m = np.array(basis, dtype=float)
+    assert round(abs(np.linalg.det(m))) == 1
+    new_lattice = m @ lattice
+    new_frac = frac @ np.linalg.inv(m)
+    new_frac = new_frac % 1.0 if wrap else new_frac
+    if lattice_offsets is not None:
+        new_frac = new_frac + np.array(lattice_offsets, dtype=float)
+    if reverse_atoms:
+        new_frac = new_frac[::-1]
+    out = [lines[0], "1.0", *(" ".join(f"{v:.10f}" for v in row) for row in new_lattice),
+           " ".join(species or names), " ".join(map(str, counts)), "Direct",
+           *(" ".join(f"{v:.10f}" for v in row) for row in new_frac)]
+    return ("\n".join(out) + "\n").encode()
 
 
 def _write(path: Path, text: str | bytes) -> None:
@@ -196,15 +239,22 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
                 journal.append({"event": "validity", "id": request_id, "step": step, "classification": classification,
                                 "reasons": reasons, "time": t + seconds})
                 free_energy = energy(individual, step, scenario)
+                version = "[0] MPI startup(): Intel(R) MPI Library, Version 2021.9  Build 20230307 (id: d82b3071db)\n"
                 if scenario.pin == "none":
                     pins = ""
+                elif scenario.pin == "version_only":
+                    pins = version
+                elif scenario.pin == "unrecognised":
+                    pins = version + "[0] MPI startup(): Rank    Pid      Node name  Pin cpu\n" + "".join(
+                        f"[0] MPI startup(): {r}       {2000 + r}    compute-0-271  {scenario.cpu_offset + r}\n"
+                        for r in range(ranks))
                 elif scenario.pin == "partial" and step_index == 0:
                     pins = "[0] MPI startup(): Rank    Pid      Node name  Pin cpu\n" + "".join(
                         f"[0] MPI startup(): {r}       {2000 + r}    compute-0-271  "
                         f"{{{scenario.cpu_offset + ranks * slot + r}}}\n" for r in range(ranks - 8))
                 else:
                     base = scenario.cpu_offset + ranks * (0 if scenario.pin == "shared" else slot)
-                    pins = "[0] MPI startup(): Rank    Pid      Node name  Pin cpu\n" + "".join(
+                    pins = version + "[0] MPI startup(): Rank    Pid      Node name  Pin cpu\n" + "".join(
                         f"[0] MPI startup(): {r}       {2000 + r}    compute-0-271  {{{base + r}}}\n"
                         for r in range(ranks))
                 if True:  # written, hashed for the record, then removed if the scenario loses it
@@ -226,6 +276,8 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
                 output = structure(relaxed, scenario, f"Calcfold_{individual}_{step}").encode()
                 given = (structure(individual + 2000, scenario, "random").encode() if step == 1
                          or (individual, step) in scenario.continuity_break else previous_output)
+                if step > 1 and (individual, step) in scenario.input_changes:
+                    given = rewrite_poscar(previous_output, **scenario.input_changes[(individual, step)])
                 previous_output = output
                 log_path = spool / "logs" / f"{request_id}.log"
                 log_facts = {"file": log_path.name, "bytes": log_path.stat().st_size,
@@ -377,7 +429,7 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
                                  "node_memory": {"mb": scenario.node_memory_mb, "source": scenario.memory_source,
                                                  "detail": f"mem={scenario.alloc_mem}"}}},
         "scientific_validity": {"status": "not_assessed", "step_validity_verdicts": verdicts},
-        "isolation": {"jobflow": False, "atomate2": False},
+        "isolation": scenario.isolation,
     }
     _write(run / "search_status.json", json.dumps(status))
     runtime = {"status": scenario.runtime_status, "problems": [],
@@ -451,5 +503,5 @@ def tree_state(root: Path) -> dict:
             for p in sorted(root.rglob("*"))}
 
 
-__all__ = ["Scenario", "build_run", "run_collector", "install_slurm", "localised_collector", "tree_state",
+__all__ = ["Scenario", "build_run", "rewrite_poscar", "run_collector", "install_slurm", "localised_collector", "tree_state",
            "energy", "STEP_MEM", "SHARED_48", "shutil"]

@@ -11,7 +11,10 @@
 # fixed list (never a POTCAR, WAVECAR, CHGCAR, OUTCAR, vasprun.xml or any other
 # VASP output), each with its size and SHA-256, and for every VASP step log it
 # writes only a summary (its size, SHA-256, final free energy F, ionic-step
-# count, Intel MPI pinning rows and error lines). It refuses to run while the
+# count, Intel MPI pinning rows, error lines, and bounded CPU-placement
+# diagnostics: counts of Intel MPI startup, version and SLURM cpu-bind lines and
+# a few short sample lines, so that "Intel MPI printed nothing" can be told
+# apart from "printed in a format the pinning pattern does not read"). It refuses to run while the
 # job is still queued, and checks at the end that the run directory did not
 # change. Everything goes into one new directory under /bmd-db/guest/validation
 # (refusing an existing one, never inside the run). It submits, cancels or
@@ -180,6 +183,20 @@ manifest["evidence_staging"] = listing(f"{EVIDENCE}/.staging")
 F_LINE = re.compile(rb"^\s*\d+\s+F=\s*(\S+)\s+E0=\s*(\S+)")
 PIN = re.compile(rb"MPI startup\(\):\s+(\d+)\s+(\d+)\s+(\S+)\s+\{([0-9,\-\s]+)\}")
 ERROR = re.compile(rb"(?i)(error|fatal|abort|killed|segmentation|out of memory|oom|cancelled)")
+# CPU-placement diagnostics (counted; a few sample lines kept, short and printable only). Reading them
+# changes nothing: binding, the srun command and VASP are untouched.
+MPI_STARTUP = re.compile(rb"MPI startup\(\)")
+MPI_VERSION = re.compile(rb"Intel\(R\) MPI Library[^\r\n]*")
+CPU_BIND = re.compile(rb"cpu[-_]bind")
+SAMPLE = re.compile(rb"MPI startup\(\)|Intel\(R\) MPI Library|cpu[-_]bind|I_MPI_|[Pp]in cpu")
+MAX_SAMPLES, SAMPLE_CHARS = 8, 200
+
+
+def printable(line):
+    text = line.decode("utf-8", "replace").strip()
+    return "".join(c if c.isprintable() else "?" for c in text)[:SAMPLE_CHARS]
+
+
 logs = {}
 for name in listing("bridge_spool/logs"):
     path = os.path.join(run, "bridge_spool", "logs", name)
@@ -187,7 +204,8 @@ for name in listing("bridge_spool/logs"):
     if not name.endswith(".log") or not info:
         continue
     summary = {"bytes": info.st_size, "sha256": sha256(path), "ionic_steps": 0, "final_free_energy_ev": None,
-               "final_e0_ev": None, "pin_rows": [], "error_lines": []}
+               "final_e0_ev": None, "pin_rows": [], "error_lines": [], "mpi_startup_lines": 0,
+               "intel_mpi_version": None, "cpu_bind_lines": 0, "placement_samples": []}
     with open(path, "rb") as handle:
         for line in handle:
             match = F_LINE.match(line)
@@ -199,6 +217,15 @@ for name in listing("bridge_spool/logs"):
                     except ValueError:
                         summary[key] = None
                 continue
+            if MPI_STARTUP.search(line):
+                summary["mpi_startup_lines"] += 1
+            if CPU_BIND.search(line):
+                summary["cpu_bind_lines"] += 1
+            version = MPI_VERSION.search(line)
+            if version and summary["intel_mpi_version"] is None:
+                summary["intel_mpi_version"] = printable(version.group(0))
+            if SAMPLE.search(line) and len(summary["placement_samples"]) < MAX_SAMPLES:
+                summary["placement_samples"].append(printable(line))
             pin = PIN.search(line)
             if pin and len(summary["pin_rows"]) < 512:
                 summary["pin_rows"].append([int(pin.group(1)), int(pin.group(2)), pin.group(3).decode(),

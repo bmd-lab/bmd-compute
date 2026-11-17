@@ -170,7 +170,7 @@ def test_a_clean_natural_completion_passes_and_records_the_findings(tmp_path):
     assert report["failed"] == [] and report["missing"] == []
     assert {"slurm_outcome", "allocation", "runtime_check", "memory", "uspex_startup", "bridge", "vasp_steps",
             "parallel", "pinning", "validity_decisions", "chains", "listed_energies", "generations",
-            "search_status", "identities", "collection", "energy_semantics", "retention",
+            "search_status", "isolation", "identities", "collection", "energy_semantics", "retention",
             "evidence_archive"} == set(report["verified"])
     findings = report["findings"]
     assert findings["candidates"] == {"started": 21, "completed_ladder": 21, "rejected": {}}
@@ -372,7 +372,8 @@ def test_absent_or_interrupted_archive_records_are_incomplete_evidence(tmp_path,
     (Scenario(archive_tamper=((4, 3),)), "reasons: archive"),
     (Scenario(archive_conflict=True), "a different record"),
     (Scenario(survivor_altered=(14,)), "surviving CalcFold's CONTCAR is not the archived"),
-    (Scenario(continuity_break=((6, 3),)), "did not start from its predecessor's output"),
+    # The final step: an intermediate input that differs is measured and reported (A1, after attempt 209898bc).
+    (Scenario(continuity_break=((6, 5),)), "the final step did not start from its predecessor's output"),
 ])
 def test_an_archive_that_contradicts_the_run_fails(tmp_path, scenario, fragment):
     report = analyse(tmp_path, scenario)

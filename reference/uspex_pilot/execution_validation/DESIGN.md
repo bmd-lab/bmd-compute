@@ -159,6 +159,14 @@ settings.
   step, and whether USPEX writes each next step's POSCAR as the previous
   CONTCAR (the `evidence_archive` check compares them structurally; a USPEX
   rewrite that changes the cell would show as a continuity failure to examine).
+  Examined after attempt 209898bc (job 23624369, 14 Nov 2026): USPEX changed the
+  structure on all 66 intermediate transitions (1 → 2, 2 → 3, 3 → 4: principal
+  strains up to about 2 %, volume changes up to about 2.3 %, atoms moved by up
+  to about 0.08 Å, rigid shifts), and handed every step-4 output to step 5
+  unchanged (3 of 21 written in another lattice basis). The analyser now
+  requires exact continuity only into the final step and measures and reports
+  the intermediate changes; whether they are acceptable is a scientific
+  decision, not made by the analyser.
 
 Any of these can end the job early with `uspex_failed`, `launch_setup_failed`
 or rejected steps; each is a finding to examine, not something to retry
