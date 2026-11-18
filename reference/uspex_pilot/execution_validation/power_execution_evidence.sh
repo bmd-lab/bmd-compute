@@ -181,7 +181,11 @@ manifest["evidence_staging"] = listing(f"{EVIDENCE}/.staging")
 
 # VASP step logs: a summary only (the logs themselves stay on POWER).
 F_LINE = re.compile(rb"^\s*\d+\s+F=\s*(\S+)\s+E0=\s*(\S+)")
-PIN = re.compile(rb"MPI startup\(\):\s+(\d+)\s+(\d+)\s+(\S+)\s+\{([0-9,\-\s]+)\}")
+# Intel MPI's pinning table: "Rank Pid Node name Pin cpu", then one row per rank. Two row formats: the CPU
+# set in braces ("{0,1}") and, as Intel MPI 2021.10 printed it on POWER under srun (attempt 209898bc), a
+# bare CPU or list ("12", "12,13", "12-13") ending the line.
+PIN = re.compile(rb"MPI startup\(\):\s+(\d+)\s+(\d+)\s+(\S+)\s+(?:\{([0-9,\-\s]+)\}|([0-9]+(?:[,\-][0-9]+)*))\s*$")
+PIN_HEADER = re.compile(rb"MPI startup\(\):\s+Rank\s+Pid\s+Node name\s+Pin cpu")
 ERROR = re.compile(rb"(?i)(error|fatal|abort|killed|segmentation|out of memory|oom|cancelled)")
 # CPU-placement diagnostics (counted; a few sample lines kept, short and printable only). Reading them
 # changes nothing: binding, the srun command and VASP are untouched.
@@ -205,7 +209,7 @@ for name in listing("bridge_spool/logs"):
         continue
     summary = {"bytes": info.st_size, "sha256": sha256(path), "ionic_steps": 0, "final_free_energy_ev": None,
                "final_e0_ev": None, "pin_rows": [], "error_lines": [], "mpi_startup_lines": 0,
-               "intel_mpi_version": None, "cpu_bind_lines": 0, "placement_samples": []}
+               "intel_mpi_version": None, "cpu_bind_lines": 0, "placement_samples": [], "pin_header_lines": 0}
     with open(path, "rb") as handle:
         for line in handle:
             match = F_LINE.match(line)
@@ -226,10 +230,13 @@ for name in listing("bridge_spool/logs"):
                 summary["intel_mpi_version"] = printable(version.group(0))
             if SAMPLE.search(line) and len(summary["placement_samples"]) < MAX_SAMPLES:
                 summary["placement_samples"].append(printable(line))
+            if PIN_HEADER.search(line):
+                summary["pin_header_lines"] += 1
             pin = PIN.search(line)
             if pin and len(summary["pin_rows"]) < 512:
-                summary["pin_rows"].append([int(pin.group(1)), int(pin.group(2)), pin.group(3).decode(),
-                                            pin.group(4).decode().replace(" ", "")])
+                summary["pin_rows"].append([int(pin.group(1)), int(pin.group(2)),
+                                            pin.group(3).decode("utf-8", "replace"),
+                                            (pin.group(4) or pin.group(5)).decode().replace(" ", "")])
             elif ERROR.search(line) and len(summary["error_lines"]) < 20:
                 summary["error_lines"].append(line.decode("utf-8", "replace").strip()[:300])
     logs[name[:-4]] = summary

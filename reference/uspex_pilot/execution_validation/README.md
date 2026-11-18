@@ -69,7 +69,7 @@ Each check is `verified`, `failed` or `missing` (evidence absent):
 | `bridge` | every bridge request ran once and was answered; no rejected, lost or abandoned steps |
 | `vasp_steps` | every step an `srun` of the plan's MPI ranks (16 shared, 48 exclusive) with the per-step memory, a SLURM step of that many CPUs, VASP printed a final F. The job allocation (48 or 192 CPUs) holds up to 3 or 4 such steps at once |
 | `parallel` | between 2 steps and the plan's concurrency at a time |
-| `pinning` | every step's Intel MPI report lists each of its ranks (0–15 shared, 0–47 exclusive) once, on one host, each with cores; concurrent steps on disjoint cores. Overlap fails; an absent, partial or unreadable report is `missing`, never success. `placement_diagnostics` says whether the logs held no Intel MPI startup output, output in an unrecognised format, or (older evidence) cannot tell |
+| `pinning` | every step that ran has Intel MPI's table: ranks 0–15 (shared) or 0–47 (exclusive) each once, distinct PIDs, one host, each rank with CPUs, in either row format (`{12}`, or bare `12` as Intel MPI 2021.10 prints it under `srun` on POWER; the bare form was missed before attempt 209898bc). CPUs shared by ranks of one step fail. Two steps sharing CPUs on a host fail only if their SLURM steps genuinely overlapped (sacct intervals, matched to the launcher's steps); reuse by steps that did not overlap is never rejected; an overlap that sacct's one-second resolution cannot settle is `missing`. An absent, partial or unreadable table is `missing`, never success. Tables read later from the original logs can be supplied as a pinning supplement, used only for logs whose SHA-256 and size equal the collector's and the archived record's |
 | `validity_decisions` | one decision per step, the same in journal, done file and status; done status 0 / 118 / 119 / non-zero |
 | `chains` | each candidate ran steps 1, 2, … in order, once each, and stopped at its first step not accepted; a step is accepted only with completion evidence: the `finished` event and the done file USPEX read both say `valid`, status 0 (an archived verdict alone is not delivery) |
 | `energy_semantics` | the quantity USPEX lists is established from its own tables, not assumed (below) |
@@ -212,6 +212,27 @@ On the 66 intermediate transitions of 209898bc:
 - Median strain: 1.6 % vs 1.3 %.
 
 Neither method is "the" transformation. The figures describe the change under a stated convention.
+
+## Pinning tables read later from the original step logs
+
+The collector before 128256b read only `{cpus}` rows, so attempt 209898bc's evidence has no pinning
+rows although its logs hold Intel MPI's tables (bare format). They are read without changing anything:
+
+```bash
+# VM, from a checkout at the reviewed commit; read-only on POWER, separately authorised.
+ssh -o BatchMode=yes powerslurm-bmdguest 'bash -s -- ATTEMPT RUN_NAME JOB' \
+  < reference/uspex_pilot/execution_validation/power_step_log_inspection.sh > step-log-inspection-<attempt8>.txt
+# Locally: every log's SHA-256 and size against step_logs.json and the archived records; only if all
+# agree, the tables are written as a supplement (never over an existing file).
+python reference/uspex_pilot/execution_validation/compare_step_log_inspection.py \
+  step-log-inspection-<attempt8>.txt EVIDENCE_DIR --supplement pinning-supplement-<attempt8>.json
+python reference/uspex_pilot/execution_validation/analyze_execution.py EVIDENCE_DIR EXPECTED.json \
+  pinning-supplement-<attempt8>.json
+```
+
+The analyser checks each supplement table's log hash and size again against the collector's summary and
+the archived record, and reports how many tables came from each source. The supplement's rows are what
+the inspection parsed from those logs; its own SHA-256 is recorded in the report.
 
 ## Procedure (VM, bash; stops before each gate)
 

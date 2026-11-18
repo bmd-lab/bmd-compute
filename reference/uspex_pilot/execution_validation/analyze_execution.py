@@ -878,7 +878,10 @@ def verify_archive(files: Path, manifest: dict, steps: list[dict], chains: dict[
                           or critical or uncomparable or not records)
               else VERIFIED)
     intermediate = [t for t in transformations if not t["final_transition"]]
+    step_log_sha256 = {request_id: (entry["record"].get("step_log") or {}).get("sha256")
+                       for request_id, entry in records.items()}
     return {"status": status, "verified": verified, "finals": finals, "transformations": transformations,
+            "step_log_sha256": step_log_sha256,
             "detail": {
         "steps": len(steps), "records": len(records), "verified_steps": len(verified),
         "missing_records": sorted(set(absent))[:20], "write_failures": write_failures[:20],
@@ -961,6 +964,251 @@ def _cpus(text: str) -> set[int]:
     return cpus
 
 
+def _utc_epoch(text: str | None) -> float | None:
+    from datetime import datetime, timezone
+
+    try:
+        return datetime.strptime(str(text), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def _maximum_matching(edges: dict[str, list[str]], *, removed_steps: frozenset = frozenset(),
+                      removed_slurm: frozenset = frozenset()) -> dict[str, str]:
+    """A maximum matching of launcher steps to SLURM steps (augmenting paths), without the removed ones."""
+
+    owner: dict[str, str] = {}
+
+    def augment(step: str, seen: set) -> bool:
+        for candidate in edges[step]:
+            if candidate in removed_slurm or candidate in seen:
+                continue
+            seen.add(candidate)
+            if candidate not in owner or augment(owner[candidate], seen):
+                owner[candidate] = step
+                return True
+        return False
+
+    for step in edges:
+        if step not in removed_steps:
+            augment(step, set())
+    return {step: candidate for candidate, step in owner.items()}
+
+
+def map_slurm_steps(steps: list[dict], sacct_steps: list[list[str]], *, tolerance_s: float = 2.0) -> dict[str, Any]:
+    """Which SLURM steps (sacct) the launcher steps can have run as, over every feasible matching.
+
+    A SLURM step is a candidate for a launcher step if its interval (whole seconds, UTC) lies inside the
+    launcher's (to ``tolerance_s``): the launcher starts before srun and finishes after srun exits and the
+    step's validity is checked. The feasible matchings are the maximum one-to-one matchings of launcher
+    steps to candidates. Returned: ``edges`` and ``size`` (of a maximum matching) for joint queries,
+    ``intervals`` per SLURM step, and ``candidates``: for each launcher step matched in *every* maximum
+    matching, the SLURM steps it is matched to in at least one. A step missing from ``candidates`` has
+    no SLURM step in some feasible matching.
+    """
+
+    intervals = {}
+    for row in sacct_steps:
+        start, end = _utc_epoch(row[4]), _utc_epoch(row[5])
+        if start is not None and end is not None:
+            intervals[row[0]] = (start, end)
+    edges: dict[str, list[str]] = {}
+    for s_ in sorted((s_ for s_ in steps if s_["start"] is not None and s_["end"] is not None),
+                     key=lambda s_: (s_["start"], s_["id"])):
+        edges[s_["id"]] = [job_step for _, job_step in sorted(
+            (abs(start - s_["start"]), job_step) for job_step, (start, end) in intervals.items()
+            if s_["start"] - 1 - tolerance_s <= start <= s_["end"] and end <= s_["end"] + tolerance_s)]
+    return feasible_mapping(edges, intervals)
+
+
+def feasible_mapping(edges: dict[str, list[str]], intervals: dict[str, tuple]) -> dict[str, Any]:
+    """The mapping structure of ``map_slurm_steps`` from candidate edges and SLURM intervals."""
+
+    size = len(_maximum_matching(edges))
+    candidates: dict[str, list[str]] = {}
+    for step in edges:
+        if len(_maximum_matching(edges, removed_steps=frozenset([step]))) != size - 1:
+            continue  # some maximum matching leaves this step without a SLURM step
+        kept = [c for c in edges[step] if _jointly_feasible(edges, size, {step: c})]
+        if kept:
+            candidates[step] = kept
+    return {"edges": edges, "size": size, "intervals": intervals, "candidates": candidates}
+
+
+def _jointly_feasible(edges: dict[str, list[str]], size: int, forced: dict[str, str]) -> bool:
+    """Whether some maximum matching assigns every step in ``forced`` to its SLURM step."""
+
+    if len(set(forced.values())) != len(forced) or any(c not in edges.get(s, ()) for s, c in forced.items()):
+        return False
+    rest = _maximum_matching(edges, removed_steps=frozenset(forced), removed_slurm=frozenset(forced.values()))
+    return len(rest) == size - len(forced)
+
+
+def _overlap_verdict(mapping: dict[str, Any], first: str, second: str) -> str:
+    """``separated``, ``overlapping`` (by at least a second) or ``unresolved`` for two launcher steps.
+
+    Decided over every feasible matching: only pairings of SLURM steps that some maximum matching uses
+    for both steps at once are considered, and the verdict must be the same for all of them. With whole
+    seconds, ``ea < sb`` proves the steps separated and ``ea > sb`` with ``eb > sa`` proves an overlap;
+    equal seconds settle nothing.
+    """
+
+    candidates = mapping["candidates"]
+    if first not in candidates or second not in candidates:
+        return "unresolved"
+    verdicts = set()
+    for job_a in candidates[first]:
+        for job_b in candidates[second]:
+            if not _jointly_feasible(mapping["edges"], mapping["size"], {first: job_a, second: job_b}):
+                continue
+            (sa, ea), (sb, eb) = mapping["intervals"][job_a], mapping["intervals"][job_b]
+            verdicts.add("separated" if ea < sb or eb < sa else "unresolved" if ea == sb or eb == sa
+                         else "overlapping")
+    return verdicts.pop() if len(verdicts) == 1 else "unresolved"
+
+
+def pinning_table(rows: list | None, ranks: int) -> tuple[dict | None, str | None, dict | None]:
+    """One step's Intel MPI table: ``(placement, None, overlap)`` if interpretable, else ``(None, reason, None)``.
+
+    Interpretable: ranks 0..ranks-1 each exactly once, distinct PIDs, one host, every rank with a
+    non-empty CPU set. ``overlap`` lists CPUs given to more than one rank of the step (None if none).
+    """
+
+    rows = rows or []
+    if not rows:
+        return None, "no pinning table", None
+    numbers = [r[0] for r in rows]
+    if len(numbers) != len(set(numbers)):
+        return None, "a rank is listed more than once", None
+    if sorted(numbers) != list(range(ranks)):
+        return None, f"ranks {sorted(numbers)[:8]}{'...' if len(numbers) > 8 else ''} are not 0..{ranks - 1}", None
+    if len({r[1] for r in rows}) != len(rows):
+        return None, "two ranks have the same PID", None
+    hosts = {r[2] for r in rows}
+    if len(hosts) != 1:
+        return None, f"ranks on {len(hosts)} hosts", None
+    try:
+        cpu_sets = {r[0]: _cpus(str(r[3])) for r in rows}
+    except ValueError:
+        return None, "an unreadable CPU set", None
+    if not all(cpu_sets.values()):
+        return None, "a rank without CPUs", None
+    owners: dict[int, list[int]] = {}
+    for rank, cpus in cpu_sets.items():
+        for cpu in cpus:
+            owners.setdefault(cpu, []).append(rank)
+    shared = {cpu: sorted(r) for cpu, r in owners.items() if len(r) > 1}
+    placement = {"host": next(iter(hosts)), "cpus": set(owners), "by_rank": cpu_sets}
+    return placement, None, ({"cpus": sorted(shared)[:8], "ranks": sorted({x for r in shared.values() for x in r})[:8]}
+                             if shared else None)
+
+
+def assess_pinning(steps: list[dict], sacct_steps: list[list[str]], *, ranks: int) -> tuple[str, dict[str, Any]]:
+    """Whether VASP steps that ran at the same time used disjoint CPUs, from Intel MPI's tables.
+
+    Every step that ran (return code 0) needs an interpretable table; a step that failed but left one
+    is compared too. CPUs shared within a step fail. Two steps sharing CPUs on one host fail only if their
+    SLURM steps genuinely overlapped: never if the launcher intervals are disjoint or the SLURM intervals
+    are separated; an overlap that cannot be established at sacct's one-second resolution, or for steps
+    that cannot be mapped to SLURM steps, is ``missing``. Reuse of CPUs by steps that did not overlap is
+    expected and never rejected. Disjoint launcher intervals prove disjoint SLURM steps on the launcher's
+    own clock (each SLURM step runs inside its srun, which runs inside the launcher's interval); otherwise
+    the verdict must hold under every feasible matching of launcher steps to SLURM steps.
+    """
+
+    required = [s_ for s_ in steps if s_["returncode"] == 0]
+    placements, uninterpretable, reasons, own_overlap = {}, [], {}, []
+    for s_ in steps:
+        placement, reason, shared = pinning_table(s_.get("pin_rows"), ranks)
+        if placement is None:
+            if s_["returncode"] == 0:
+                uninterpretable.append(s_["id"])
+                reasons[reason] = reasons.get(reason, 0) + 1
+            continue
+        if shared:
+            own_overlap.append([s_["id"], shared])
+        placements[s_["id"]] = {**placement, "start": s_["start"], "end": s_["end"]}
+    mapping = map_slurm_steps(steps, sacct_steps)
+    conflicts, unresolved, reused = [], [], 0
+    ids = sorted(placements, key=lambda i: (placements[i]["start"] or 0, i))
+    for index, first in enumerate(ids):
+        a_ = placements[first]
+        for second in ids[index + 1:]:
+            b_ = placements[second]
+            common = a_["cpus"] & b_["cpus"]
+            if a_["host"] != b_["host"] or not common:
+                continue
+            if None in (a_["start"], a_["end"], b_["start"], b_["end"]):
+                unresolved.append([first, second, "no launcher interval"])
+                continue
+            if a_["end"] <= b_["start"] or b_["end"] <= a_["start"]:
+                reused += 1  # the launcher intervals are disjoint: SLURM's lie inside them
+                continue
+            if first not in mapping["candidates"] or second not in mapping["candidates"]:
+                unresolved.append([first, second, "not mapped to SLURM steps in every feasible matching"])
+                continue
+            verdict = _overlap_verdict(mapping, first, second)
+            if verdict == "separated":
+                reused += 1
+            elif verdict == "unresolved":
+                unresolved.append([first, second, "SLURM intervals not established as overlapping or separated "
+                                                  "(one-second resolution or several possible SLURM steps)"])
+            else:
+                conflicts.append([first, second, sorted(common)[:8],
+                                  [mapping["candidates"][first], mapping["candidates"][second]]])
+    status = (FAILED if conflicts or own_overlap else
+              MISSING if uninterpretable or unresolved or not required else VERIFIED)
+    return status, {
+        "steps_ran": len(required), "interpretable": sum(1 for s_ in required if s_["id"] in placements),
+        "uninterpretable": uninterpretable[:10], "uninterpretable_total": len(uninterpretable),
+        "uninterpretable_reasons": reasons,
+        "failed_steps_compared": sorted(s_["id"] for s_ in steps if s_["returncode"] != 0 and s_["id"] in placements),
+        "slurm_steps_mapped": sum(1 for c in mapping["candidates"].values() if len(c) == 1),
+        "slurm_steps_with_several_candidates": sum(1 for c in mapping["candidates"].values() if len(c) > 1),
+        "launcher_steps_not_always_matched": len(mapping["edges"]) - len(mapping["candidates"]),
+        "slurm_matching": "every maximum one-to-one matching of launcher steps to SLURM steps inside their "
+                          "intervals; a verdict holds only if it is the same under all of them",
+        "overlaps": conflicts[:10], "overlaps_total": len(conflicts),
+        "unresolved": unresolved[:10], "unresolved_total": len(unresolved),
+        "cpu_reuse_between_non_overlapping_steps": reused,
+        "ranks_sharing_a_core": own_overlap[:10],
+        "hosts": sorted({p["host"] for p in placements.values()}),
+        "distinct_cpus": len(set().union(*[p["cpus"] for p in placements.values()])) if placements else 0}
+
+
+def merge_pinning_supplement(steps: list[dict], logs: dict, archived_sha256: dict, supplement: dict | None) -> dict:
+    """Use a supplement's pinning table for a step only if its log hash and size equal the collector's and
+    the archived record's; a step's own collected table is kept, and a supplement that differs from it is
+    reported."""
+
+    used, refused, disagreements = [], [], []
+    collected = sum(1 for s_ in steps if s_.get("pin_rows"))
+    if supplement:
+        if supplement.get("schema") != "bmd_compute.uspex_pinning_supplement":
+            return {"collector": collected, "supplement": 0, "refused": ["not a pinning supplement"],
+                    "disagreements": [], "supplement_inspection_sha256": None}
+        rows = supplement.get("logs") or {}
+        for s_ in steps:
+            entry, log = rows.get(s_["id"]), logs.get(s_["id"])
+            if entry is None:
+                continue
+            if (log is None or entry.get("sha256") != log.get("sha256") or entry.get("bytes") != log.get("bytes")
+                    or archived_sha256.get(s_["id"]) != entry.get("sha256")):
+                refused.append(s_["id"])
+                continue
+            table = [list(r) for r in entry.get("pin_rows") or []]
+            if s_.get("pin_rows"):
+                if [list(r) for r in s_["pin_rows"]] != table:
+                    disagreements.append(s_["id"])
+                continue
+            s_["pin_rows"] = table
+            used.append(s_["id"])
+        refused += sorted(set(rows) - {s_["id"] for s_ in steps})
+    return {"collector": collected, "supplement": len(used), "refused": refused[:20], "refused_total": len(refused),
+            "disagreements": disagreements[:20],
+            "supplement_inspection_sha256": (supplement or {}).get("inspection_sha256")}
+
+
 def placement_diagnostics(summaries: list[dict | None]) -> dict[str, Any]:
     """What the step logs show about CPU placement beyond the pinning rows (collector fields, if any).
 
@@ -1028,8 +1276,13 @@ def _symmetry(poscar: str) -> dict[str, Any]:
 # -- the analysis ----------------------------------------------------------------------------------------------
 
 
-def analyse(evidence: Path, expected: dict[str, Any]) -> dict[str, Any]:
-    """The report for one evidence directory. ``expected`` comes from the validation's own records."""
+def analyse(evidence: Path, expected: dict[str, Any], *, pinning_supplement: dict | None = None) -> dict[str, Any]:
+    """The report for one evidence directory. ``expected`` comes from the validation's own records.
+
+    ``pinning_supplement`` (from ``compare_step_log_inspection.py --supplement``): Intel MPI pinning tables
+    read later from the original step logs on POWER; a table is used only for a log whose SHA-256 and size
+    equal the collector's and the archived record's.
+    """
 
     evidence = Path(evidence)
     files = evidence / "files"
@@ -1199,36 +1452,6 @@ def analyse(evidence: Path, expected: dict[str, Any]) -> dict[str, Any]:
                    VERIFIED if 2 <= concurrency <= expected["parallel"] else FAILED,
                    {"max_concurrent": concurrency, "limit": expected["parallel"]})
 
-    # Pinning: a step's report is interpretable only if it lists each of its MPI ranks once, on one host.
-    interpretable, uninterpretable, own_overlap = [], [], []
-    for s_ in ran:
-        rows = s_["pin_rows"] or []
-        ranks = sorted(r[0] for r in rows)
-        hosts = {r[2] for r in rows}
-        try:
-            cpu_sets = [_cpus(r[3]) for r in rows]
-        except ValueError:
-            cpu_sets = None
-        if ranks != list(range(expected["ranks"])) or len(hosts) != 1 or not cpu_sets or not all(cpu_sets):
-            uninterpretable.append(s_["id"])
-            continue
-        union = set().union(*cpu_sets)
-        if sum(len(c) for c in cpu_sets) != len(union):
-            own_overlap.append(s_["id"])
-        interpretable.append({**s_, "cpus": union, "host": next(iter(hosts))})
-    overlap = []
-    for i, a_ in enumerate(interpretable):
-        for b_ in interpretable[i + 1:]:
-            if a_["start"] < b_["end"] and b_["start"] < a_["end"] and a_["host"] == b_["host"] and a_["cpus"] & b_["cpus"]:
-                overlap.append([a_["id"], b_["id"], sorted(a_["cpus"] & b_["cpus"])[:8]])
-    report.add("pinning", f"concurrent VASP steps ({expected['ranks']} MPI ranks each, up to {expected['parallel']} "
-               f"at once in the {ncpus_planned}-CPU allocation) used disjoint cores (Intel MPI pinning report)",
-               FAILED if overlap or own_overlap else MISSING if uninterpretable or not ran else VERIFIED,
-               {"steps_ran": len(ran), "interpretable": len(interpretable), "uninterpretable": uninterpretable[:10],
-                "uninterpretable_total": len(uninterpretable),
-                "overlaps": overlap[:10], "ranks_sharing_a_core": own_overlap[:10],
-                "placement_diagnostics": placement_diagnostics([logs.get(s_["id"]) for s_ in ran])})
-
     # Validity decisions.
     bad_decisions = []
     for s in steps:
@@ -1291,6 +1514,17 @@ def analyse(evidence: Path, expected: dict[str, Any]) -> dict[str, Any]:
                "and surviving CalcFolds; the final step started from its predecessor's output structure; "
                "intermediate steps kept their candidate and composition", archive["status"], archive["detail"])
     findings["intermediate_transformations"] = intermediate_findings(archive["transformations"])
+
+    # Pinning: Intel MPI's table for every step, from the collector or from a hash-verified supplement.
+    pin_source = merge_pinning_supplement(steps, logs, archive["step_log_sha256"], pinning_supplement)
+    pinning_status, pinning_detail = assess_pinning(steps, sacct["steps"], ranks=expected["ranks"])
+    pinning_detail["sources"] = pin_source
+    pinning_detail["placement_diagnostics"] = placement_diagnostics([logs.get(s_["id"]) for s_ in ran])
+    if pin_source["disagreements"]:
+        pinning_status = FAILED if pinning_status == FAILED else MISSING
+    report.add("pinning", f"concurrent VASP steps ({expected['ranks']} MPI ranks each, up to {expected['parallel']} "
+               f"at once in the {ncpus_planned}-CPU allocation) used disjoint cores (Intel MPI pinning report)",
+               pinning_status, pinning_detail)
 
     # What USPEX lists, what it means, and which accepted chain each listed candidate is.
     results_dirs = sorted(p.name for p in (files / "search").glob("results*") if p.is_dir())
@@ -1539,9 +1773,10 @@ def summary_lines(report: dict[str, Any]) -> list[str]:
     return lines
 
 
-if __name__ == "__main__":  # python analyze_execution.py EVIDENCE_DIR EXPECTED_JSON
+if __name__ == "__main__":  # python analyze_execution.py EVIDENCE_DIR EXPECTED_JSON [PINNING_SUPPLEMENT_JSON]
     import sys
 
-    result = analyse(Path(sys.argv[1]), json.loads(Path(sys.argv[2]).read_text()))
+    supplement = json.loads(Path(sys.argv[3]).read_text()) if len(sys.argv) > 3 else None
+    result = analyse(Path(sys.argv[1]), json.loads(Path(sys.argv[2]).read_text()), pinning_supplement=supplement)
     print("\n".join(summary_lines(result)))
     raise SystemExit(0 if result["result"] == "PASSED" else 1)

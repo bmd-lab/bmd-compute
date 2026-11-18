@@ -167,6 +167,12 @@ settings.
   requires exact continuity only into the final step and measures and reports
   the intermediate changes; whether they are acceptable is a scientific
   decision, not made by the analyser.
+- Intel MPI pinning under `srun` on POWER (attempt 209898bc): Intel MPI 2021.10
+  prints its table with bare CPU numbers (`0 1549873 compute-0-270.powerslurm 12`),
+  which the collector's `{cpus}` pattern missed in all 109 logs. Both formats
+  are now read; CPU placements are compared only across SLURM steps that
+  genuinely overlapped (the launcher's interval also covers the validity check,
+  up to 73 s after VASP).
 
 Any of these can end the job early with `uspex_failed`, `launch_setup_failed`
 or rejected steps; each is a finding to examine, not something to retry

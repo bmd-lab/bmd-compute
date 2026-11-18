@@ -69,7 +69,8 @@ class Scenario:
     stopped: bool = False
     unfinished_after: int | None = None  # individuals above this never ran (walltime)
     parallel: int = 4
-    pin: str = "disjoint"  # disjoint | shared | partial | none | unrecognised (startup lines, no {cpus}) | version_only
+    pin: str = "disjoint"  # disjoint | shared | partial | none | unrecognised (rows with no CPU numbers) | version_only
+    pin_format: str = "braces"  # braces ("{12}") | bare ("12", as Intel MPI 2021.10 printed it on POWER under srun)
     alloc_mem: str = "500G"
     # The frozen plan's node request and launch settings (defaults: 4 x 48 on an exclusive node).
     planned_parallel: int = 4  # what the plan and the launcher record; ``parallel`` is what actually ran at once
@@ -181,6 +182,14 @@ def rewrite_poscar(poscar: bytes, *, basis=((1, 0, 0), (0, 1, 0), (0, 0, 1)), st
     return ("\n".join(out) + "\n").encode()
 
 
+def _utc(epoch: float) -> str:
+    """SLURM's step time (sacct, TZ=UTC, standard format) for a launcher time: whole seconds."""
+
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(int(epoch), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def _write(path: Path, text: str | bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(text, bytes):
@@ -246,7 +255,7 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
                     pins = version
                 elif scenario.pin == "unrecognised":
                     pins = version + "[0] MPI startup(): Rank    Pid      Node name  Pin cpu\n" + "".join(
-                        f"[0] MPI startup(): {r}       {2000 + r}    compute-0-271  {scenario.cpu_offset + r}\n"
+                        f"[0] MPI startup(): {r}       {2000 + r}    compute-0-271  cpu{scenario.cpu_offset + r}\n"
                         for r in range(ranks))
                 elif scenario.pin == "partial" and step_index == 0:
                     pins = "[0] MPI startup(): Rank    Pid      Node name  Pin cpu\n" + "".join(
@@ -254,9 +263,10 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
                         f"{{{scenario.cpu_offset + ranks * slot + r}}}\n" for r in range(ranks - 8))
                 else:
                     base = scenario.cpu_offset + ranks * (0 if scenario.pin == "shared" else slot)
+                    cpu = "{}" if scenario.pin_format == "bare" else "{{{}}}"
                     pins = version + "[0] MPI startup(): Rank    Pid      Node name  Pin cpu\n" + "".join(
-                        f"[0] MPI startup(): {r}       {2000 + r}    compute-0-271  {{{base + r}}}\n"
-                        for r in range(ranks))
+                        f"[0] MPI startup(): {r}       {10000 * (step_index + 1) + r}    compute-0-271.powerslurm  "
+                        f"{cpu.format(base + r)}\n" for r in range(ranks))
                 if True:  # written, hashed for the record, then removed if the scenario loses it
                     _write(spool / "logs" / f"{request_id}.log",
                            pins + f"   1 F= {free_energy + 0.1:.8E} E0= {free_energy + 0.1 + E0_SHIFT:.8E}  d E =-.1E+00\n"
@@ -318,8 +328,8 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
                     step_records.append({"individual": individual, "step": step, "id": request_id,
                                          "classification": classification, "free_energy_ev": free_energy,
                                          "line": line, "output": output})
-                    sacct_steps.append(f"{job}.{step_index}|vasp_std|COMPLETED|0:0|2026-11-20T10:00:00|"
-                                       f"2026-11-20T10:00:30|00:00:30|{ranks}|cpu={ranks},mem={STEP_MEM},node=1|")
+                    sacct_steps.append(f"{job}.{step_index}|vasp_std|COMPLETED|0:0|{_utc(t + 1)}|"
+                                       f"{_utc(t + seconds - 1)}|00:00:28|{ranks}|cpu={ranks},mem={STEP_MEM},node=1|")
                     step_index += 1
                     t += seconds
                     break
@@ -333,8 +343,8 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
                 step_records.append({"individual": individual, "step": step, "id": request_id,
                                      "classification": classification, "free_energy_ev": free_energy,
                                      "line": line, "output": output})
-                sacct_steps.append(f"{job}.{step_index}|vasp_std|COMPLETED|0:0|2026-11-20T10:00:00|"
-                                   f"2026-11-20T10:00:30|00:00:30|{ranks}|cpu={ranks},mem={STEP_MEM},node=1|")
+                sacct_steps.append(f"{job}.{step_index}|vasp_std|COMPLETED|0:0|{_utc(t + 1)}|"
+                                   f"{_utc(t + seconds - 1)}|00:00:28|{ranks}|cpu={ranks},mem={STEP_MEM},node=1|")
                 step_index += 1
                 t += seconds
                 if classification != "valid":
