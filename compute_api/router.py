@@ -41,6 +41,7 @@ from backend.provenance import source_metadata
 
 from compute_api import API_VERSION
 from compute_api.auth import (
+    SCOPE_CANCEL,
     SCOPE_PLAN,
     SCOPE_PREPARE,
     SCOPE_READ,
@@ -114,6 +115,22 @@ def _error_response(exc: _ApiError | ApiAuthError) -> JSONResponse:
 
 def _non_loopback_allowed() -> bool:
     return str(os.environ.get(ALLOW_NON_LOOPBACK_ENV, "")).strip().lower() in {"1", "true", "yes"}
+
+
+# Structure-search execution (anything that writes to POWER or submits) is off unless the service is
+# started with BMD_STRUCTURE_SEARCH_EXECUTION=enabled. Planning, local preparation, observation and
+# cancellation of an attempt already submitted stay available: turning execution off must never prevent
+# stopping a job that is already running.
+SEARCH_EXECUTION_ENV = "BMD_STRUCTURE_SEARCH_EXECUTION"
+
+
+def _require_search_execution() -> None:
+    if os.environ.get(SEARCH_EXECUTION_ENV, "") != "enabled":
+        raise _ApiError(
+            503,
+            "structure_search_execution_disabled",
+            "Structure-search execution is disabled on this service; nothing was changed.",
+        )
 
 
 def _authorize(request: Request, scope: str | None) -> Principal:
@@ -318,6 +335,7 @@ def build_machine_api_router(*, planner: Planner, search_planner: Planner | None
 
         try:
             principal = _authorize(request, scope=SCOPE_PREPARE)
+            _require_search_execution()
             canonical = _canonical_attempt_id(attempt_id)
             document = await _read_json_body(request)
             try:
@@ -355,6 +373,7 @@ def build_machine_api_router(*, planner: Planner, search_planner: Planner | None
 
         try:
             principal = _authorize(request, scope=SCOPE_SUBMIT)
+            _require_search_execution()
             canonical = _canonical_attempt_id(attempt_id)
             document = await _read_json_body(request)
             try:
@@ -393,6 +412,7 @@ def build_machine_api_router(*, planner: Planner, search_planner: Planner | None
 
         try:
             principal = _authorize(request, scope=SCOPE_SUBMIT)
+            _require_search_execution()
             canonical = _canonical_attempt_id(attempt_id)
             document = await _read_json_body(request)
             try:
@@ -432,6 +452,7 @@ def build_machine_api_router(*, planner: Planner, search_planner: Planner | None
 
         try:
             principal = _authorize(request, scope=SCOPE_SUBMIT)
+            _require_search_execution()
             canonical = _canonical_attempt_id(attempt_id)
             document = await _read_json_body(request)
             try:
@@ -496,7 +517,7 @@ def build_machine_api_router(*, planner: Planner, search_planner: Planner | None
         from compute_api.structure_search_monitoring import cancel_search_attempt
 
         try:
-            principal = _authorize(request, scope=SCOPE_SUBMIT)
+            principal = _authorize(request, scope=SCOPE_CANCEL)
             canonical = _canonical_attempt_id(attempt_id)
             document = await _read_json_body(request)
             try:

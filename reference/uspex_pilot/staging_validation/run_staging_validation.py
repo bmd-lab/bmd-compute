@@ -81,8 +81,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PRINCIPAL = "uspex-4c-validation"
-# submit: promotion (step 4D-2), and the acceptance's one submission request and cancellation (step 4D).
-SCOPES = ("plan", "prepare", "read", "submit")
+# submit: promotion (step 4D-2) and the acceptance's one submission request; cancel: its cancellation
+# (step 4D). A root set up before the cancel scope existed holds a token file without it and is refused
+# by the root check: set up a new root.
+SCOPES = ("cancel", "plan", "prepare", "read", "submit")
 FORMULA = "Si"
 LOOPBACK = ("127.0.0.1", 50000)
 SSH_HOST = "powerslurm-bmdguest"
@@ -469,6 +471,8 @@ def _open_api(root: Path, *, allow_dirty: bool, runner_factory, proc: Path) -> d
     os.environ.pop(SUBMISSION_IDENTITY_SECRET_ENV, None)  # never sign with a production secret
     os.environ["BMD_API_STATE_DIR"] = str(state)
     os.environ["BMD_API_TOKENS_FILE"] = str(tokens_file)
+    # The validation's own in-process service only: production keeps structure-search execution off.
+    os.environ["BMD_STRUCTURE_SEARCH_EXECUTION"] = "enabled"
     os.chdir(REPO)  # the app resolves its templates relative to the checkout
     sys.path.insert(0, str(REPO))
     import warnings

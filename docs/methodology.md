@@ -426,7 +426,17 @@ search can be started from bmd-compute yet; the design is in
 `structure_search.md`. Execution status (7 Nov 2026): a frozen search plan
 can be staged on POWER and verified there, and promoted to submission-ready
 with its job script and resource acknowledgement (both validated for Si, plan
-`sha256:014ef52c…0ebbc`, 7 and 10 Nov 2026); managed submission, monitoring and cancellation passed an operational acceptance on POWER (10 Nov 2026, a 15-minute Si job cancelled before it started), but no managed search has yet executed USPEX or VASP. Staging changes no
+`sha256:014ef52c…0ebbc`, 7 and 10 Nov 2026); managed submission, monitoring and cancellation passed an operational acceptance on POWER (10 Nov 2026, a 15-minute Si job cancelled before it started), Managed scientific execution (18 Nov 2026): a complete managed
+search (Si, shared-node profile 3 × 16 ranks, attempt 209898bc, job 23624369)
+ran USPEX 25.0 and its VASP ladder to natural completion on POWER and was
+accepted by the PI with a documented CPU-placement qualification; the
+independent analyser's result is INCOMPLETE EVIDENCE
+(`reference/uspex_pilot/execution_validation/ACCEPTANCE_209898bc.md`). This
+establishes that BMD Compute can run a managed search correctly; it does not
+validate USPEX's predictive methodology, which remains experimental. Between
+intermediate ladder steps USPEX itself changes the structure (strained cells,
+moved atoms); these changes are measured and reported and are accepted
+provisionally (decision D2, 17 Nov 2026), not validated. Staging changes no
 scientific input: the ladder, validity criteria and POTCARs below are what
 the plan records. The values here are implemented in
 `backend/structure_search/incar_policy.py` and `potcar.py` and pinned by

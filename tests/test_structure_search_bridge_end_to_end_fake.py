@@ -558,7 +558,7 @@ def test_request_whose_bridge_died_is_still_run_and_answered(rig):
     event = rig.start_launcher_thread(rig.settings())
     folder = rig.calcfold("CalcFold1")
     request = "id=lost-1\nstep=1\ncalcfold={}\ncreated={}\n".format(folder, int(time.time()))
-    (rig.spool / "requests" / "lost-1.req").write_text(request)
+    publish(rig, "lost-1.req", request)
     rig.wait_for(lambda: (rig.spool / "done" / "lost-1.done").exists())
     assert rig.done("lost-1")["status"] == "0"
     rig.join(event)
@@ -599,18 +599,34 @@ def test_missing_step_command_is_answered_with_127(rig):
 # -- duplicates ------------------------------------------------------------------
 
 
+def publish(rig, name: str, text: str) -> None:
+    """Publish a request file whole, as bmd_bridge.sh does (written elsewhere, then linked into place).
+
+    A plain ``write_text`` into requests/ truncates the file first: the launcher, polling every 50 ms,
+    can read it empty and reject it as malformed. For a request ID that is running, that rejection
+    writes an early done file (122), and the step's own done file (here 123, stopped at the end of the
+    test) replaces it later: the intermittent failure of test_duplicate_request_id_runs_vasp_once.
+    """
+
+    tmp = rig.spool / "tmp" / f"{name}.{time.time_ns()}"
+    tmp.parent.mkdir(exist_ok=True)
+    tmp.write_text(text)
+    os.replace(tmp, rig.spool / "requests" / name)
+
+
 def test_duplicate_request_id_runs_vasp_once(rig):
     rig.set_control({"sleep": 1.0})
     event = rig.start_launcher_thread(rig.settings())
     folder = rig.calcfold("CalcFold1")
     text = "id=dup-1\nstep=1\ncalcfold={}\ncreated={}\n".format(folder, int(time.time()))
-    (rig.spool / "requests" / "dup-1.req").write_text(text)
+    publish(rig, "dup-1.req", text)
     rig.wait_for(lambda: len(rig.srun_records()) == 1)
     # Same ID again while the first is running, and once more after it finished.
-    (rig.spool / "requests" / "dup-1.req").write_text(text)
+    publish(rig, "dup-1.req", text)
     rig.wait_for(lambda: not (rig.spool / "requests" / "dup-1.req").exists())
     rig.wait_for(lambda: (rig.spool / "done" / "dup-1.done").exists())
-    (rig.spool / "requests" / "dup-1.req").write_text(text)
+    assert rig.done("dup-1")["status"] == "0"  # the step's own answer, not an early rejection
+    publish(rig, "dup-1.req", text)
     rig.wait_for(lambda: not (rig.spool / "requests" / "dup-1.req").exists())
     rig.join(event)
     assert len(rig.srun_records()) == 1

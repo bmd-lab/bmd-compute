@@ -110,15 +110,20 @@ def state_dir(tmp_path, monkeypatch):
     path = tmp_path / "api_state"
     path.mkdir(mode=0o700)
     monkeypatch.setenv(ledger_module.STATE_DIR_ENV, str(path))
+    # Structure-search execution is off by default (production); these tests exercise it.
+    monkeypatch.setenv("BMD_STRUCTURE_SEARCH_EXECUTION", "enabled")
     return path
 
 
 SCOPES = {
-    "runner": ["plan", "read", "prepare", "submit"],
+    "runner": ["plan", "read", "prepare", "submit", "cancel"],
     "preparer": ["plan", "read", "prepare"],
     "planner": ["plan", "read"],
     "submit_only": ["submit"],
-    "other": ["plan", "read", "prepare", "submit"],
+    "other": ["plan", "read", "prepare", "submit", "cancel"],
+    # Every scope but cancel, and cancel alone: submitting never implies cancelling, nor the reverse.
+    "no_cancel": ["plan", "read", "prepare", "submit"],
+    "cancel_only": ["cancel"],
 }
 
 

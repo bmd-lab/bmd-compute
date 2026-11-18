@@ -1,6 +1,14 @@
 # Structure Search (USPEX) — Design
 
-Status: **design, not implemented.** Tracking issue: #58.
+Status: **experimental.** Planning, preparation, staging, submission,
+monitoring and cancellation are implemented behind the machine API; execution
+on POWER is off unless `BMD_STRUCTURE_SEARCH_EXECUTION=enabled`, and the browser
+page is a preview. Managed scientific execution was accepted for the
+shared-node pilot (18 Nov 2026, PI-accepted with a CPU-placement qualification;
+analyser result INCOMPLETE EVIDENCE:
+`reference/uspex_pilot/execution_validation/ACCEPTANCE_209898bc.md`). The search
+methodology (ladder, defaults, resources) stays provisional and is not
+validated. Tracking issue: #58.
 
 This document is the single reference for adding USPEX crystal structure
 prediction to bmd-compute. It records the design, the lab decisions taken so
@@ -400,6 +408,15 @@ band structure, Electronic band structure and Electronic DOS. New structure
 asks only for a chemical formula (`/predict`); cell-size range, generations
 and walltime are optional overrides in a collapsed Advanced panel. Pressure
 is not offered: searches run at ambient pressure.
+
+**Zero-pressure limitation.** Every search is planned, admitted and run at
+`ExternalPressure = 0` (admission policy v2). The earlier preview form had a
+*Pressure (GPa)* field; it was removed because no plan can carry a non-zero
+pressure: admission refuses it, the INCARs never set `PSTRESS`, the Relaxed
+Energy workflow that would refine candidates has no pressure setting, and the
+execution analyser establishes USPEX's listed energies as F only at zero
+pressure (at non-zero pressure USPEX lists enthalpies). Searches at pressure
+need a separate methodology decision.
 
 The page shows the plan only; its Submit button is disabled and nothing
 reaches POWER. The plan is built from the authoritative search

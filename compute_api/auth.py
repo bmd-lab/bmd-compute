@@ -41,9 +41,11 @@ SCOPE_READ = "read"
 SCOPE_PLAN = "plan"
 SCOPE_PREPARE = "prepare"
 SCOPE_SUBMIT = "submit"
+SCOPE_CANCEL = "cancel"
 # The complete scope vocabulary. "plan" never grants execution; "prepare" and
-# "submit" are checked independently by the attempt routes.
-KNOWN_SCOPES = frozenset({SCOPE_READ, SCOPE_PLAN, SCOPE_PREPARE, SCOPE_SUBMIT})
+# "submit" are checked independently by the attempt routes. "cancel" is its own
+# scope: submitting never implies the right to cancel, nor cancelling to submit.
+KNOWN_SCOPES = frozenset({SCOPE_READ, SCOPE_PLAN, SCOPE_PREPARE, SCOPE_SUBMIT, SCOPE_CANCEL})
 
 PRINCIPAL_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 TOKEN_ID_PATTERN = re.compile(r"^[a-z0-9]{8,32}$")

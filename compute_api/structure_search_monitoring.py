@@ -48,7 +48,7 @@ linked into place exclusively, each naming the previous one's SHA-256); the
 local record keeps a summary. If the record update is interrupted, the next
 request applies the evidence first.
 
-Cancellation: ``PUT …/cancellation`` (scope ``submit``, the owner) with
+Cancellation: ``PUT …/cancellation`` (scope ``cancel``, the owner) with
 ``{"expected_plan_digest", "job_id", "confirm": true}``:
 
 1. *requested*: the record becomes ``CANCEL_REQUESTED`` before POWER;

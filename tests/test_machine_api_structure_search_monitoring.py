@@ -607,7 +607,7 @@ def test_cancellation_requested_attempted_then_observed(client, tokens, state_di
 def test_cancellation_refusals_before_contacting_power(client, tokens, state_dir, cluster, submitted):
     attempt, digest, job_id = submitted[0], submitted[1], submitted[4]
     connections = cluster.connections
-    assert cancel(client, tokens["preparer"], attempt, digest, job_id).status_code == 403  # no submit scope
+    assert cancel(client, tokens["preparer"], attempt, digest, job_id).status_code == 403  # no cancel scope
     assert cancel(client, tokens["other"], attempt, digest, job_id).status_code == 403  # not the owner
     assert cancel(client, tokens["runner"], attempt, digest, job_id, confirm=False).status_code == 422
     unconfirmed = client.put(f"/api/v1/structure-search-attempts/{attempt}/cancellation",
@@ -631,6 +631,48 @@ def test_cancellation_refusals_before_contacting_power(client, tokens, state_dir
     refused = cancel(client, tokens["runner"], uncertain[0], uncertain[1], "9001")
     assert refused.status_code == 409 and error_code(refused) == "submission_uncertain"
     assert search_record(state_dir, uncertain[0]) == record and cluster.scancel_runs == []
+
+
+# --- the dedicated cancel scope ---------------------------------------------------------------------------
+
+
+def test_an_owner_who_may_submit_but_not_cancel_is_refused_and_nothing_changes(client, tokens, state_dir, cluster):
+    prepared = prepared_attempt(client, tokens, cluster, principal="no_cancel")
+    response = go(client, tokens, prepared, token="no_cancel")
+    assert response.status_code == 200, response.text  # submit scope: submitted, exactly once
+    attempt, digest, job_id = prepared[0], prepared[1], response.json()["submission"]["job_id"]
+    record, connections = search_record(state_dir, attempt), cluster.connections
+    refused = cancel(client, tokens["no_cancel"], attempt, digest, job_id)
+    assert refused.status_code == 403 and error_code(refused) == "insufficient_scope"
+    assert "'cancel'" in refused.json()["error"]["message"]
+    assert cluster.scancel_runs == [] and cluster.connections == connections and cluster.sbatch_runs == 1
+    assert search_record(state_dir, attempt) == record and record["state"] == "SUBMITTED"
+
+
+def test_the_cancel_scope_alone_cancels_nothing_it_does_not_own_and_grants_nothing_else(client, tokens, state_dir,
+                                                                                       cluster, submitted):
+    attempt, digest, resources_sha256, job_script_sha256, job_id = submitted
+    record, connections = search_record(state_dir, attempt), cluster.connections
+    not_owner = cancel(client, tokens["cancel_only"], attempt, digest, job_id)
+    assert not_owner.status_code == 403 and cluster.scancel_runs == []  # the owner check is unchanged
+    assert go(client, tokens, submitted[:4], token="cancel_only").status_code == 403  # cancel never submits
+    assert observe(client, tokens["cancel_only"], attempt).status_code == 403  # nor reads
+    assert search_record(state_dir, attempt) == record and cluster.connections == connections
+    assert cluster.sbatch_runs == 1
+
+
+def test_the_scope_vocabulary_and_the_cancellation_route():
+    from compute_api import auth
+
+    assert auth.KNOWN_SCOPES == {"read", "plan", "prepare", "submit", "cancel"}
+    with pytest.raises(auth.ApiAuthError) as refused:
+        auth.Principal("p", "t", frozenset({"plan", "read", "prepare", "submit"})).require(auth.SCOPE_CANCEL)
+    assert refused.value.status_code == 403 and refused.value.code == "insufficient_scope"
+    import inspect
+    from compute_api import router
+    source = inspect.getsource(router)
+    route = source[source.index('"/structure-search-attempts/{attempt_id}/cancellation"'):]
+    assert "scope=SCOPE_CANCEL" in route[:route.index("def ", route.index("def ") + 4)]
 
 
 def test_cancellation_waits_for_a_pending_remote_record(client, tokens, state_dir, cluster):
@@ -989,3 +1031,52 @@ def test_scancel_command_takes_only_a_numeric_job_id():
         with pytest.raises(ValueError):
             monitoring._scancel_command(bad)
     assert job_identity("a" * 8 + "-0000-4000-8000-000000000000", "/r/")["workdir"] == "/r"
+
+
+# --- structure-search execution is off unless the service enables it -----------------------------------
+
+
+@pytest.mark.parametrize("value", [None, "", "1", "true", "Enabled", "yes"])
+def test_without_the_setting_nothing_is_staged_promoted_or_submitted(client, tokens, state_dir, cluster,
+                                                                     monkeypatch, value):
+    from test_machine_api_execution import new_id
+    from test_machine_api_structure_search_attempts import put_search, search_body
+    from test_machine_api_structure_search_promotion import promote, staged_attempt
+    from test_machine_api_structure_search_staging import stage
+    from test_machine_api_structure_search_submission import recover, submit
+
+    ready = prepared_attempt(client, tokens, cluster)  # made while execution was enabled
+    staged = staged_attempt(client, tokens, cluster)
+    fresh, body = new_id(), search_body(client, tokens, "Si")
+    assert put_search(client, tokens["runner"], fresh, body).status_code == 200  # local preparation stays
+    if value is None:
+        monkeypatch.delenv("BMD_STRUCTURE_SEARCH_EXECUTION")
+    else:
+        monkeypatch.setenv("BMD_STRUCTURE_SEARCH_EXECUTION", value)
+    records = {a: search_record(state_dir, a) for a in (ready[0], staged[0], fresh)}
+    connections, sbatch = cluster.connections, cluster.sbatch_runs
+    responses = [stage(client, tokens["runner"], fresh, body["expected_plan_digest"]),
+                 promote(client, tokens["runner"], *staged), submit(client, tokens["runner"], *ready),
+                 recover(client, tokens["runner"], ready[0], ready[1])]
+    for response in responses:
+        assert response.status_code == 503 and error_code(response) == "structure_search_execution_disabled"
+    assert cluster.connections == connections and cluster.sbatch_runs == sbatch
+    assert {a: search_record(state_dir, a) for a in records} == records
+
+
+def test_with_execution_off_a_submitted_search_can_still_be_observed_and_cancelled(client, tokens, state_dir,
+                                                                                   cluster, submitted, monkeypatch):
+    attempt, digest, job_id = submitted[0], submitted[1], submitted[4]
+    start(cluster, state_dir, attempt, job_id)
+    monkeypatch.delenv("BMD_STRUCTURE_SEARCH_EXECUTION")
+    assert observe(client, tokens["runner"], attempt).status_code == 200
+    response = cancel(client, tokens["runner"], attempt, digest, job_id)
+    assert response.status_code == 200 and cluster.scancel_runs == [job_id]
+
+
+def test_authentication_comes_before_the_execution_setting(client, tokens, state_dir, cluster, monkeypatch):
+    ready = prepared_attempt(client, tokens, cluster)
+    monkeypatch.delenv("BMD_STRUCTURE_SEARCH_EXECUTION")
+    from test_machine_api_structure_search_submission import submit
+    assert submit(client, "bmdc1.notatoken.x", *ready).status_code == 401
+    assert submit(client, tokens["preparer"], *ready).status_code == 403  # no submit scope

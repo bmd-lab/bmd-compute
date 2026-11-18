@@ -34,6 +34,19 @@ jobs:
           cache: pip
           cache-dependency-path: constraints/scientific-runtime.txt
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install jsdom for the page-behaviour tests
+        # The browser tests (tests/test_built_output_freshness.py, tests/test_geometry_relaxation_protocol.py)
+        # run the page's script in jsdom and skip without it. Installed outside the checkout, pinned, and
+        # checked so that a broken install fails the job instead of silently skipping those tests.
+        run: |
+          npm install --prefix "$RUNNER_TEMP/jsdom" --no-save --no-audit --no-fund jsdom@24.1.3
+          echo "NODE_PATH=$RUNNER_TEMP/jsdom/node_modules" >> "$GITHUB_ENV"
+          NODE_PATH="$RUNNER_TEMP/jsdom/node_modules" node -e "require('jsdom'); console.log('jsdom', require('jsdom/package.json').version)"
+
       - name: Install web and test tooling
         # Mirrors the non-scientific part of environment.yml. httpx is needed
         # by fastapi.testclient but is not listed in environment.yml.

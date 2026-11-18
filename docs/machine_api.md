@@ -14,7 +14,7 @@ bmd-run:
 | `PUT /api/v1/structure-search-attempts/{attempt_id}/promotion` | `submit` | Acknowledge the resource request and promote a `STAGED` attempt to submission-ready (`PREPARED` / `SEARCH_PREPARED`); idempotent; never submits |
 | `PUT /api/v1/structure-search-attempts/{attempt_id}/submission` | `submit` | Submit a `PREPARED` attempt to SLURM at most once (`SUBMITTED` / `SEARCH_SUBMITTED`), or reconcile an uncertain submission read-only; never resubmits |
 | `POST /api/v1/structure-search-attempts/{attempt_id}/observations` | `read` | Observe a submitted search once on POWER (read-only) and append the evidence; rate-limited |
-| `PUT /api/v1/structure-search-attempts/{attempt_id}/cancellation` | `submit` | Request cancellation of a submitted search's job; `scancel` by exact job ID after verifying its identity; repeatable |
+| `PUT /api/v1/structure-search-attempts/{attempt_id}/cancellation` | `cancel` | Request cancellation of a submitted search's job; `scancel` by exact job ID after verifying its identity; repeatable |
 | `PUT /api/v1/structure-search-attempts/{attempt_id}/submission/remote-record` | `submit` | Complete a lost `SEARCH_SUBMITTED` record for a `SUBMITTED` attempt after verifying its job against SLURM; idempotent; never submits |
 | `PUT /api/v1/attempts/{attempt_id}` | `prepare` (prepare only) or `submit` (prepare and submit) | Prepare, or prepare and submit, one calculation; idempotent per attempt ID |
 | `GET /api/v1/attempts/{attempt_id}` | `read` | The attempt's authoritative state, job identity and scheduler state |
@@ -22,7 +22,8 @@ bmd-run:
 `identity`, `plans` and `structure-search-plans` never contact POWER. The attempt routes use Compute's
 existing remote preparation, submission and monitoring machinery with
 server-owned connection profiles; see [Execution](#execution). There is no
-machine route for cancellation or result retrieval. The browser routes are
+machine route for cancelling a calculation or retrieving results (structure
+searches have their own cancellation route, scope `cancel`). The browser routes are
 unchanged and do not use this authentication. The API is not listed in
 `/openapi.json`.
 
@@ -86,9 +87,12 @@ store named by `BMD_API_TOKENS_FILE` on every request:
   at most 64 KiB, owned by the service account and not readable or writable by
   group or others (POSIX). Otherwise the API answers 503 `api_not_configured`.
 - Only the SHA-256 verifier is stored. Verifiers are compared in constant time.
-- Scope vocabulary: `read`, `plan`, `prepare`, `submit`. An unknown scope makes
-  the whole file invalid. `plan` never grants execution: `prepare`, `submit`
-  and `read` are separate scopes (see [Execution](#execution)).
+- Scope vocabulary: `read`, `plan`, `prepare`, `submit`, `cancel`. An unknown
+  scope makes the whole file invalid. `plan` never grants execution: `prepare`,
+  `submit` and `read` are separate scopes (see [Execution](#execution)).
+  `cancel` is separate from `submit`: a token that may submit cannot cancel
+  without `cancel`, and `cancel` grants nothing else. Cancellation is still
+  limited to the attempt's owner and its own recorded job ID.
 - Setting `enabled` to `false`, or removing an entry, revokes a token on the
   next request.
 - Generate a token with `python -m compute_api.tokens --principal NAME --scope
@@ -297,6 +301,19 @@ as abandoned, and preparation continues in `preparation-<n+1>`. A damaged
 `PREPARED_LOCALLY` attempt gives 409 `preparation_damaged` and is not
 replaced. Nothing is ever overwritten or deleted, and there is no automatic
 clean-up yet.
+
+## Structure-search execution setting
+
+Every structure-search route that writes to POWER or submits (staging,
+promotion, submission, completing a lost remote record) answers 503
+`structure_search_execution_disabled` and changes nothing unless the service
+was started with `BMD_STRUCTURE_SEARCH_EXECUTION=enabled` (exactly that value).
+The check comes after authentication and the scope check. Production leaves
+it unset: USPEX searches stay experimental and the browser page is a preview.
+Planning, local preparation, observation and cancellation are not gated, so
+that a search already submitted can always be observed and stopped. The
+validation kit (`reference/uspex_pilot/staging_validation/`) enables it only
+for its own in-process service.
 
 ## Structure-search staging (remote, step 4C)
 
@@ -760,7 +777,7 @@ from the last observation; `scientific_validity` stays `not_assessed`.
 ### Cancellation
 
 `PUT /api/v1/structure-search-attempts/{attempt_id}/cancellation` (scope
-`submit`, the owner), body exactly `{"expected_plan_digest": "sha256:...",
+`cancel`, the owner), body exactly `{"expected_plan_digest": "sha256:...",
 "job_id": "<digits>", "confirm": true}` (422 otherwise). Local checks: plan
 digest, the recorded job ID (409 `job_id_mismatch`), `SUBMITTED` or
 `CANCEL_REQUESTED` (409 `attempt_terminal`, `submission_uncertain`,

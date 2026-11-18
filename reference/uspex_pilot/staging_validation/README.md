@@ -186,8 +186,9 @@ promotion code: a new validation root, steps B0–B4 with the 4D-2 commit, then:
 Expected: `promote` prints the attempt, run name and job script SHA-256;
 `EVIDENCE CHECKS PASSED` with `remote state:  SEARCH_PREPARED`. A 503 is
 retried by running C1 again (it resumes the same promotion); any 409 is a
-finding. The validation token has `submit` scope for promotion; the kit calls
-no submission route. The staged and promoted run stays on POWER as evidence;
+finding. The validation token has `submit` scope for promotion (and, since the
+dedicated cancellation scope, `cancel` for part D); the kit calls no submission
+route here. The staged and promoted run stays on POWER as evidence;
 it can only be submitted by a later step, after a fresh verification.
 
 ## D. Controlled submission and cancellation acceptance (steps 4D-3 and 4D-4; VM, bash)
