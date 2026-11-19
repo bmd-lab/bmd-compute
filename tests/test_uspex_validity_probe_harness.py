@@ -89,11 +89,54 @@ def _fake_probe(tmp_path: Path, injections: str, *, step_validity: bool = True, 
     return work, status
 
 
+# Launcher journal fields shown in a failure message: step identity and outcome only (no environment).
+_EVENT_FIELDS = ("time", "event", "id", "step", "slot", "calcfold", "returncode", "status", "reason")
+
+
+def _probe_evidence(work: Path) -> str:
+    """The probe's own records, for an assertion message only (evaluated only when the assertion fails).
+
+    CI run 44397423332 listed exit7_step3 twice and its log held nothing else. This shows, from the
+    probe's work directory only: every VASP call in calls.tsv; the calls that were *eligible* for each
+    injection (attempts: inject_vasp.sh tries to claim exit7_step3 only for a step-3 call whose VASP exited
+    0, and nelm_step2 for a step-2 call) apart from those that *claimed* it (only a call whose atomic
+    ``mkdir claimed_<name>`` succeeded is marked injected); injections.tsv; the claim directories with their
+    creation times; and the launcher's step events, reduced to identity and outcome fields.
+    """
+
+    state, spool = work / "probe_state", work / "spool"
+    parts = []
+    calls = analysis.read_calls(state)
+    parts.append("--- calls.tsv\n" + ((state / "calls.tsv").read_text(errors="replace")
+                                       if (state / "calls.tsv").is_file() else "(absent)\n"))
+    eligible = {"exit7_step3": [c for c in calls if c["step"] == 3 and c["vasp_status"] == "0"],
+                "nelm_step2": [c for c in calls if c["step"] == 2]}
+    for name, attempts in eligible.items():
+        claimed = [c for c in calls if c["injected"] == name]
+        parts.append(f"--- {name}: eligible (attempted) {[(c['calcfold'], c['started']) for c in attempts]}; "
+                     f"claimed {[(c['calcfold'], c['started'], c['finished']) for c in claimed]}")
+    path = state / "injections.tsv"
+    parts.append("--- injections.tsv\n" + (path.read_text(errors="replace") if path.is_file() else "(absent)\n"))
+    claims = sorted(p for p in state.iterdir() if p.name.startswith("claimed_")) if state.is_dir() else []
+    parts.append("--- claim directories: " + ", ".join(f"{p.name} (mtime {p.stat().st_mtime:.3f})" for p in claims))
+    events = []
+    journal = spool / "launcher.jsonl"
+    for line in (journal.read_text(errors="replace").splitlines() if journal.is_file() else []):
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("event") in ("started_step", "finished", "rejected", "recovered", "start_failed", "abandoned"):
+            events.append(json.dumps({k: event[k] for k in _EVENT_FIELDS if k in event}, sort_keys=True))
+    parts.append("--- launcher step events\n" + "\n".join(events))
+    return "\n".join(parts)
+
+
 def test_each_injection_happens_once_and_is_reported_as_failure(tmp_path):
     work, status = _fake_probe(tmp_path, "nelm_step2,exit7_step3")
     assert status == 0
     injections = (work / "probe_state" / "injections.tsv").read_text().splitlines()
-    assert sorted(line.split("\t")[3] for line in injections) == ["exit7_step3", "nelm_step2"]
+    assert sorted(line.split("\t")[3] for line in injections) == ["exit7_step3", "nelm_step2"], _probe_evidence(work)
     report = analysis.analyse(work)
     by_kind = {item["injection"]: item for item in report["injections"]}
     nelm, exit7 = by_kind["nelm_step2"], by_kind["exit7_step3"]
@@ -130,7 +173,7 @@ def test_each_injection_happens_once_and_is_reported_as_failure(tmp_path):
 def test_status_only_mode_leaves_the_files_in_place(tmp_path):
     work, _ = _fake_probe(tmp_path, "exit7_step3", step_validity=False)
     report = analysis.analyse(work)
-    assert [item["injection"] for item in report["injections"]] == ["exit7_step3"]
+    assert [item["injection"] for item in report["injections"]] == ["exit7_step3"], _probe_evidence(work)
     folder = work / "search" / "Calculation" / report["injections"][0]["calcfold"]
     assert (folder / "OUTCAR").is_file() and (folder / "CONTCAR").is_file()
     assert report["validity_archive"] == []
