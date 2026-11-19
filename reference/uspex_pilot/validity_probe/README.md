@@ -50,8 +50,10 @@ distinguishes:
 
 ## Injections
 
-Each is applied to exactly one step of one candidate per run. `mkdir` in
-`probe_state/` claims it atomically, so concurrent steps cannot both take it
+Each is applied to exactly one step of one candidate per run. An exclusive
+create of `probe_state/claimed_<name>` (the shell's noclobber, `O_EXCL`; not
+`mkdir`, which is not exclusive under concurrency in uutils coreutils) claims it
+atomically, so concurrent steps cannot both take it
 and a retry of the same candidate is not injected again.
 
 | MODE | Injection | Expected bridge status |

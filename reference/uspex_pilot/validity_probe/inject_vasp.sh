@@ -11,9 +11,13 @@
 # shows retries (the same POSCAR run again at the same step).
 #
 # Injections, listed in $BMD_PROBE_INJECTIONS (comma-separated), each applied
-# to exactly one step of one candidate per probe run ("mkdir" in
-# $BMD_PROBE_STATE claims it atomically, so concurrent calls cannot both
-# take it, and a later retry of the same candidate is not injected again):
+# to exactly one step of one candidate per probe run. A call claims an
+# injection by creating $BMD_PROBE_STATE/claimed_<name> with the shell's own
+# exclusive create (noclobber: open with O_CREAT|O_EXCL), so concurrent calls
+# cannot both take it, and a later retry of the same candidate is not injected
+# again. Not "mkdir": the uutils (Rust) mkdir of newer Ubuntu releases reports
+# success when a concurrent mkdir has just created the directory, and two calls
+# both claimed exit7_step3 on GitHub Actions (PR #83, run 44600410654):
 #
 #   nelm_step2   the first step-2 request runs with "NELM = 3" in its INCAR:
 #                a genuine electronic non-convergence. VASP exits 0; the
@@ -34,7 +38,7 @@ state=${BMD_PROBE_STATE:?BMD_PROBE_STATE is not set}
 injections=",${BMD_PROBE_INJECTIONS:-},"
 
 wants() { case $injections in *",$1,"*) return 0 ;; esac; return 1; }
-claim() { mkdir "$state/claimed_$1" 2>/dev/null; }
+claim() { ( set -C; : > "$state/claimed_$1" ) 2>/dev/null; }
 
 calcfold=$(pwd -P)
 name=$(basename "$calcfold")

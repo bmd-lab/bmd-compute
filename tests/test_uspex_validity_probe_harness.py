@@ -99,9 +99,9 @@ def _probe_evidence(work: Path) -> str:
     CI run 44397423332 listed exit7_step3 twice and its log held nothing else. This shows, from the
     probe's work directory only: every VASP call in calls.tsv; the calls that were *eligible* for each
     injection (attempts: inject_vasp.sh tries to claim exit7_step3 only for a step-3 call whose VASP exited
-    0, and nelm_step2 for a step-2 call) apart from those that *claimed* it (only a call whose atomic
-    ``mkdir claimed_<name>`` succeeded is marked injected); injections.tsv; the claim directories with their
-    creation times; and the launcher's step events, reduced to identity and outcome fields.
+    0, and nelm_step2 for a step-2 call) apart from those that *claimed* it (only a call whose exclusive
+    create of ``claimed_<name>`` succeeded is marked injected); injections.tsv; the claim markers with their
+    times; and the launcher's step events, reduced to identity and outcome fields.
     """
 
     state, spool = work / "probe_state", work / "spool"
@@ -118,7 +118,7 @@ def _probe_evidence(work: Path) -> str:
     path = state / "injections.tsv"
     parts.append("--- injections.tsv\n" + (path.read_text(errors="replace") if path.is_file() else "(absent)\n"))
     claims = sorted(p for p in state.iterdir() if p.name.startswith("claimed_")) if state.is_dir() else []
-    parts.append("--- claim directories: " + ", ".join(f"{p.name} (mtime {p.stat().st_mtime:.3f})" for p in claims))
+    parts.append("--- claim markers: " + ", ".join(f"{p.name} (mtime {p.stat().st_mtime:.3f})" for p in claims))
     events = []
     journal = spool / "launcher.jsonl"
     for line in (journal.read_text(errors="replace").splitlines() if journal.is_file() else []):
@@ -130,6 +130,81 @@ def _probe_evidence(work: Path) -> str:
             events.append(json.dumps({k: event[k] for k in _EVENT_FIELDS if k in event}, sort_keys=True))
     parts.append("--- launcher step events\n" + "\n".join(events))
     return "\n".join(parts)
+
+
+# -- the injection claim is exclusive, whatever "mkdir" the system has -----------------------------------------
+#
+# CI run 44600410654 (PR #83): two concurrent step-3 calls both claimed exit7_step3 and reported 7, with one
+# claimed_exit7_step3 directory left. The claim was "mkdir", and the uutils (Rust) mkdir of newer Ubuntu
+# releases returns success when a concurrent mkdir has just created the directory (reproduced: 162 of 300
+# simultaneous pairs with uutils 0.0.24; none with GNU coreutils). The claim is now the shell's own exclusive
+# create, which does not run mkdir at all.
+
+INJECT = PROBE / "inject_vasp.sh"
+# A mkdir that never refuses an existing directory: the outcome uutils' mkdir gives under the race, made
+# deterministic. Put first on PATH, it must not let a second call claim an injection.
+NON_EXCLUSIVE_MKDIR = '#!/bin/sh\n/bin/mkdir -p "$@" 2>/dev/null\nexit 0\n'
+
+
+def _wrapper(state: Path, calcfold: Path, path: str, release: Path) -> subprocess.Popen:
+    """inject_vasp.sh for one step-3 call whose "VASP" exits 0 as soon as ``release`` exists."""
+
+    calcfold.mkdir(parents=True)
+    environment = {"PATH": path, "BMD_PROBE_STATE": str(state), "BMD_PROBE_INJECTIONS": "exit7_step3"}
+    return subprocess.Popen(["sh", str(INJECT), "3", "sh", "-c", 'while [ ! -e "$0" ]; do sleep 0.001; done',
+                             str(release)], cwd=calcfold, env=environment)
+
+
+def _claims(state: Path) -> list[str]:
+    return [line.split("\t")[2] for line in (state / "calls.tsv").read_text().splitlines()
+            if line.split("\t")[5] == "exit7_step3"]
+
+
+@pytest.mark.parametrize("non_exclusive_mkdir", [False, True], ids=["system-mkdir", "non-exclusive-mkdir"])
+def test_one_call_claims_an_injection_even_when_mkdir_would_not_refuse(tmp_path, non_exclusive_mkdir):
+    path = "/usr/bin:/bin"
+    if non_exclusive_mkdir:
+        fake = tmp_path / "bin"
+        fake.mkdir()
+        (fake / "mkdir").write_text(NON_EXCLUSIVE_MKDIR)
+        (fake / "mkdir").chmod(0o755)
+        path = f"{fake}:{path}"
+    state = tmp_path / "state"
+    state.mkdir()
+    # One after the other: deterministic. With a non-exclusive mkdir as the claim, both would be injected.
+    marker = state / "claimed_exit7_step3"
+    for name in ("Calcfold_1_3", "Calcfold_2_3"):
+        release = tmp_path / f"go_{name}"
+        release.touch()
+        assert _wrapper(state, tmp_path / "seq" / name, path, release).wait(timeout=30) in (0, 7)
+        if name == "Calcfold_1_3":
+            marker.write_text("claimed by the first call\n")  # a failed claim must leave it as it is
+            before = (marker.stat().st_ino, marker.stat().st_mtime_ns, marker.read_bytes())
+    assert (marker.stat().st_ino, marker.stat().st_mtime_ns, marker.read_bytes()) == before
+    assert _claims(state) == ["Calcfold_1_3"]
+    statuses = [line.split("\t")[7] for line in (state / "calls.tsv").read_text().splitlines()]
+    assert statuses == ["7", "0"]
+    assert [line.split("\t")[3] for line in (state / "injections.tsv").read_text().splitlines()] == ["exit7_step3"]
+
+
+@pytest.mark.parametrize("non_exclusive_mkdir", [False, True], ids=["system-mkdir", "non-exclusive-mkdir"])
+def test_simultaneous_calls_claim_an_injection_once(tmp_path, non_exclusive_mkdir):
+    path = "/usr/bin:/bin"
+    if non_exclusive_mkdir:
+        fake = tmp_path / "bin"
+        fake.mkdir()
+        (fake / "mkdir").write_text(NON_EXCLUSIVE_MKDIR)
+        (fake / "mkdir").chmod(0o755)
+        path = f"{fake}:{path}"
+    for round_ in range(20):
+        state = tmp_path / f"state{round_}"
+        state.mkdir()
+        release = tmp_path / f"go{round_}"
+        wrappers = [_wrapper(state, tmp_path / f"r{round_}" / name, path, release)
+                    for name in ("Calcfold_1_3", "Calcfold_2_3")]
+        release.touch()  # both "VASP" runs end together: the claims race
+        assert sorted(w.wait(timeout=30) for w in wrappers) == [0, 7]
+        assert len(_claims(state)) == 1, round_
 
 
 def test_each_injection_happens_once_and_is_reported_as_failure(tmp_path):
