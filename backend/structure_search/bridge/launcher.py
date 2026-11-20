@@ -16,6 +16,21 @@ allocation, and runs VASP for each request:
 * before each run, append the exact command, the variables the launcher set
   and the slot index to ``<CalcFold>/bmd_launch.jsonl``, so core placement can
   be checked afterwards against the ``I_MPI_DEBUG=4`` report in the step log
+* after VASP exits, check the step's validity
+  (``backend.structure_search.step_validity``): a step that exited 0 but
+  failed the lab's convergence criteria, or whose evidence is missing or
+  malformed, is reported with status 118 or 119 instead of 0. For every step
+  that does not count, the files USPEX reads (OUTCAR, OSZICAR, CONTCAR,
+  vasprun.xml) are archived unchanged under
+  ``<search>/bmd_step_validity/<id>/`` and renamed in the CalcFold, so
+  USPEX cannot read an energy from them. Every step's verdict is appended to
+  ``<CalcFold>/bmd_step_validity.jsonl``
+* commit the step's scientific evidence (the verdict as the checker returned
+  it, the input POSCAR and output CONTCAR with their SHA-256, the step log's
+  hash) to the append-only archive ``<search>/bmd_evidence/``
+  (``evidence_archive``), outside the CalcFolds USPEX removes, before the
+  done file: USPEX cannot read the result or remove the CalcFold until then.
+  A failure to archive is journaled and never changes the step's status
 * write ``<spool>/done/<id>.done`` with the exit status, which releases the
   waiting bridge script
 * stop a step when its bridge gives up (``<spool>/cancel/<id>``)
@@ -52,6 +67,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -59,7 +75,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
-from backend.structure_search.bridge import protocol
+from backend.structure_search import step_validity
+from backend.structure_search.bridge import evidence_archive, protocol
 from backend.structure_search.bridge.protocol import StepRequest
 
 
@@ -91,6 +108,8 @@ MPI_ENVIRONMENT_OVERRIDES = {"I_MPI_DEBUG": "4"}
 FORBIDDEN_STEP_ENVIRONMENT = ("I_MPI_PIN_DOMAIN",)
 EXIT_COMMAND_NOT_STARTED = 127
 LAUNCH_RECORD_FILE = "bmd_launch.jsonl"
+CRITICAL_MARKER = "BMD-LAUNCHER-CRITICAL"
+"""Prefix of a line on the launcher's stderr (the job's SLURM output) when the journal itself cannot be written."""
 
 _MEMORY_PATTERN = re.compile(r"^[1-9][0-9]*[KMGT]?$")
 
@@ -150,6 +169,151 @@ def slurm_job_environment(source: Mapping[str, str]) -> dict[str, str]:
     """
 
     return {key: value for key, value in source.items() if key.startswith("SLURM_")}
+
+
+class NodeMemoryUnavailable(ValueError):
+    """The memory allocated to this job on its node could not be established reliably."""
+
+
+@dataclass(frozen=True)
+class NodeMemory:
+    """Memory SLURM allocated to the job on this node, in MB, and where that figure came from."""
+
+    mb: int
+    source: str
+    detail: str
+
+
+_POSITIVE_INTEGER = re.compile(r"^[1-9][0-9]*$")
+_SLURM_MEMORY = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([KMGTP]?)$")
+_SLURM_MEMORY_FACTOR_MB = {"K": 1 / 1024, "": 1, "M": 1, "G": 1024, "T": 1024 ** 2, "P": 1024 ** 3}
+
+
+def _slurm_memory_mb(value: str) -> int | None:
+    """MB of a SLURM memory value such as ``512000``, ``500G`` or ``1.5T`` (bare numbers are MB)."""
+
+    match = _SLURM_MEMORY.match(str(value).strip())
+    if not match:
+        return None
+    return int(float(match.group(1)) * _SLURM_MEMORY_FACTOR_MB[match.group(2)])
+
+
+def node_memory_from_environment(environment: Mapping[str, str]) -> NodeMemory | None:
+    """Node memory from the job's SLURM variables, or None if they give no amount.
+
+    ``SLURM_MEM_PER_NODE`` is used when it is a positive number of MB. Under
+    ``--mem=0`` ("all the node's memory") it may be ``0`` or absent: that is
+    not an amount, so the caller must look elsewhere (``allocated_node_memory``).
+    ``SLURM_MEM_PER_CPU`` times ``SLURM_CPUS_ON_NODE`` covers jobs that request
+    memory per CPU. Any other value is refused rather than guessed.
+    """
+
+    per_node = environment.get("SLURM_MEM_PER_NODE")
+    if per_node is not None and per_node != "0":
+        if not _POSITIVE_INTEGER.match(per_node):
+            raise NodeMemoryUnavailable(f"SLURM_MEM_PER_NODE={per_node!r} is not a number of MB.")
+        return NodeMemory(int(per_node), "SLURM_MEM_PER_NODE", f"SLURM_MEM_PER_NODE={per_node}")
+    per_cpu, cpus = environment.get("SLURM_MEM_PER_CPU"), environment.get("SLURM_CPUS_ON_NODE")
+    if per_cpu is not None and per_cpu != "0":
+        if not _POSITIVE_INTEGER.match(per_cpu) or not _POSITIVE_INTEGER.match(str(cpus or "")):
+            raise NodeMemoryUnavailable(
+                f"SLURM_MEM_PER_CPU={per_cpu!r} with SLURM_CPUS_ON_NODE={cpus!r} does not give an amount."
+            )
+        return NodeMemory(int(per_cpu) * int(cpus), "SLURM_MEM_PER_CPU",
+                          f"SLURM_MEM_PER_CPU={per_cpu} x SLURM_CPUS_ON_NODE={cpus}")
+    return None
+
+
+def _scontrol_show_job(job_id: str, environment: Mapping[str, str]) -> str | None:
+    import shutil
+
+    scontrol = shutil.which("scontrol", path=environment.get("PATH"))
+    if scontrol is None:
+        return None
+    try:
+        completed = subprocess.run([scontrol, "-o", "show", "job", job_id], capture_output=True, text=True,
+                                   timeout=60, check=False, env=dict(environment))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return completed.stdout if completed.returncode == 0 else None
+
+
+def node_memory_from_job_record(text: str, job_id: str) -> NodeMemory | None:
+    """The memory SLURM allocated to this job, from ``scontrol -o show job``: AllocTRES ``mem=``.
+
+    Only an allocation counts, never a request. ``AllocTRES`` lists what
+    SLURM actually allocated to a running job; under ``--mem=0`` it carries
+    the node's memory when SLURM tracks memory. ``MinMemoryNode`` is the
+    job's *request*: under ``--mem=0`` it is the literal ``0`` ("all memory",
+    not an amount), and it is never used as the amount. It is only a
+    cross-check: a positive ``MinMemoryNode`` that differs from the
+    allocation makes the record ambiguous. Returns None (the caller fails
+    closed) unless the record is exactly one line for this job, ``RUNNING``,
+    on exactly one node, with one positive ``mem=`` allocation consistent
+    with any positive request.
+    """
+
+    lines = [line for line in (text or "").splitlines() if f"JobId={job_id} " in f"{line} "]
+    if len(lines) != 1:
+        return None
+    items = [item.split("=", 1) for item in lines[0].split() if "=" in item]
+    names = [name for name, _ in items]
+    if any(names.count(name) > 1 for name in ("JobState", "NumNodes", "AllocTRES", "MinMemoryNode")):
+        return None
+    fields = dict(items)
+    if fields.get("JobState") != "RUNNING" or fields.get("NumNodes") != "1":
+        return None
+    tres_items = [item.split("=", 1) for item in fields.get("AllocTRES", "").split(",") if "=" in item]
+    memory_values = [value for name, value in tres_items if name == "mem"]
+    if len(memory_values) != 1:
+        return None
+    allocated = _slurm_memory_mb(memory_values[0])
+    if allocated is None or allocated < 1:
+        return None
+    requested = fields.get("MinMemoryNode")
+    if requested is not None:
+        requested_mb = _slurm_memory_mb(requested)
+        if requested_mb is None or (requested_mb >= 1 and requested_mb != allocated):
+            return None  # an unreadable request, or a positive request the allocation contradicts
+    return NodeMemory(
+        allocated,
+        "scontrol AllocTRES mem",
+        f"scontrol show job {job_id}: AllocTRES mem={memory_values[0]}"
+        + (f", MinMemoryNode={requested}" if requested is not None else ""),
+    )
+
+
+def allocated_node_memory(environment: Mapping[str, str], *, show_job=_scontrol_show_job) -> NodeMemory:
+    """The memory SLURM allocated to this job on its node. Raises :class:`NodeMemoryUnavailable`.
+
+    Authoritative SLURM information only, never a configured or measured node
+    size: the job's ``SLURM_MEM_PER_NODE`` (or per-CPU) variables when they
+    give an amount, otherwise, as under an exclusive ``--mem=0`` allocation,
+    the memory allocated to the running job in its own record from
+    ``scontrol show job`` (AllocTRES; a request such as ``MinMemoryNode`` is
+    never taken as an allocation).
+    """
+
+    from_environment = node_memory_from_environment(environment)
+    if from_environment is not None:
+        return from_environment
+    job_id = str(environment.get("SLURM_JOB_ID") or "")
+    if not _POSITIVE_INTEGER.match(job_id):
+        raise NodeMemoryUnavailable(
+            "SLURM_MEM_PER_NODE gives no amount and there is no SLURM_JOB_ID to ask SLURM for the allocation."
+        )
+    record = show_job(job_id, environment)
+    if record is None:
+        raise NodeMemoryUnavailable(
+            f"SLURM_MEM_PER_NODE gives no amount and 'scontrol show job {job_id}' did not answer."
+        )
+    memory = node_memory_from_job_record(record, job_id)
+    if memory is None:
+        raise NodeMemoryUnavailable(
+            f"SLURM reports no unambiguous memory allocation for running job {job_id} "
+            "(AllocTRES mem=); per-step --mem cannot be set reliably."
+        )
+    return memory
 
 
 def default_step_memory_mb(node_memory_mb: int, max_parallel: int, margin_fraction: float) -> int:
@@ -224,9 +388,10 @@ class LauncherSettings:
         together on separate cores. If ``mem`` is not given it defaults to
         the node memory less ``memory_margin_fraction``, divided by
         ``max_parallel``. Node memory is ``node_memory_mb`` or, if that is
-        not given, ``SLURM_MEM_PER_NODE`` from ``environment`` (under
-        ``--mem=0`` SLURM reports the node's memory there; not yet checked
-        on POWER, so prefer passing ``node_memory_mb``).
+        not given, what the job's SLURM variables report
+        (``node_memory_from_environment``). Under ``--mem=0`` those may give
+        no amount; a job then passes ``node_memory_mb`` from
+        ``allocated_node_memory``, which asks SLURM for the allocation.
         Confirmed on POWER (#59, 4 Nov 2026): ``srun --exact --mpi=pmi2 -n 4
         --mem=8G vasp_std`` inside a shared allocation started 4 VASP ranks
         on separate cores with the same energy as ``mpirun``. That run had
@@ -245,6 +410,11 @@ class LauncherSettings:
         ``I_MPI_HYDRA_BOOTSTRAP=fork`` are not yet tested. Steps given fewer ranks
         by ``ranks_per_step`` use the first cores of their slot; more ranks
         than ``ranks`` are rejected.
+
+    ``step_validity`` (default on) applies the post-step validity check of
+    ``backend.structure_search.step_validity``. Turn it off only for
+    transport-only pilots; a search whose fitness values must be trusted
+    never runs without it.
 
     ``environment`` is the complete environment of the VASP steps (modules
     already loaded); nothing is inherited from the launcher's own process.
@@ -268,6 +438,7 @@ class LauncherSettings:
     poll_seconds: float = 1.0
     heartbeat_interval_seconds: float = 10.0
     kill_grace_seconds: float = 10.0
+    step_validity: bool = True
     step_mem: str | None = field(init=False)
     slot_first_cores: tuple[int, ...] | None = field(init=False)
 
@@ -323,14 +494,14 @@ class LauncherSettings:
     def _default_step_memory_mb(self) -> int:
         node_memory_mb = self.node_memory_mb
         if node_memory_mb is None:
-            reported = self.environment.get("SLURM_MEM_PER_NODE", "")
-            if not reported.isdigit() or int(reported) < 1:
-                raise ValueError(
-                    "srun_steps needs a per-step --mem: pass mem, or node_memory_mb, or an "
-                    "environment with SLURM_MEM_PER_NODE (concurrent steps without --mem run "
-                    "one after another, #59)"
+            reported = node_memory_from_environment(self.environment)
+            if reported is None:
+                raise NodeMemoryUnavailable(
+                    "srun_steps needs a per-step --mem: pass mem, or node_memory_mb (for a job, from "
+                    "allocated_node_memory), or an environment whose SLURM_MEM_PER_NODE gives an amount "
+                    "(concurrent steps without --mem run one after another, #59)"
                 )
-            node_memory_mb = int(reported)
+            node_memory_mb = reported.mb
         return default_step_memory_mb(node_memory_mb, self.max_parallel, self.memory_margin_fraction)
 
     def ranks_for_step(self, step: int) -> int:
@@ -365,6 +536,8 @@ class _RunningStep:
     process: subprocess.Popen
     log: IO[bytes]
     started_wall: float
+    input_structure: dict = field(default_factory=dict)
+    input_bytes: bytes | None = None
     stop_status: int | None = None
     stop_reason: str = ""
     kill_at: float | None = None
@@ -413,6 +586,7 @@ class Launcher:
             ranks_per_step={str(k): v for k, v in sorted(self.settings.ranks_per_step.items())},
             launch_mode=self.settings.launch_mode,
             mem=self.settings.step_mem,
+            step_validity=self.settings.step_validity,
             slot_cores=(
                 None
                 if self.settings.slot_first_cores is None
@@ -421,6 +595,13 @@ class Launcher:
         )
         if self._removed_environment:
             self.journal("environment_removed", names=self._removed_environment)
+        try:
+            recovered = evidence_archive.recover(evidence_archive.archive_root(self.settings.search_dir))
+        except OSError as exc:
+            self.journal("evidence_recovery_failed", error=f"{type(exc).__name__}: {exc}")
+        else:
+            if any(recovered.values()):
+                self.journal("evidence_recovered", **recovered)
 
         for path in sorted((self.spool / protocol.CLAIMED_DIR).iterdir()):
             request_id = protocol.request_id_from_filename(path.name)
@@ -552,6 +733,20 @@ class Launcher:
         else:
             status = protocol.EXIT_STOPPED
         running.log.close()
+        reason = running.stop_reason
+        validity = None
+        validity_line = None
+        if self.settings.step_validity:
+            validity, validity_line = self._check_validity(request_id, running, returncode)
+            if validity["classification"] != step_validity.VALID:
+                if status == 0:
+                    status = _VALIDITY_EXIT_STATUS[validity["classification"]]
+                if not reason:
+                    reason = "; ".join(validity["reasons"])
+        finished_wall = time.time()
+        evidence = self._archive_evidence(request_id, running, returncode=returncode, status=status,
+                                          reason=reason, validity=validity, validity_line=validity_line,
+                                          finished=finished_wall)
         self._write_done(
             request_id,
             status,
@@ -559,7 +754,9 @@ class Launcher:
             argv=running.argv,
             started=running.started_wall,
             returncode=returncode,
-            reason=running.stop_reason,
+            reason=reason,
+            validity=None if validity is None else validity["classification"],
+            evidence=evidence,
         )
         (self.spool / protocol.CLAIMED_DIR / f"{request_id}{protocol.REQUEST_SUFFIX}").unlink(
             missing_ok=True
@@ -574,8 +771,136 @@ class Launcher:
             status=status,
             returncode=returncode,
             seconds=round(time.time() - running.started_wall, 3),
-            reason=running.stop_reason,
+            reason=reason,
+            validity=None if validity is None else validity["classification"],
         )
+
+    def _check_validity(
+        self, request_id: str, running: _RunningStep, returncode: int | None
+    ) -> tuple[dict, str | None]:
+        """Classify a finished step, withhold its output if it does not count, record it.
+
+        Returns the verdict and the exact line appended to the CalcFold's record (None if
+        that append failed). Never raises: a failure of the check itself makes the step invalid.
+        """
+
+        try:
+            result = step_validity.evaluate_step(
+                running.request.step,
+                running.calcfold,
+                returncode=returncode,
+                stopped=running.stop_status is not None,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed
+            result = {
+                "step": running.request.step,
+                "classification": step_validity.INVALID_EVIDENCE,
+                "reasons": [f"validity check failed: {type(exc).__name__}: {exc}"],
+                "returncode": returncode,
+            }
+        result = {"id": request_id, "calcfold": str(running.calcfold), **result}
+        if result["classification"] != step_validity.VALID and returncode is not None:
+            # A process that never exited (abandoned at shutdown) may still be
+            # writing; its files are left alone.
+            archive = self.settings.search_dir / step_validity.ARCHIVE_DIR / request_id
+            try:
+                result["archived_to"] = str(archive)
+                result["files"] = step_validity.withhold_outputs(running.calcfold, archive, request_id)
+                step_validity.write_json_atomically(archive / "validity.json", result)
+            except OSError as exc:
+                result["withhold_error"] = f"{type(exc).__name__}: {exc}"
+        line: str | None = json.dumps(result, sort_keys=True, default=str)
+        try:
+            _append_line(running.calcfold / step_validity.CALCFOLD_RECORD_FILE, line)
+        except OSError as exc:
+            line = None
+            self.journal("validity_record_failed", id=request_id, error=str(exc))
+        self.journal(
+            "validity",
+            id=request_id,
+            step=running.request.step,
+            classification=result["classification"],
+            reasons=result.get("reasons", []),
+        )
+        return result, line
+
+    def _archive_evidence(
+        self,
+        request_id: str,
+        running: _RunningStep,
+        *,
+        returncode: int | None,
+        status: int,
+        reason: str,
+        validity: dict | None,
+        validity_line: str | None,
+        finished: float,
+    ) -> str | None:
+        """Commit the step's evidence record; return its SHA-256, or None if it could not be committed.
+
+        Runs before the done file is written. Never raises and never changes the step's status:
+        a missing record is reported (journal ``evidence_write_failed``) and shows up as missing
+        evidence in the post-run analysis.
+        """
+
+        try:
+            if returncode is None:
+                # A process that never exited may still be writing: its output is not read.
+                output, output_bytes = {"file": evidence_archive.OUTPUT_STRUCTURE, "present": False,
+                                         "reason": "not read: the step's process never exited"}, None
+            else:
+                source = running.calcfold / evidence_archive.OUTPUT_STRUCTURE
+                for entry in (validity or {}).get("files") or []:
+                    if entry.get("name") == evidence_archive.OUTPUT_STRUCTURE and entry.get("withheld_as"):
+                        source = running.calcfold / entry["withheld_as"]
+                output, output_bytes = evidence_archive.read_structure(
+                    source, name=evidence_archive.OUTPUT_STRUCTURE)
+                output["withheld"] = source.name != evidence_archive.OUTPUT_STRUCTURE
+            log_path = self.spool / protocol.LOGS_DIR / f"{request_id}.log"
+            try:
+                step_log = {"file": log_path.name, "bytes": log_path.stat().st_size,
+                            "sha256": evidence_archive.sha256_file(log_path)}
+            except OSError as exc:
+                step_log = {"file": log_path.name, "present": False, "reason": type(exc).__name__}
+            record = evidence_archive.build_record(
+                request_id=request_id, step=running.request.step, calcfold=running.calcfold,
+                created=running.request.created, slot=running.slot, argv=running.argv,
+                started=running.started_wall, finished=finished, returncode=returncode, status=status,
+                reason=reason, validity=validity, validity_record_line=validity_line, step_log=step_log,
+                input_structure=running.input_structure, output_structure=output,
+            )
+            files = {}
+            if running.input_bytes is not None:
+                files[evidence_archive.INPUT_STRUCTURE] = running.input_bytes
+            if output_bytes is not None:
+                files[evidence_archive.OUTPUT_STRUCTURE] = output_bytes
+            result = evidence_archive.commit(
+                evidence_archive.archive_root(self.settings.search_dir), record, files)
+        except Exception as exc:  # noqa: BLE001 - archiving must never change what USPEX is told
+            self._journal_or_report("evidence_write_failed", id=request_id, error=f"{type(exc).__name__}: {exc}")
+            return None
+        self._journal_or_report("evidence", id=request_id, step=running.request.step, outcome=result["outcome"],
+                                record_sha256=result["record_sha256"],
+                                input_sha256=running.input_structure.get("sha256"),
+                                output_sha256=output.get("sha256"))
+        return result["record_sha256"]
+
+    def _journal_or_report(self, event: str, **fields) -> None:
+        """Journal an evidence event; if the journal cannot be written, say so on stderr and carry on.
+
+        The step's status and done file never depend on this: the evidence path must not stop the
+        answer USPEX is waiting for. A line starting with :data:`CRITICAL_MARKER` lands in the job's
+        SLURM output, which the post-run collector copies and the analysis reads.
+        """
+
+        try:
+            self.journal(event, **fields)
+        except Exception as exc:  # noqa: BLE001
+            try:
+                print(f"{CRITICAL_MARKER}: could not journal {event} {json.dumps(fields, sort_keys=True, default=str)}"
+                      f": {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            except Exception:  # noqa: BLE001 - nothing further can be done without stopping the step
+                pass
 
     def _start_requests(self) -> None:
         requests_dir = self.spool / protocol.REQUESTS_DIR
@@ -653,6 +978,9 @@ class Launcher:
             _append_line(calcfold / LAUNCH_RECORD_FILE, json.dumps(launch_record, sort_keys=True))
         except OSError as exc:
             self.journal("launch_record_failed", id=request.request_id, error=str(exc))
+        # The input structure, as it is before VASP starts (VASP does not rewrite POSCAR).
+        input_structure, input_bytes = evidence_archive.read_structure(
+            calcfold / evidence_archive.INPUT_STRUCTURE, name=evidence_archive.INPUT_STRUCTURE)
         log = open(log_path, "ab")
         try:
             process = subprocess.Popen(
@@ -687,6 +1015,8 @@ class Launcher:
             process=process,
             log=log,
             started_wall=started,
+            input_structure=input_structure,
+            input_bytes=input_bytes,
         )
         self.journal(
             "started_step",
@@ -733,6 +1063,8 @@ class Launcher:
         started: float | None = None,
         returncode: int | None = None,
         reason: str = "",
+        validity: str | None = None,
+        evidence: str | None = None,
     ) -> None:
         lines = [f"status={status}", f"id={request_id}"]
         if request is not None:
@@ -743,6 +1075,10 @@ class Launcher:
             lines.append(f"returncode={returncode}")
         if started is not None:
             lines += [f"started={started:.3f}", f"finished={time.time():.3f}"]
+        if validity is not None:
+            lines.append(f"validity={validity}")
+        if evidence is not None:
+            lines.append(f"evidence={evidence}")
         if reason:
             lines.append("reason=" + reason.replace("\n", " "))
         protocol.write_atomically(self.spool, self._done_path(request_id), "\n".join(lines) + "\n")
@@ -766,6 +1102,15 @@ def _append_line(path: Path, line: str) -> None:
         os.write(descriptor, (line + "\n").encode("utf-8"))
     finally:
         os.close(descriptor)
+
+
+_VALIDITY_EXIT_STATUS = {
+    step_validity.INVALID_CONVERGENCE: protocol.EXIT_INVALID_CONVERGENCE,
+    step_validity.INVALID_EVIDENCE: protocol.EXIT_INVALID_EVIDENCE,
+    # A failed execution keeps VASP's own non-zero status; this is only used
+    # if a stopped step somehow reports 0.
+    step_validity.EXECUTION_FAILED: protocol.EXIT_STOPPED,
+}
 
 
 def _exit_status(returncode: int) -> int:
@@ -898,6 +1243,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("--heartbeat-interval-seconds", type=float, default=10.0)
     parser.add_argument("--kill-grace-seconds", type=float, default=10.0)
+    parser.add_argument(
+        "--no-step-validity",
+        action="store_true",
+        help="skip the post-step validity check (transport-only pilots; never for real searches)",
+    )
     args = parser.parse_args(argv)
 
     settings = LauncherSettings(
@@ -917,6 +1267,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         poll_seconds=args.poll_seconds,
         heartbeat_interval_seconds=args.heartbeat_interval_seconds,
         kill_grace_seconds=args.kill_grace_seconds,
+        step_validity=not args.no_step_validity,
     )
     event = threading.Event()
     install_stop_signal_handlers(event)
@@ -937,7 +1288,12 @@ __all__ = [
     "SRUN_COMMAND_TEMPLATE",
     "SRUN_STEPS",
     "cpu_range",
+    "NodeMemory",
+    "NodeMemoryUnavailable",
+    "allocated_node_memory",
     "default_step_memory_mb",
+    "node_memory_from_environment",
+    "node_memory_from_job_record",
     "pinned_slot_first_cores",
     "EXIT_COMMAND_NOT_STARTED",
     "FORBIDDEN_STEP_ENVIRONMENT",

@@ -63,6 +63,10 @@ EXIT_REJECTED = 122
 EXIT_STOPPED = 123
 EXIT_TIMEOUT = 124
 EXIT_SIGNAL = 143
+# The launcher's post-step validity check (backend.structure_search.step_validity):
+# VASP exited with status 0, but the step does not count as a fitness evaluation.
+EXIT_INVALID_CONVERGENCE = 118  # completed, but a convergence or energy criterion failed
+EXIT_INVALID_EVIDENCE = 119  # completed, but the evidence is missing or malformed
 
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 

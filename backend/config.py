@@ -149,7 +149,10 @@ USPEX_SANDBOX_DIR = _absolute_path_env(
 # Used as XDG_CACHE_HOME for the USPEX command only. The self-extracting
 # program unpacks itself once into <this>/uspex_sfx/<payload sha256>/.
 USPEX_CACHE_DIR_ENV = "BMD_USPEX_CACHE_DIR"
-USPEX_CACHE_DIR = _absolute_path_env(USPEX_CACHE_DIR_ENV, default="/bmd/shared/uspex_cache")
+# Production cache (approved 7 Nov 2026): private to bmdguest, because the
+# extractor creates a lock file in <cache>/uspex_sfx on every start and
+# bmdguest cannot write in /bmd/shared.
+USPEX_CACHE_DIR = _absolute_path_env(USPEX_CACHE_DIR_ENV, default="/bmd/bmdguest/uspex_cache")
 # The PAYLOAD_SHA256= value in the header of /opt/uspex/uspex (USPEX 25.0,
 # 11 November 2025). It identifies the program that searches run.
 USPEX_PAYLOAD_SHA256_ENV = "BMD_USPEX_PAYLOAD_SHA256"
@@ -203,10 +206,31 @@ STRUCTURE_SEARCH_CORES_PER_SOCKET = _positive_int_env(
 # SLURM --exclude for searches. compute-0-332 and compute-0-333 use NPS4
 # (8 NUMA domains of 24 cores), so the 2 x 96 layout above does not hold there.
 # Set to an empty string to exclude no nodes.
+# Remote staging of searches (USPEX step 4C). The search workspace is under
+# /bmd, the only path the USPEX container sees (-B /bmd); remote attempt
+# states stay with BMD's logs, in their own directory.
+STRUCTURE_SEARCH_WORKSPACE_DIR_ENV = "BMD_SEARCH_WORKSPACE_DIR"
+STRUCTURE_SEARCH_WORKSPACE_DIR = _absolute_path_env(
+    STRUCTURE_SEARCH_WORKSPACE_DIR_ENV, default="/bmd/bmdguest/searches"
+)
+STRUCTURE_SEARCH_LOGS_DIR_ENV = "BMD_SEARCH_LOGS_DIR"
+STRUCTURE_SEARCH_LOGS_DIR = _absolute_path_env(
+    STRUCTURE_SEARCH_LOGS_DIR_ENV, default="/bmd-db/guest/logs/structure_search"
+)
 STRUCTURE_SEARCH_EXCLUDED_NODES_ENV = "BMD_SEARCH_EXCLUDED_NODES"
 STRUCTURE_SEARCH_EXCLUDED_NODES = _text_env(
     STRUCTURE_SEARCH_EXCLUDED_NODES_ENV, default="compute-0-[332-333]", allow_empty=True
 )
+# The node: a whole exclusive node with all its memory (--exclusive --mem=0, the default), or a
+# share of one with an explicit memory request (no --exclusive, --mem=<amount>, e.g. 32G). A
+# shared node needs a positive amount and the srun_steps launch mode (SLURM places each step's
+# cores inside the job's allocation; mpirun_pinned assumes the whole node). POWER's
+# leeburton-pool shares nodes per core and per memory (CR_CORE_MEMORY, ConstrainCores and
+# ConstrainRAMSpace, checked 12 Nov 2026); its default is 1 GB per job.
+STRUCTURE_SEARCH_EXCLUSIVE_NODE_ENV = "BMD_SEARCH_EXCLUSIVE_NODE"
+STRUCTURE_SEARCH_EXCLUSIVE_NODE = _bool_env(STRUCTURE_SEARCH_EXCLUSIVE_NODE_ENV, default=True)
+STRUCTURE_SEARCH_JOB_MEMORY_ENV = "BMD_SEARCH_JOB_MEMORY"
+STRUCTURE_SEARCH_JOB_MEMORY = _text_env(STRUCTURE_SEARCH_JOB_MEMORY_ENV, default="0")
 
 DEFAULT_POTCAR_FUNCTIONAL = "PBE_64"
 POTCAR_LINK_MAP = {
@@ -289,7 +313,15 @@ __all__ = [
     "STRUCTURE_SEARCH_CORES_PER_SOCKET_ENV",
     "STRUCTURE_SEARCH_EXCLUDED_NODES",
     "STRUCTURE_SEARCH_EXCLUDED_NODES_ENV",
+    "STRUCTURE_SEARCH_EXCLUSIVE_NODE",
+    "STRUCTURE_SEARCH_EXCLUSIVE_NODE_ENV",
+    "STRUCTURE_SEARCH_JOB_MEMORY",
+    "STRUCTURE_SEARCH_JOB_MEMORY_ENV",
     "STRUCTURE_SEARCH_LAUNCH_MODE",
+    "STRUCTURE_SEARCH_LOGS_DIR",
+    "STRUCTURE_SEARCH_LOGS_DIR_ENV",
+    "STRUCTURE_SEARCH_WORKSPACE_DIR",
+    "STRUCTURE_SEARCH_WORKSPACE_DIR_ENV",
     "STRUCTURE_SEARCH_LAUNCH_MODES",
     "STRUCTURE_SEARCH_LAUNCH_MODE_ENV",
     "STRUCTURE_SEARCH_NODE_SOCKETS",

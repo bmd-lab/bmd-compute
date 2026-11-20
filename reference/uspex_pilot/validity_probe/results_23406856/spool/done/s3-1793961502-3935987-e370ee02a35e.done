@@ -1,0 +1,10 @@
+status=7
+id=s3-1793961502-3935987-e370ee02a35e
+step=3
+calcfold=/bmd/bmdguest/validation/uspex_validity_probe_20261106_a/search/Calculation/Calcfold_2_3
+command=/bmd/bmdguest/validation/bmd-compute-uspex-probe-20261106d/reference/uspex_pilot/validity_probe/inject_vasp.sh 3 srun --exact --mpi=pmi2 -n 4 --mem=8G vasp_std
+returncode=7
+started=1793961502.752
+finished=1793961645.251
+validity=execution_failed
+reason=VASP exited with status 7

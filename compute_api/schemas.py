@@ -33,6 +33,8 @@ MAX_CUSTOM_STAGES = 16
 MAX_MODIFIERS = 8
 MAX_IDENTIFIER_CHARS = 64
 STRUCTURE_FORMATS = ("poscar", "cif")
+# The New structure (USPEX) choice; see parse_structure_search_plan_request.
+STRUCTURE_SEARCH_OUTPUT = "new_structure"
 
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 _WALLTIME = re.compile(r"^[0-9]{1,4}:[0-5][0-9]:[0-5][0-9]$")
@@ -121,6 +123,11 @@ def parse_plan_request(document: Any) -> PlanRequest:
                 value = workflow["desired_output"]
                 if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
                     _error(errors, "workflow.desired_output", "must_be_identifier")
+                elif value == STRUCTURE_SEARCH_OUTPUT:
+                    # Formula-based structure prediction is not a structure-based
+                    # Desired Output; it is planned by /structure-search-plans and
+                    # cannot be prepared or submitted.
+                    _error(errors, "workflow.desired_output", "use_structure_search_plans")
                 else:
                     desired_output = value
             else:
@@ -269,3 +276,318 @@ def parse_execution_request(document: Any) -> ExecutionRequest:
         submit=submit,
         labels=labels,
     )
+
+
+# ------------------------------------------------------ structure-search plans
+
+SEARCH_PLAN_REQUEST_SCHEMA_VERSION = 1
+SEARCH_TOP_LEVEL_KEYS = frozenset({"formula", "search", "expected_plan_digest"})
+SEARCH_KEYS = frozenset({"min_atoms", "max_atoms", "num_generations", "walltime"})
+MAX_FORMULA_CHARS = 64
+# Request fields of the structure-based planner: a search starts from a formula.
+SEARCH_NOT_ACCEPTED_TOP_LEVEL = frozenset({"structure", "workflow", "resources"})
+# Search settings v1 fixes by policy (ambient pressure, non-magnetic plain PBE,
+# fixed composition, the BMD screening ladder and its k-point resolutions,
+# population rules): a request may not set them.
+SEARCH_FIXED_BY_POLICY = frozenset(
+    {
+        "external_pressure_gpa", "pressure", "theory", "spin_polarized", "magnetic", "magmom",
+        "calculation_type", "kresol_start", "kpoints", "incar", "potcar", "encut",
+        "population_size", "initial_population_size", "stop_criterion", "steps", "ladder",
+    }
+)
+
+
+@dataclass(frozen=True)
+class StructureSearchPlanRequestShape:
+    formula: str
+    search: dict[str, Any]
+    expected_plan_digest: str | None
+
+
+def parse_structure_search_plan_request(document: Any) -> StructureSearchPlanRequestShape:
+    """Validate a ``POST /api/v1/structure-search-plans`` body (shape only).
+
+    Request (``schema_version`` 1)::
+
+        {
+          "formula": "SiO2",                    # required chemical formula
+          "search": {"min_atoms": int, "max_atoms": int,
+                     "num_generations": int, "walltime": "H:MM:SS"},
+                                                # optional; every key optional;
+                                                # an omitted key takes the default
+          "expected_plan_digest": "sha256:..."  # optional; refused as stale if different
+        }
+
+    Whether the formula is readable and the search admissible is decided by
+    BMD Compute's search planning (formula reader, spec, admission), never here.
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    for key in sorted(set(document) - SEARCH_TOP_LEVEL_KEYS, key=str):
+        if key in SEARCH_NOT_ACCEPTED_TOP_LEVEL:
+            _error(errors, str(key), "not_accepted_for_structure_search")
+        elif key in SEARCH_FIXED_BY_POLICY:
+            _error(errors, str(key), "fixed_by_bmd_policy")
+        else:
+            _error(errors, str(key), "unknown_field")
+
+    formula = document.get("formula")
+    if "formula" not in document:
+        _error(errors, "formula", "required")
+    elif not isinstance(formula, str) or not formula.strip():
+        _error(errors, "formula", "must_be_nonempty_string")
+    elif len(formula) > MAX_FORMULA_CHARS:
+        _error(errors, "formula", "too_long")
+    elif any(ord(character) < 32 for character in formula):
+        _error(errors, "formula", "invalid_characters")
+
+    search: dict[str, Any] = {}
+    if "search" in document and document["search"] is not None:
+        value = document["search"]
+        if not isinstance(value, dict):
+            _error(errors, "search", "must_be_object")
+        else:
+            for key in sorted(set(value) - SEARCH_KEYS, key=str):
+                problem = "fixed_by_bmd_policy" if key in SEARCH_FIXED_BY_POLICY else "unknown_field"
+                _error(errors, f"search.{key}", problem)
+            for key in ("min_atoms", "max_atoms", "num_generations"):
+                if key in value:
+                    if not _strict_int(value[key]) or value[key] <= 0:
+                        _error(errors, f"search.{key}", "must_be_positive_integer")
+                    else:
+                        search[key] = value[key]
+            if "walltime" in value:
+                if not isinstance(value["walltime"], str) or not _WALLTIME.fullmatch(value["walltime"]):
+                    _error(errors, "search.walltime", "must_be_hh_mm_ss")
+                else:
+                    search["walltime"] = value["walltime"]
+
+    expected = None
+    if "expected_plan_digest" in document and document["expected_plan_digest"] is not None:
+        expected = document["expected_plan_digest"]
+        if not isinstance(expected, str) or not _PLAN_DIGEST.fullmatch(expected):
+            _error(errors, "expected_plan_digest", "must_be_sha256_digest")
+
+    if errors:
+        raise PlanRequestError(errors)
+    return StructureSearchPlanRequestShape(
+        formula=formula,
+        search=search,
+        expected_plan_digest=expected,
+    )
+
+
+def parse_structure_search_attempt_request(document: Any) -> StructureSearchPlanRequestShape:
+    """Validate a ``PUT /api/v1/structure-search-attempts/{id}`` body.
+
+    The same body as ``POST /structure-search-plans``, with
+    ``expected_plan_digest`` required. Submission is not available: a
+    ``submit`` field is refused.
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    rest = dict(document)
+    if "submit" in rest:
+        rest.pop("submit")
+        _error(errors, "submit", "submission_not_available")
+    shape = None
+    try:
+        shape = parse_structure_search_plan_request(rest)
+    except PlanRequestError as exc:
+        errors.extend(exc.errors)
+    if "expected_plan_digest" not in document or document.get("expected_plan_digest") is None:
+        _error(errors, "expected_plan_digest", "required")
+    if errors:
+        raise PlanRequestError(errors)
+    return shape
+
+
+@dataclass(frozen=True)
+class StructureSearchStagingRequestShape:
+    expected_plan_digest: str
+
+
+def parse_structure_search_staging_request(document: Any) -> StructureSearchStagingRequestShape:
+    """Validate a ``PUT /api/v1/structure-search-attempts/{id}/staging`` body.
+
+    ``{"expected_plan_digest": "sha256:..."}``: the digest of the attempt's
+    frozen plan, as returned when it was prepared. Nothing else is accepted;
+    in particular there is no ``submit``.
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    for key in sorted(set(document) - {"expected_plan_digest"}, key=str):
+        _error(errors, str(key), "submission_not_available" if key == "submit" else "unknown_field")
+    expected = document.get("expected_plan_digest")
+    if "expected_plan_digest" not in document or expected is None:
+        _error(errors, "expected_plan_digest", "required")
+    elif not isinstance(expected, str) or not _PLAN_DIGEST.fullmatch(expected):
+        _error(errors, "expected_plan_digest", "must_be_sha256_digest")
+    if errors:
+        raise PlanRequestError(errors)
+    return StructureSearchStagingRequestShape(expected_plan_digest=expected)
+
+
+@dataclass(frozen=True)
+class StructureSearchPromotionRequestShape:
+    expected_plan_digest: str
+    resources_sha256: str
+
+
+def parse_structure_search_promotion_request(document: Any) -> StructureSearchPromotionRequestShape:
+    """Validate a ``PUT /api/v1/structure-search-attempts/{id}/promotion`` body.
+
+    ``{"expected_plan_digest": "sha256:...", "resource_acknowledgement":
+    {"acknowledged": true, "resources_sha256": "sha256:..."}}``: the attempt's
+    plan digest and an explicit acknowledgement of exactly the provisional
+    resource request the attempt reports (``resources.resources_sha256``).
+    Nothing else is accepted; in particular there is no ``submit``.
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    for key in sorted(set(document) - {"expected_plan_digest", "resource_acknowledgement"}, key=str):
+        _error(errors, str(key), "submission_not_available" if key == "submit" else "unknown_field")
+    expected = document.get("expected_plan_digest")
+    if "expected_plan_digest" not in document or expected is None:
+        _error(errors, "expected_plan_digest", "required")
+    elif not isinstance(expected, str) or not _PLAN_DIGEST.fullmatch(expected):
+        _error(errors, "expected_plan_digest", "must_be_sha256_digest")
+    acknowledgement = document.get("resource_acknowledgement")
+    resources_sha256 = None
+    if not isinstance(acknowledgement, dict):
+        _error(errors, "resource_acknowledgement", "required" if acknowledgement is None else "must_be_object")
+    else:
+        for key in sorted(set(acknowledgement) - {"acknowledged", "resources_sha256"}, key=str):
+            _error(errors, f"resource_acknowledgement.{key}", "unknown_field")
+        if acknowledgement.get("acknowledged") is not True:
+            _error(errors, "resource_acknowledgement.acknowledged", "must_be_true")
+        resources_sha256 = acknowledgement.get("resources_sha256")
+        if not isinstance(resources_sha256, str) or not _PLAN_DIGEST.fullmatch(resources_sha256):
+            _error(errors, "resource_acknowledgement.resources_sha256", "must_be_sha256_digest")
+    if errors:
+        raise PlanRequestError(errors)
+    return StructureSearchPromotionRequestShape(expected_plan_digest=expected, resources_sha256=resources_sha256)
+
+
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True)
+class StructureSearchSubmissionRequestShape:
+    expected_plan_digest: str
+    job_script_sha256: str
+    resources_sha256: str
+
+
+def parse_structure_search_submission_request(document: Any) -> StructureSearchSubmissionRequestShape:
+    """Validate a ``PUT /api/v1/structure-search-attempts/{id}/submission`` body.
+
+    ``{"expected_plan_digest": "sha256:...", "job_script_sha256": "<64 hex>",
+    "resource_acknowledgement": {"acknowledged": true, "resources_sha256":
+    "sha256:..."}}``: the attempt's plan digest, the job script it was promoted
+    with, and again the explicit acknowledgement of exactly its resource
+    request. Nothing else is accepted.
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    allowed = {"expected_plan_digest", "job_script_sha256", "resource_acknowledgement"}
+    for key in sorted(set(document) - allowed, key=str):
+        _error(errors, str(key), "unknown_field")
+    expected = document.get("expected_plan_digest")
+    if not isinstance(expected, str) or not _PLAN_DIGEST.fullmatch(expected):
+        _error(errors, "expected_plan_digest", "required" if expected is None else "must_be_sha256_digest")
+    script = document.get("job_script_sha256")
+    if not isinstance(script, str) or not _SHA256_HEX.fullmatch(script):
+        _error(errors, "job_script_sha256", "required" if script is None else "must_be_sha256_hex")
+    acknowledgement = document.get("resource_acknowledgement")
+    resources_sha256 = None
+    if not isinstance(acknowledgement, dict):
+        _error(errors, "resource_acknowledgement", "required" if acknowledgement is None else "must_be_object")
+    else:
+        for key in sorted(set(acknowledgement) - {"acknowledged", "resources_sha256"}, key=str):
+            _error(errors, f"resource_acknowledgement.{key}", "unknown_field")
+        if acknowledgement.get("acknowledged") is not True:
+            _error(errors, "resource_acknowledgement.acknowledged", "must_be_true")
+        resources_sha256 = acknowledgement.get("resources_sha256")
+        if not isinstance(resources_sha256, str) or not _PLAN_DIGEST.fullmatch(resources_sha256):
+            _error(errors, "resource_acknowledgement.resources_sha256", "must_be_sha256_digest")
+    if errors:
+        raise PlanRequestError(errors)
+    return StructureSearchSubmissionRequestShape(expected_plan_digest=expected, job_script_sha256=script,
+                                                 resources_sha256=resources_sha256)
+
+
+_JOB_ID = re.compile(r"^[0-9]{1,20}$")
+
+
+@dataclass(frozen=True)
+class StructureSearchRemoteRecordRequestShape:
+    expected_plan_digest: str
+    job_id: str
+
+
+def parse_structure_search_remote_record_request(document: Any) -> StructureSearchRemoteRecordRequestShape:
+    """Validate a ``PUT /api/v1/structure-search-attempts/{id}/submission/remote-record`` body.
+
+    ``{"expected_plan_digest": "sha256:...", "job_id": "<digits>"}``: the
+    attempt's plan digest and the SLURM job ID its record already holds.
+    Nothing else is accepted.
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    for key in sorted(set(document) - {"expected_plan_digest", "job_id"}, key=str):
+        _error(errors, str(key), "unknown_field")
+    expected = document.get("expected_plan_digest")
+    if not isinstance(expected, str) or not _PLAN_DIGEST.fullmatch(expected):
+        _error(errors, "expected_plan_digest", "required" if expected is None else "must_be_sha256_digest")
+    job_id = document.get("job_id")
+    if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
+        _error(errors, "job_id", "required" if job_id is None else "must_be_slurm_job_id")
+    if errors:
+        raise PlanRequestError(errors)
+    return StructureSearchRemoteRecordRequestShape(expected_plan_digest=expected, job_id=job_id)
+
+
+@dataclass(frozen=True)
+class StructureSearchCancellationRequestShape:
+    expected_plan_digest: str
+    job_id: str
+
+
+def parse_structure_search_cancellation_request(document: Any) -> StructureSearchCancellationRequestShape:
+    """Validate a ``PUT /api/v1/structure-search-attempts/{id}/cancellation`` body.
+
+    ``{"expected_plan_digest": "sha256:...", "job_id": "<digits>", "confirm":
+    true}``: the attempt's plan digest, the exact SLURM job ID recorded for it,
+    and an explicit confirmation. Nothing else is accepted.
+    """
+
+    errors: list[dict[str, str]] = []
+    if not isinstance(document, dict):
+        raise PlanRequestError([{"field": "", "problem": "must_be_object"}])
+    for key in sorted(set(document) - {"expected_plan_digest", "job_id", "confirm"}, key=str):
+        _error(errors, str(key), "unknown_field")
+    expected = document.get("expected_plan_digest")
+    if not isinstance(expected, str) or not _PLAN_DIGEST.fullmatch(expected):
+        _error(errors, "expected_plan_digest", "required" if expected is None else "must_be_sha256_digest")
+    job_id = document.get("job_id")
+    if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
+        _error(errors, "job_id", "required" if job_id is None else "must_be_slurm_job_id")
+    if document.get("confirm") is not True:
+        _error(errors, "confirm", "must_be_true")
+    if errors:
+        raise PlanRequestError(errors)
+    return StructureSearchCancellationRequestShape(expected_plan_digest=expected, job_id=job_id)

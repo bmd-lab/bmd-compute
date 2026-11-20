@@ -417,3 +417,183 @@ packages or input-altering atomate2 settings differ from preparation.
 
 Output-writing flags (for example `LCHARG`, `LWAVE`, `LVTOT`, `LAECHG`, `LELF`)
 are not part of the declared methodology.
+
+## 10. Structure searches (USPEX) — provisional, not yet in use
+
+Status: **the five-step ladder is retained provisionally as the search's
+screening and ranking methodology (Lee Burton, 6 Nov 2026).** No structure
+search can be started from bmd-compute yet; the design is in
+`structure_search.md`. Execution status (7 Nov 2026): a frozen search plan
+can be staged on POWER and verified there, and promoted to submission-ready
+with its job script and resource acknowledgement (both validated for Si, plan
+`sha256:014ef52c…0ebbc`, 7 and 10 Nov 2026); managed submission, monitoring and cancellation passed an operational acceptance on POWER (10 Nov 2026, a 15-minute Si job cancelled before it started), Managed scientific execution (18 Nov 2026): a complete managed
+search (Si, shared-node profile 3 × 16 ranks, attempt 209898bc, job 23624369)
+ran USPEX 25.0 and its VASP ladder to natural completion on POWER and was
+accepted by the PI with a documented CPU-placement qualification; the
+independent analyser's result is INCOMPLETE EVIDENCE
+(`reference/uspex_pilot/execution_validation/ACCEPTANCE_209898bc.md`). This
+establishes that BMD Compute can run a managed search correctly; it does not
+validate USPEX's predictive methodology, which remains experimental. Between
+intermediate ladder steps USPEX itself changes the structure (strained cells,
+moved atoms); these changes are measured and reported and are accepted
+provisionally (decision D2, 17 Nov 2026), not validated. Staging changes no
+scientific input: the ladder, validity criteria and POTCARs below are what
+the plan records. The values here are implemented in
+`backend/structure_search/incar_policy.py` and `potcar.py` and pinned by
+golden files in `tests/fixtures/structure_search/`.
+
+Scope (`backend/structure_search/admission.py`, policy
+`bmd_compute.structure_search_admission` v2): fixed-composition,
+ambient-pressure (`ExternalPressure = 0`), non-magnetic, plain-PBE searches.
+Compositions are refused by BMD's own composition screens of section 2: the
+spin-polarisation screen, the DFT+U rule and the heavy-element SOC screen.
+DFT-D3 depends on bonded connectivity and cannot be screened before a search.
+
+Role of the ladder: **search-grade screening and ranking only.** It is not
+the BMD Standard Geometry Relaxation of section 3 and its energies are never
+reported as BMD final energies. The five lowest-energy structurally distinct
+candidates are to be refined afterwards with that adaptive protocol and
+ranked by consistent plain-PBE static energies (not implemented yet).
+
+History: the ladder was proposed on 5 Nov 2026 (#65, PR #74) with the rule
+
+> The final relaxation step must be consistent with the accuracy of BMD's
+> Geometry Optimisation already implemented in bmd-compute. Before that,
+> follow the USPEX default recommendations (manual §3.1).
+
+so step 4 uses the INCAR settings of BMD Geometry Optimisation pass 1 and a
+ranking single point follows it. The 6 Nov decision keeps those settings but
+not the claim of equivalence.
+
+Validity of a step's result as a fitness evaluation (6 Nov 2026; checked
+by the launch bridge after every step, `backend/structure_search/step_validity.py`,
+policy `bmd_compute.structure_search_step_validity` v1):
+
+| Step | Electronic convergence | Ionic convergence | Valid energy |
+| --- | --- | --- | --- |
+| 1–3 | required | not required (reaching `NSW` allowed) | required |
+| 4 | required | required | required |
+| 5 | required | — (single point) | required (the ranking energy) |
+
+Electronic convergence is pymatgen's `Vasprun.converged_electronic` (the
+final ionic step's SCF loop ended before `NELM`) and ionic convergence is
+`Vasprun.converged_ionic` (fewer ionic steps than `NSW`), as in BMD's result
+parser and adaptive geometry relaxation. The energy is the final free energy
+(`TOTEN`), which must be finite and equal in `vasprun.xml` and `OUTCAR`.
+A step that exits 0 but fails a criterion is reported to USPEX with status
+118, one whose evidence is missing or malformed with 119, and a failed VASP
+run with its own status; in each case the files USPEX reads are withheld
+(archived unchanged and renamed). On POWER (SLURM job 23406856,
+6 Nov 2026) USPEX 25.0 rejected a candidate reported this way, for both a
+step-2 electronic non-convergence (status 118) and a step-3 VASP failure
+(status 7): its chain stopped, it was not run again and it was not listed
+with an energy (`reference/uspex_pilot/validity_probe/results_23406856/`).
+
+KPAR (proposed 5 Nov 2026, retained provisionally with `NCORE = 4` on
+6 Nov 2026, subject to POWER validation): `KPAR = 1` on steps 1–3,
+`KPAR = 4` on steps 4–5. Evidence from POWER (#59), on Si8 only:
+- 6×6×6 mesh (20 irreducible k-points), 48 ranks: KPAR 1 took 12.5 s and
+  KPAR 4 took 5.1 s (job 23367291).
+- KPAR 4 with fewer k-points than KPAR (Γ only, and 2×2×2 and 4×4×4 meshes)
+  ran normally and gave the same energy as KPAR 1 (job 23373151). KPAR above
+  NKPTS is therefore safe, but leaves ranks idle.
+
+Steps 1–3 use coarse meshes, so they keep KPAR 1. Steps 4–5 must meet BMD's
+k-point density, and they carry most of the compute.
+
+USPEX copies the same `INCAR_1 .. INCAR_5` into every candidate's
+calculation, so nothing in them can depend on a particular structure. The
+composition is fixed for a whole search, so the plane-wave cutoffs, which
+depend only on the search's POTCARs, are set once per search.
+
+| Step | Source | ISIF | IBRION / POTIM | NSW | ENCUT | EDIFF | EDIFFG | Smearing | PREC |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | USPEX manual INCAR_1 | 4 | 2 / 0.02 | 65 | early | 1e-2 | 0.1 | MP (`ISMEAR = 1`), `SIGMA = 0.10` | Low |
+| 2 | USPEX manual INCAR_2 | 4 | 1 / 0.30 | 55 | early | 1e-3 | 0.01 | MP, `SIGMA = 0.08` | Normal |
+| 3 | USPEX manual INCAR_3 | 3 | 2 / 0.02 | 65 | relaxation | 1e-3 | 0.01 | MP, `SIGMA = 0.07` | Normal |
+| 4 | screening relaxation with BMD Geometry Optimisation pass-1 INCAR settings | 3 | 2 | 99 | relaxation | 1e-6 | -0.01 | Gaussian, `SIGMA = 0.2` | Accurate |
+| 5 | search ranking single point | 2 | -1 | 0 | ranking | 1e-6 | — | Gaussian, `SIGMA = 0.05` | Accurate |
+
+- **Steps 1–3** set only the tags of the manual's example INCARs, plus the
+  search-wide tags below. They set no `ALGO`, `LREAL`, `LASPH`, `NELM` or
+  `ADDGRID`.
+- **Step 4** is a screening relaxation that uses the INCAR of BMD Geometry
+  Optimisation pass 1 (section 3): the one BMD's own input generator writes
+  for that stage for the search's elements, not a copy: `ALGO = Fast`,
+  `LREAL = False`, `LASPH = True`, `NELM = 200`, no `ADDGRID`, and the values
+  in the table. It is not the BMD protocol: no pass 2, no adaptive probe or
+  refinement, no Custodian, and USPEX's k-point mesh. The provenance record
+  (`step_4_incar_source`) says so.
+- **Step 5** gives the search-grade energy USPEX ranks candidates by. USPEX ranks on VASP's
+  free energy F, not E0: in the Si8 pilot, individual 27 has
+  F = −39.702683 eV and E0 = −39.702789 eV, and `Individuals_extended` shows
+  −39.7027. With step 4's `SIGMA = 0.2`, the smearing-entropy term in F would
+  favour metallic candidates. Step 5 is BMD's Static Energy after a
+  relaxation as its generator writes it (`ALGO = Normal`, `ADDGRID = True`,
+  `LASPH`, `NELM = 200`), with these changes:
+  - Gaussian `SIGMA = 0.05` instead of the tetrahedron method, which
+    candidates with coarse meshes can have too few k-points for;
+  - `ISIF = 2` and `IBRION = −1` written explicitly;
+  - the output-only flags (`NEDOS`, `LORBIT`, `LVTOT`, `LAECHG`, `LELF`)
+    dropped. Section 9 excludes these from the methodology, and a search runs
+    thousands of single points.
+
+Cutoffs (`ladder_cutoffs`):
+
+- **relaxation** (steps 3–4): BMD's species-dependent relaxation cutoff,
+  `bmd_compute.plane_wave_cutoff/1` (section 3),
+  `ENCUT = ceil(1.3 × max ENMAX / 50 eV) × 50 eV`. This is also the manual's
+  "+30–40 %" for the volume-changing steps. It is resolved by the same
+  function and versioned ENMAX metadata as every BMD Geometry Optimisation,
+  and the resolved record is part of the search's INCAR provenance.
+- **ranking** (step 5): `max(620 eV, relaxation cutoff)`. This is the static
+  rule of section 3 for a relaxation without the adaptive geometry record.
+  A search has no adaptive refinement, so `max(620, E0 + 150)` does not
+  apply.
+- **early** (steps 1–2): `ceil(1.0 × max ENMAX / 50 eV) × 50 eV`, the
+  manual's default cutoff. It is never below a POTCAR's ENMAX.
+
+| Search | Largest ENMAX | early / relaxation / ranking |
+| --- | --- | --- |
+| Si | 245.345 eV (`Si`) | 250 / 350 / 620 eV |
+| Li₂O | 499.034 eV (`Li_sv`) | 500 / 650 / 650 eV |
+
+Search-wide tags on every step: `ISPIN = 1`, `NCORE = 4`, `KPAR` (1 on
+steps 1–3, 4 on steps 4–5), `LWAVE = False` and `LCHARG = False`. On step 4,
+KPAR is the only tag the search adds to BMD's generated pass-1 INCAR; the
+provenance record lists it. No step sets `PSTRESS` (pressure is set
+only by `ExternalPressure` in `INPUT.txt`), `MAGMOM`, `NBANDS`, `NPAR`, DFT+U,
+SOC or a dispersion correction. For every step, KPAR must divide the rank count of a relaxation, and NCORE
+must divide ranks / KPAR. Both are checked in code; the rank count is a
+parameter, 48 by default. At 48 ranks, KPAR 4 gives 12 ranks per group,
+which NCORE 4 divides. With KPAR 4 and NCORE 4, the rank count must be a
+multiple of 16. NCORE = 4 comes from the lab's VASP notes on a single 3-atom
+Sc₂C cell, so it is not a general result.
+
+No ladder value is awaiting a lab decision.
+
+Safety checks:
+- every step's ENCUT must be at least the largest ENMAX of the search's
+  POTCARs (code `encut_below_potcar_enmax`; with these rules it always
+  passes);
+- the ENMAX read from the copied POTCAR files must match the metadata the
+  cutoffs were resolved from (`potcar_enmax_differs_from_cutoff_record`);
+- BMD's generated pass-1 stage must use the same POTCARs and cutoff as the
+  search's record (`bmd_stage_inputs_differ_from_search_record`).
+
+K-points: USPEX builds each mesh from `KresolStart` (one value per step,
+units 2π/Å). A formula-only request uses the provisional defaults
+0.12, 0.10, 0.08, 0.04, 0.04 (`spec.DEFAULT_KRESOL_START`). BMD's k-point policy
+(reciprocal density 64, section 4) corresponds to a spacing of
+64^(−1/3) = 0.25 Å⁻¹, that is 0.0398 × 2π/Å; pymatgen's rounded meshes give
+0.040–0.042. Steps 4 and 5 must therefore use `KresolStart` ≤ 0.04. How
+USPEX rounds a `KresolStart` value to a mesh has not been compared with
+pymatgen yet (Phase 0). The spec must give exactly five values; this is
+checked before `INPUT.txt` is written (#67).
+
+POTCARs: the same PBE_64 files and symbol choices as every other BMD
+calculation (section 5), read from the pinned atomate2 relaxation generator
+and copied from `<POTCAR repository>/POT_PAW_PBE_64/<symbol>/POTCAR` to
+`Specific/POTCAR_<El>`. Each file's header must name the expected symbol
+before it is copied; its ENMAX (read from the PSCTR parameter block, as
+pymatgen reads it) and SHA-256 are recorded.

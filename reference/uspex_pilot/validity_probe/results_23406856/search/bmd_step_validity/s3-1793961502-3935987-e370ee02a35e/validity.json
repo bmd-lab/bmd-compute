@@ -1,0 +1,61 @@
+{
+ "archived_to": "/bmd/bmdguest/validation/uspex_validity_probe_20261106_a/search/bmd_step_validity/s3-1793961502-3935987-e370ee02a35e",
+ "calcfold": "/bmd/bmdguest/validation/uspex_validity_probe_20261106_a/search/Calculation/Calcfold_2_3",
+ "classification": "execution_failed",
+ "criteria": {
+  "electronic_convergence": true,
+  "ionic_convergence": false,
+  "step": 3,
+  "valid_energy": true
+ },
+ "evidence": null,
+ "files": [
+  {
+   "bytes": 436169,
+   "name": "OUTCAR",
+   "sha256": "ddba2b32f113b7833d5300cafc090b80c37d9008217d54b05c0c2ffad779a026",
+   "withheld_as": "OUTCAR.bmd_invalid.s3-1793961502-3935987-e370ee02a35e"
+  },
+  {
+   "bytes": 7396,
+   "name": "OSZICAR",
+   "sha256": "fc60e913782d041cbdb0b51db12fac6e86736baf33c3c2b97143034c9b7fb0c2",
+   "withheld_as": "OSZICAR.bmd_invalid.s3-1793961502-3935987-e370ee02a35e"
+  },
+  {
+   "bytes": 1172,
+   "name": "CONTCAR",
+   "sha256": "163454a56ffa4b7be48b9db51335ab4c9477a4bffebc6233f600fd9d5466c88e",
+   "withheld_as": "CONTCAR.bmd_invalid.s3-1793961502-3935987-e370ee02a35e"
+  },
+  {
+   "bytes": 95248,
+   "name": "vasprun.xml",
+   "sha256": "be2e7ad9b3b684913f103932924a11bcf5e74bac19e3de6b196e2043c594bf97",
+   "withheld_as": "vasprun.xml.bmd_invalid.s3-1793961502-3935987-e370ee02a35e"
+  },
+  {
+   "bytes": 254,
+   "name": "INCAR",
+   "sha256": "840c98118a64b896fe31e089c061665a13f257e58cd265000ad6c7bf2c8b5168"
+  },
+  {
+   "bytes": 26,
+   "name": "KPOINTS",
+   "sha256": "53a10e983fc5d8490d4893f74a541e7b5997cb689ef2ced5b205c39dce5df52f"
+  },
+  {
+   "bytes": 738,
+   "name": "POSCAR",
+   "sha256": "ea2053f86a0ce046558efc44a5c54953e448664c05422795c95b97e3300f0c7c"
+  }
+ ],
+ "id": "s3-1793961502-3935987-e370ee02a35e",
+ "policy_id": "bmd_compute.structure_search_step_validity",
+ "policy_version": 1,
+ "reasons": [
+  "VASP exited with status 7"
+ ],
+ "returncode": 7,
+ "step": 3
+}

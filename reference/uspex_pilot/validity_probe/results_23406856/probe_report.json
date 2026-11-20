@@ -1,0 +1,334 @@
+{
+ "calls": 26,
+ "done_statuses": [
+  "0",
+  "118",
+  "7"
+ ],
+ "individual_tables": {
+  "results1/BESTIndividuals": [
+   {
+    "energy_ev": -39.893,
+    "generation": 1,
+    "id": 3,
+    "origin": "RandTopFirstGen",
+    "parents": []
+   },
+   {
+    "energy_ev": -40.596,
+    "generation": 2,
+    "id": 6,
+    "origin": "Pyxtal",
+    "parents": []
+   }
+  ],
+  "results1/Individuals": [
+   {
+    "energy_ev": -39.893,
+    "generation": 1,
+    "id": 3,
+    "origin": "RandTopFirstGen",
+    "parents": []
+   },
+   {
+    "energy_ev": -33.682,
+    "generation": 1,
+    "id": 4,
+    "origin": "PyxtalFirstGen",
+    "parents": []
+   },
+   {
+    "energy_ev": -39.593,
+    "generation": 2,
+    "id": 5,
+    "origin": "SoftMutation",
+    "parents": [
+     4
+    ]
+   },
+   {
+    "energy_ev": -40.596,
+    "generation": 2,
+    "id": 6,
+    "origin": "Pyxtal",
+    "parents": []
+   },
+   {
+    "energy_ev": -40.057,
+    "generation": 2,
+    "id": 7,
+    "origin": "Heredity",
+    "parents": [
+     3,
+     4
+    ]
+   },
+   {
+    "energy_ev": -39.659,
+    "generation": 2,
+    "id": 8,
+    "origin": "Heredity",
+    "parents": [
+     4,
+     3
+    ]
+   },
+   {
+    "energy_ev": -39.894,
+    "generation": 2,
+    "id": 9,
+    "origin": "keptBest",
+    "parents": [
+     3
+    ]
+   }
+  ],
+  "results1/Individuals_all": [
+   {
+    "parse_error": "USPEXFormatError: /bmd/bmdguest/validation/uspex_validity_probe_20261106_a/search/results1/Individuals_all: unrecognised column header(s) ['energy_per_atom'] (header line: 'generation   number     energy   energy_per_atom   num_atoms_all   expected_origin            origin   parents'). If USPEX writes these names, add them to COLUMN_ALIASES or IGNORED_COLUMNS in backend/structure_search/results.py."
+   }
+  ]
+ },
+ "injections": [
+  {
+   "bridge_status_to_uspex": [
+    "118"
+   ],
+   "bridge_validity": [
+    "invalid_convergence"
+   ],
+   "calcfold": "Calcfold_1_2",
+   "energies_vasp_produced_for_candidate": [
+    -40.85764546,
+    -38.5847679
+   ],
+   "individual": 1,
+   "injection": "nelm_step2",
+   "later_steps_run": [],
+   "listed_energy_matches_a_vasp_energy": false,
+   "listed_with_penalty_sized_energy": false,
+   "observations": {
+    "chain_stopped_at_failed_step": true,
+    "listed_by_uspex": false,
+    "listed_with_usable_energy": false,
+    "retried": false,
+    "stale_energy_reuse": false
+   },
+   "reported_status": "0",
+   "runs_of_this_step": 1,
+   "step": 2,
+   "uspex_listing": [],
+   "validity_records": [
+    {
+     "classification": "invalid_convergence",
+     "files": [
+      "OUTCAR",
+      "OSZICAR",
+      "CONTCAR",
+      "vasprun.xml",
+      "INCAR",
+      "KPOINTS",
+      "POSCAR"
+     ],
+     "reasons": [
+      "electronic loop not converged: the final ionic step used 3 of NELM = 3 electronic steps"
+     ]
+    }
+   ],
+   "vasp_status": "0"
+  },
+  {
+   "bridge_status_to_uspex": [
+    "7"
+   ],
+   "bridge_validity": [
+    "execution_failed"
+   ],
+   "calcfold": "Calcfold_2_3",
+   "energies_vasp_produced_for_candidate": [
+    -35.51410246,
+    -35.44857545,
+    -15.62308404
+   ],
+   "individual": 2,
+   "injection": "exit7_step3",
+   "later_steps_run": [],
+   "listed_energy_matches_a_vasp_energy": false,
+   "listed_with_penalty_sized_energy": false,
+   "observations": {
+    "chain_stopped_at_failed_step": true,
+    "listed_by_uspex": false,
+    "listed_with_usable_energy": false,
+    "retried": false,
+    "stale_energy_reuse": false
+   },
+   "reported_status": "7",
+   "runs_of_this_step": 1,
+   "step": 3,
+   "uspex_listing": [],
+   "validity_records": [
+    {
+     "classification": "execution_failed",
+     "files": [
+      "OUTCAR",
+      "OSZICAR",
+      "CONTCAR",
+      "vasprun.xml",
+      "INCAR",
+      "KPOINTS",
+      "POSCAR"
+     ],
+     "reasons": [
+      "VASP exited with status 7"
+     ]
+    }
+   ],
+   "vasp_status": "0"
+  }
+ ],
+ "isolation": {
+  "atomate2_imported": false,
+  "jobflow_imported": false
+ },
+ "manifest": {
+  "atomate2_imported": false,
+  "finished": "2026-11-06T11:19:43Z",
+  "host": "compute-0-271.powerslurm",
+  "injections": [
+   "nelm_step2",
+   "exit7_step3"
+  ],
+  "input_txt_sha256": "26daad3bef5de0fff50eff875afac3625be16d0dda3a0ccc94c4963e86fa9a37",
+  "jobflow_imported": false,
+  "launcher": {
+   "command_template": "/bmd/bmdguest/validation/bmd-compute-uspex-probe-20261106d/reference/uspex_pilot/validity_probe/inject_vasp.sh {step} srun --exact --mpi=pmi2 -n {ranks} --mem={mem} vasp_std",
+   "launch_mode": "srun_steps",
+   "max_parallel": 2,
+   "mem": "8G",
+   "ranks": 4
+  },
+  "master_argv": [
+   "/powerapps/share/rocky9/mamba/mamba-1.5.8/envs/singularity-3.8.6/bin/singularity",
+   "exec",
+   "--cleanenv",
+   "-B",
+   "/bmd",
+   "--pwd",
+   "/bmd/bmdguest/validation/uspex_validity_probe_20261106_a/search",
+   "/bmd/shared/uspex25_sandbox",
+   "/opt/uspex/uspex"
+  ],
+  "master_status": 0,
+  "mode": "validity",
+  "potcar": {
+   "sha256": "2a6df1c19701e5d97aaa59e5470b14653ddbd76935b76dacdd8792eb2eba252c",
+   "source": "/bmd-db/potcars/POT_PAW_PBE_64/Si/POTCAR"
+  },
+  "probe": "uspex_validity_probe",
+  "pymatgen_version": "2026.7.16",
+  "python": "/bmd/bmdguest/envs/atomate2_remote/bin/python",
+  "python_version": "3.12.13 | packaged by conda-forge | (main, Mar  5 2026, 16:50:00) [GCC 14.3.0]",
+  "repo": "/bmd/bmdguest/validation/bmd-compute-uspex-probe-20261106d",
+  "repo_commit": null,
+  "repo_manifest_sha256": "8f2b1581eb0b981b1d40bb110b57c97f8552b2c5493a31caabb1401b0c5f6b09",
+  "runtime_record_sha256": "62a77293cc25235d233373b0e92fa126dcfcd5738f645c38f06cbe5135d7e341",
+  "slurm_job_id": "23406856",
+  "started": "2026-11-06T10:36:22Z",
+  "step_validity": true,
+  "uspex": {
+   "cache": "/bmd/bmdguest/validation/uspex_cache_private",
+   "observed_banner_version": "25.0",
+   "observed_payload_sha256": "fc4a08e65ffc5f4fc3b45cb058de2cd54731ab2c191123aac8a3c69e87e95c8c",
+   "payload_sha256": "fc4a08e65ffc5f4fc3b45cb058de2cd54731ab2c191123aac8a3c69e87e95c8c",
+   "sandbox": "/bmd/shared/uspex25_sandbox"
+  },
+  "work": "/bmd/bmdguest/validation/uspex_validity_probe_20261106_a"
+ },
+ "repeated_runs": {},
+ "runtime_check_status": "passed",
+ "search": {
+  "all_generations_listed": true,
+  "generations_listed": [
+   1,
+   2
+  ],
+  "master_finished_event": {
+   "event": "master_finished",
+   "returncode": 0,
+   "stopped": false,
+   "time": 1793963983.686
+  },
+  "master_log": {
+   "error_lines": [
+    "/bmd/bmdguest/validation/uspex_cache_private/uspex_sfx/fc4a08e65ffc5f4fc3b45cb058de2cd54731ab2c191123aac8a3c69e87e95c8c/uspex_core/dateutil/zoneinfo/__init__.py:26: UserWarning: I/O error(2): No such file or directory",
+    "2026-11-06 12:38:04,898 - Task failed on step '2' for system=1",
+    "2026-11-06 12:40:47,202 - Task failed on step '3' for system=2",
+    "2026-11-06 12:57:28,521 - [WARNING] Permutation failed to produce a valid structure, elapsed 0.0s"
+   ],
+   "lines": 2866,
+   "present": true,
+   "tail": [
+    "2026-11-06 13:19:41,889 - [RemoveDuplicates] List of systems <last_generation_unique> is updated, elapsed 0.0s",
+    "2026-11-06 13:19:41,890 - [MergeTwoUniqueLists] Excluded systems: 3",
+    "2026-11-06 13:19:41,890 - [MergeTwoUniqueLists] List of systems <all_systems_unique> is updated, elapsed 0.0s",
+    "2026-11-06 13:19:41,890 - [CalculateFormationEnergy] Property <formation_energy> is updated for systems in <all_systems_good>, elapsed 0.0s",
+    "2026-11-06 13:19:41,890 - [ExtractBestEnvelopeSystems] List of systems <current_best_envelope_systems> is updated, elapsed 0.0s",
+    "2026-11-06 13:19:41,891 - [MergeTwoUniqueLists] Excluded systems: 3",
+    "2026-11-06 13:19:41,891 - [MergeTwoUniqueLists] List of systems <potential_best_envelope_systems> is updated, elapsed 0.0s",
+    "2026-11-06 13:19:41,891 - [CalculateBestEnvelope] Property <best_envelope> is updated, elapsed 0.0s",
+    "2026-11-06 13:19:41,891 - [ExtractBestEnvelopeSystems] List of systems <best_envelope_systems> is updated, elapsed 0.0s",
+    "2026-11-06 13:19:41,892 - [CalculateHeightAboveBestEnvelope] Property <e_above_hull> is updated for systems in <all_systems_good>, elapsed 0.0s",
+    "2026-11-06 13:19:41,892 - [MergeTwoLists] List of systems <best_systems> is updated, elapsed 0.0s",
+    "2026-11-06 13:19:41,892 - [UpdateBestSystemsEachGeneration] Property <best_systems_each_generation> is updated for generation 2, elapsed 0.0s",
+    "2026-11-06 13:19:41,892 - [Sort] List of systems <last_generation_sorted_unique> is updated, elapsed 0.0s",
+    "2026-11-06 13:19:41,892 - [Sort] List of systems <all_systems_sorted_unique> is updated, elapsed 0.0s",
+    "2026-11-06 13:19:41,892 - [CalculateCorrelationCoefficient] Property <correlation_coefficient> is updated, elapsed 0.0s",
+    "2026-11-06 13:19:41,892 - [AddValue] Property <correlation_coefficient_each_gen> is updated for generation 2, elapsed 0.0s",
+    "2026-11-06 13:19:41,892 - [calculate_by_formula] Property <opt_property> is updated for systems in <last_generation_good>, elapsed 0.0s",
+    "2026-11-06 13:19:41,892 - ***********************",
+    "2026-11-06 13:19:41,892 - * 4. RESULTS PRINTING *",
+    "2026-11-06 13:19:41,893 - ***********************",
+    "2026-11-06 13:19:41,896 - System properties of <last_generation> are appended to file <Individuals_all> [auto_resize=True, full_reformat=NO], elapsed 0.0s",
+    "2026-11-06 13:19:41,898 - System properties of <last_generation_good> are appended to file <Individuals> [auto_resize=True, full_reformat=NO], elapsed 0.0s",
+    "2026-11-06 13:19:41,901 - System properties of <last_generation_good> are appended to file <Individuals_extended> [auto_resize=True, full_reformat=NO], elapsed 0.0s",
+    "2026-11-06 13:19:41,914 - Structures of <last_generation_good> are appended to file <gatheredPOSCARS>, elapsed 0.0s",
+    "2026-11-06 13:19:41,930 - Structures of <last_generation> are appended to file <gatheredPOSCARS_unrelaxed_all>, elapsed 0.0s",
+    "2026-11-06 13:19:41,958 - Structures of <last_generation_good> are appended to file <gatheredPOSCARS_unrelaxed>, elapsed 0.0s",
+    "2026-11-06 13:19:41,963 - System properties of <all_systems_sorted_unique> are printed to file <good_structures>, elapsed 0.0s",
+    "2026-11-06 13:19:42,074 - Structures of <all_systems_sorted_unique> are printed to file <good_structures_POSCARS>, elapsed 0.1s",
+    "2026-11-06 13:19:42,076 - System properties of <best_envelope_systems> are printed to file <best_structure>, elapsed 0.0s",
+    "2026-11-06 13:19:42,087 - Structures of <best_envelope_systems> are printed to file <best_structure_POSCAR>, elapsed 0.0s",
+    "2026-11-06 13:19:42,089 - System properties for <best_systems_each_generation> are printed to file <BESTIndividuals>, elapsed 0.0s",
+    "2026-11-06 13:19:42,111 - Structures for generation property <best_systems_each_generation> are printed to file <BESTgatheredPOSCARS>, elapsed 0.0s",
+    "2026-11-06 13:19:42,113 - Generation properties are printed to file <generation_properties>, elapsed 0.0s",
+    "2026-11-06 13:19:42,114 - System energies of <last_generation_good> are appended to file <enthalpies_nospace.dat> (one per line, no header), elapsed 0.0s",
+    "2026-11-06 13:19:42,115 - System multi-step energies of <last_generation_good> are appended to <enthalpies_compete.dat> (steps=3, space-separated), elapsed 0.0s",
+    "2026-11-06 13:19:42,759 - Energy series plots for <all_systems_sorted_unique> are saved: E2_vs_E1.png, E3_vs_E2.png, elapsed 0.6s",
+    "2026-11-06 13:19:42,759 - ConvexHullPlotter: \u043e\u0431\u044a\u0435\u043a\u0442 \u043e\u0431\u043e\u043b\u043e\u0447\u043a\u0438 \u043d\u0435 ConvexHull \u2013 \u0432\u0438\u0437\u0443\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u044f \u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u0430",
+    "2026-11-06 13:19:42,760 - == Current results are printed in results1 folder ==",
+    "2026-11-06 13:19:42,760 - Stopping criterion: True",
+    "2026-11-06 13:19:42,760 - USPEX is done!"
+   ]
+  },
+  "master_status": 0
+ },
+ "validity_archive": [
+  {
+   "classification": "invalid_convergence",
+   "id": "s2-1793961403-3933520-6b0834a739e9",
+   "reasons": [
+    "electronic loop not converged: the final ionic step used 3 of NELM = 3 electronic steps"
+   ],
+   "step": 2
+  },
+  {
+   "classification": "execution_failed",
+   "id": "s3-1793961502-3935987-e370ee02a35e",
+   "reasons": [
+    "VASP exited with status 7"
+   ],
+   "step": 3
+  }
+ ],
+ "work": "/bmd/bmdguest/validation/uspex_validity_probe_20261106_a"
+}

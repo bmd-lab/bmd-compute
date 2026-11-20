@@ -1,6 +1,14 @@
 # Structure Search (USPEX) — Design
 
-Status: **design, not implemented.** Tracking issue: #58.
+Status: **experimental.** Planning, preparation, staging, submission,
+monitoring and cancellation are implemented behind the machine API; execution
+on POWER is off unless `BMD_STRUCTURE_SEARCH_EXECUTION=enabled`, and the browser
+page is a preview. Managed scientific execution was accepted for the
+shared-node pilot (18 Nov 2026, PI-accepted with a CPU-placement qualification;
+analyser result INCOMPLETE EVIDENCE:
+`reference/uspex_pilot/execution_validation/ACCEPTANCE_209898bc.md`). The search
+methodology (ladder, defaults, resources) stays provisional and is not
+validated. Tracking issue: #58.
 
 This document is the single reference for adding USPEX crystal structure
 prediction to bmd-compute. It records the design, the lab decisions taken so
@@ -395,24 +403,413 @@ pilot (8 atoms, 3 steps, 2 × 4 ranks) took about 10–60 s per relaxation and
 
 ### Browser entry point (preview, part of #68)
 
-The front page now asks "What would you like to calculate?" and offers
-**New structure** next to Relaxed structure, Phonon band structure,
-Electronic band structure and Electronic DOS. New structure asks only for a
-chemical formula (`/predict`); pressure, cell-size range, generations and
-walltime are optional overrides in a collapsed Advanced panel.
+The front page offers **New structure** next to Relaxed structure, Phonon
+band structure, Electronic band structure and Electronic DOS. New structure
+asks only for a chemical formula (`/predict`); cell-size range, generations
+and walltime are optional overrides in a collapsed Advanced panel. Pressure
+is not offered: searches run at ambient pressure.
 
-A New structure request returns one ground-state structure at the accuracy
-of the Relaxed structure Desired Output: the USPEX search proposes
-candidates, the best distinct ones (5 by default) get the BMD Standard
-Geometry Relaxation, and the lowest final PBE energy per atom wins.
+**Zero-pressure limitation.** Every search is planned, admitted and run at
+`ExternalPressure = 0` (admission policy v2). The earlier preview form had a
+*Pressure (GPa)* field; it was removed because no plan can carry a non-zero
+pressure: admission refuses it, the INCARs never set `PSTRESS`, the Relaxed
+Energy workflow that would refine candidates has no pressure setting, and the
+execution analyser establishes USPEX's listed energies as F only at zero
+pressure (at non-zero pressure USPEX lists enthalpies). Searches at pressure
+need a separate methodology decision.
 
-For now the page only shows this plan
-(`backend/structure_search/prediction_plan.py`); its Submit button is
-disabled and nothing reaches POWER. The proposed defaults there (0 GPa,
-cells of 1 to floor(20 / atoms per formula unit) formula units, 50
-generations, `stopCrit` = maximum atoms per cell, a 7-day walltime, 5 refined
-candidates) need BMD Lab sign-off, and the search spec should take its
-values from that module when submission is wired.
+The page shows the plan only; its Submit button is disabled and nothing
+reaches POWER. The plan is built from the authoritative search
+specification, not from its own copies:
+
+- defaults: `spec.default_search_spec` and `spec.search_defaults_record`
+  (policy `bmd_compute.structure_search_defaults` v1, **provisional**);
+- scope and limits: `admission.require_admissible_search` (v2);
+- ladder roles, cutoffs and validity criteria: `incar_policy`.
+
+It distinguishes the USPEX search (search-grade screening and ranking) from
+the planned finalist refinement: the five lowest-energy structurally distinct
+candidates relaxed with BMD's adaptive geometry relaxation and ranked by
+plain-PBE static energies (not implemented yet).
+
+### Candidate validity (USPEX integration step 2)
+
+VASP stops at `NELM` or `NSW` without an error, so a zero exit status does
+not mean a step converged. After every relaxation step the host launcher
+classifies the result (`backend/structure_search/step_validity.py`) by the
+lab's stage-specific rules (methodology section 10) as `valid`,
+`invalid_convergence`, `execution_failed` or `invalid_evidence`, and only a
+valid step is reported to USPEX with status 0. Otherwise the bridge exits
+118 (not converged or non-finite energy), 119 (evidence missing or malformed)
+or VASP's own status, and the files USPEX reads are archived under
+`<search>/bmd_step_validity/<id>/` and renamed `<name>.bmd_invalid.<id>` in
+the CalcFold. Every verdict is appended to `<CalcFold>/bmd_step_validity.jsonl`
+and the launcher journal, and the done file carries `validity=` and
+`reason=`. The check is on by default (`LauncherSettings.step_validity`);
+`--no-step-validity` exists only for transport pilots. The launcher's Python
+needs pymatgen for it.
+
+**Checked on POWER (6 Nov 2026, SLURM job 23406856):** the validity probe
+(`reference/uspex_pilot/validity_probe/`) ran the real USPEX 25.0 through
+the production bridge and launcher on Si8 (population 4, 2 generations,
+26 VASP calls, 43 min 37 s). One step-2 relaxation was made electronically
+non-convergent (`NELM = 3`) and one step-3 relaxation was reported as VASP
+exit 7. The bridge reported them to USPEX with status 118 and 7 and withheld
+their files; USPEX logged "Task failed on step …", stopped each candidate's
+chain at that step, did not run it again, and did not list it in
+`Individuals` (no stale energy from an earlier step). The master exited 0
+and listed both generations; the runtime check passed; jobflow and atomate2
+were not imported. Generation 1 kept only its two valid candidates: USPEX
+did not replace the rejected ones. Not observed: status 119 (evidence
+missing or malformed), and whether the exit status alone, with the files
+left in place, would be enough (the optional `status_only` run); the
+bridge keeps withholding the files. Evidence and summary:
+`reference/uspex_pilot/validity_probe/results_23406856/`.
+
+### Scientific evidence archive (before the scientific execution test)
+
+USPEX keeps only the last generation's CalcFolds, so the per-step verdicts and
+relaxed structures of earlier generations would be lost with them. After the
+validity check and **before** the done file (so before USPEX can read the
+result or remove the CalcFold), the launcher commits one record per step to
+`<search>/bmd_evidence/steps/<request id>/`
+(`backend/structure_search/bridge/evidence_archive.py`): `record.json` (the
+request, CalcFold, slot, command, return code, status sent to USPEX, the
+verdict exactly as the checker returned it with its reasons and convergence
+evidence, the SHA-256 of the exact line appended to the CalcFold's
+`bmd_step_validity.jsonl`, the step log's SHA-256), the input `POSCAR` as it
+was when the step started and the output `CONTCAR` (withheld or not), each
+with its SHA-256; a valid step 5 is marked `final_relaxed_structure`. Writes
+go to `.staging/`, are flushed, and become visible by one directory rename;
+`index.jsonl` lists each committed record's SHA-256. A record is never
+replaced: an identical repeat is a duplicate, a different one is kept under
+`conflicts/`. A write a killed launcher left unfinished is moved unchanged
+to `interrupted/` on the next start and never completed; a committed record
+missing from the index is indexed then, if its hashes match. A failure to
+archive is journaled (`evidence_write_failed`) and never changes the status
+USPEX receives: the validity decision stays the checker's. If the journal
+itself cannot be written, the launcher prints a `BMD-LAUNCHER-CRITICAL:` line
+to its stderr (the job's SLURM output) and still publishes the done file. A
+record committed by a launcher that died before the done file was never
+delivered: the next launcher answers USPEX "lost" (121), and the record stays
+as it is. USPEX passes the
+bridge no generation, so records carry `generation: null`; the post-run
+analysis binds them to generations through USPEX's listing. Text only and
+small: never POTCAR, WAVECAR, CHGCAR, OUTCAR or `vasprun.xml`.
+
+### Shared-node searches (12 Nov 2026)
+
+A search's node request is configurable; the default is unchanged (one
+exclusive node, `--exclusive --mem=0`, 4 × 48 ranks). `BMD_SEARCH_EXCLUSIVE_NODE=false`
+with `BMD_SEARCH_JOB_MEMORY=<amount>` (for example `32G`) asks for a share of
+one node: no `--exclusive`, an explicit `--mem`, and `--ntasks` = relaxations
+in parallel × ranks per relaxation (`BMD_SEARCH_PARALLEL_RELAXATIONS`,
+`BMD_SEARCH_RANKS_PER_RELAXATION`). Planning refuses `--mem=0` on a shared node
+and any launch mode but `srun_steps` (`mpirun_pinned` pins fixed cores of a
+whole node). The request is part of the plan record, so it is covered by the
+plan digest, the resource acknowledgement and the job script. At job start the
+job refuses (`launch_setup_failed`, before USPEX) an allocation whose
+`SLURM_NTASKS` or explicit memory is not the plan's; the launcher divides the
+memory SLURM actually allocated (`SLURM_MEM_PER_NODE`) among the parallel
+steps, as before. Ranks per relaxation must be a multiple of KPAR × NCORE = 16
+(steps 4–5); the INCAR files do not depend on the rank count.
+
+Resource model of the approved acceptance (3 × 16 ranks, `--ntasks=48
+--mem=32G`): the three `srun --exact -n 16 --mem=9830M` steps take all 48
+tasks and 3 × 9830 MB of the 32768 MB; nothing is reserved for the USPEX master
+and the launcher, which run in the batch step on the job's cores and in its
+remaining memory (about 3.3 GB), as on an exclusive node. No core numbers are
+set on this path (`srun_steps`: SLURM places each step inside the job's cores;
+no `I_MPI_PIN_PROCESSOR_LIST`). This is checked in code and tests only. That
+the three steps really start together on disjoint cores of a shared node, and
+that the master, the launcher and 16-rank VASP fit their memory under
+`ConstrainRAMSpace`, is still to be validated on POWER: the acceptance run's
+`parallel`, `pinning` and `memory` checks and SLURM's per-step `MaxRSS` are that
+validation. (The same no-reserve pattern, 2 × 4 ranks in an 8-core job, ran on
+POWER in validity probe 23406856.)
+
+POWER (checked 12 Nov 2026): `leeburton-pool` shares nodes per core and per
+memory (`SelectTypeParameters=CR_CORE_MEMORY`, partition `Exclusive=NO`),
+jobs are confined to their cores and memory (`ConstrainCores=yes`,
+`ConstrainRAMSpace=yes`), the default is 1 GB per job, and the account and
+`owner100d` QOS set no CPU or memory limits. A shared 8-core, `--mem=24G`
+job (validity probe 23406856) used at most 74 MB per VASP rank and 578 MB for
+the USPEX master and launcher.
+
+### Job start-up (fixed 13 Nov 2026, after job 23616052)
+
+The first shared-node acceptance job (attempt `fb36402a…`, job 23616052)
+stopped one second after its banner with exit status 1, `job_started`
+written and nothing else. The job script runs `set -u`; POWER's
+`/etc/profile` tests `$HISTCONTROL` without a default (checked read-only on
+POWER: under `set -u` it ends the shell), and its output was sent to
+/dev/null, so the shell ended silently. (An Lmod `module` function that
+expands an unset variable ends it the same way.) The job script now runs
+`/etc/profile`, `module purge` and `module load` without `set -u` and restores
+it afterwards, with their output in `job_setup.log` in the run directory (or
+`/dev/null` if that cannot be written). From the `job_started` guard until
+Python starts, an `EXIT` trap records any unexpected stop of the shell as
+`setup_failed` / `shell_stopped` with the shell's exit status and the step it
+was in, prints a `STOPPED:` line, never replaces an existing status record (it
+links the record into place) and keeps the shell's own exit status. In Python,
+a failure reading the job request, importing or running the entry point
+appends its traceback to `job_setup.log` (it still reaches the SLURM output)
+and writes `python_startup_failed` only if no status record exists. Nothing
+is retried; the runtime-package check and the frozen plan are unchanged.
+
+### Frozen search plans and local preparation (USPEX integration step 3)
+
+A New structure request is planned as an immutable
+`StructureSearchPlan` (`backend/structure_search/search_plan.py`, schema
+`bmd_compute.structure_search_plan` v1) whose digest, `sha256:` of the
+canonical JSON, covers the whole record:
+
+| Section | Content | Source |
+| --- | --- | --- |
+| `request`, `composition` | Advanced overrides; the searched composition, reduced to one formula unit and in canonical element order | `prediction_plan.parse_formula` |
+| `search` | the resolved spec, the defaults record and whether it applied, cell sizes, energy grade | `spec` |
+| `admission` | decision and scope (fixed composition, ambient pressure, non-magnetic, plain PBE) | `admission` |
+| `screening_and_ranking`, `incar_files` | the full five-step ladder record and the exact `INCAR_1..5` texts | `incar_policy` |
+| `kpoints` | `KresolStart` per step, its source, and BMD's bound on steps 4–5 | `spec`, `incar_policy` |
+| `potcar` | functional, symbols, TITEL, ENMAX, dataset SHA-256, ENMAX-metadata digest, `POTCAR.spec` text; no POTCAR contents | `potcar`, cutoff record |
+| `candidate_validity` | per-step criteria, enforcement, POWER verification | `step_validity` |
+| `runtime`, `execution` | USPEX program and launch layout; `INPUT.txt` execution settings; launch-bridge script name and SHA-256 | `runtime`, `input_writer` |
+| `resources` | the exclusive-node request, marked `provisional_estimate`, `approved: false` | `resources` |
+
+Equivalent formulas give one plan: elements are put in canonical order
+(increasing Pauling electronegativity, ties and elements without one by
+symbol, the order of pymatgen's `Composition.formula`), so `SiO2` and `O2Si`
+have the same plan and digest. As before, a formula is reduced to one formula
+unit (`Si8` searches `Si`, `Si2O4` searches `SiO2`); reordering changes
+neither counts nor the cell-size range. The formula or spec as entered and
+the generating Git commit are kept in the plan's `provenance`, beside the
+record and outside the digest; a provenance that does not reduce to the
+planned composition is refused. Equivalent override spellings also give one
+plan: the spec writes the walltime canonically (`spec.canonical_walltime`,
+BMD's `H:MM:SS` parser and `format_walltime`: `048:00:00` and `48:00:00` are
+both `48:00:00`, `5:00:00` is `05:00:00`, the duration unchanged; `D-HH:MM:SS`
+is not accepted by that parser and is refused), and the plan records each
+override as resolved (`08` as 8); the text as entered stays in provenance.
+
+The preview (`/predict`) is a view of this plan and shows its digest. It
+and the machine API's read-only `POST /api/v1/structure-search-plans`
+(`docs/machine_api.md`) plan through one entry point,
+`backend.structure_search.planning.plan_structure_search` (step 4A), so both
+give the same plan and digest. `PUT /api/v1/structure-search-attempts/{id}`
+(step 4B) prepares an approved plan locally and idempotently in the API
+state root, with the bridge path left unbound until remote staging.
+`PUT /api/v1/structure-search-attempts/{id}/staging` (step 4C) stages it on
+POWER in a fresh `/bmd/bmdguest/searches/<run_name>/`, binds the bridge from
+that run's uploaded runtime package, copies and checks the POTCARs, verifies
+everything there and records `STAGED` (layout, sequence, interruption
+recovery and the meaning of `STAGED` in `docs/machine_api.md`). `STAGED` is
+the last verified state; it cannot be submitted yet, and step 4D must
+re-verify it on POWER first. The staging-only POWER validation procedure is
+`reference/uspex_pilot/staging_validation/README.md`.
+`prepare_search_directory(plan, new_dir, bridge_path=...)` writes `INPUT.txt`,
+`Specific/INCAR_1..5`, `POTCAR.spec`, `search_plan.json` and
+`prepared_inputs.json` into a directory that must not exist yet, after
+refusing a wrong digest or a stale plan (today's code would plan the request
+differently). `verify_prepared_directory` checks that a directory holds
+exactly those files, without symbolic links, and that each equals what the
+frozen plan renders. Nothing is submitted; POTCAR files are staged only at
+execution.
+
+- The absolute launch-bridge path on POWER is a preparation binding:
+  outside the digest, recorded with the preparing commit in
+  `prepared_inputs.json`, and checked at execution by
+  `verify_execution_binding` (same path, a regular file, the SHA-256 in the
+  plan, plan still current). The bridge implementation hash and the runtime
+  launch policy are in the digest, so any change makes a plan stale.
+- `sleepSeconds` is 30 s, provisionally: its compatibility with real USPEX 25
+  has not been independently confirmed.
+- Symbolic links anywhere above or inside a prepared directory are refused.
+- **Workspace.** The USPEX container sees only `/bmd` (`-B /bmd`), so
+  searches run in `/bmd/bmdguest/searches/` (`BMD_SEARCH_WORKSPACE_DIR`),
+  separate from the validation area (`/bmd/bmdguest/validation`) and from
+  ordinary calculations in `/bmd-db/guest`. The production cache is
+  `/bmd/bmdguest/uspex_cache/`; remote search attempt states are kept in
+  `/bmd-db/guest/logs/structure_search/submission_attempts/`, which the
+  container never needs to see.
+
+### Managed remote staging (USPEX integration step 4C)
+
+Staging (`docs/machine_api.md`, *Structure-search staging*) ends at
+`STAGED`: the run directory holds the submission record, the runtime package
+uploaded with the attempt, the bound search inputs and the POTCARs copied on
+POWER, all verified there. Finalization (runtime-package check, POTCAR
+identities, staged-input verification) runs as one command with its own
+300 s SSH timeout; other remote commands keep the 60 s default.
+
+**Checked on POWER (7 Nov 2026, attempt `5ead0670`):** one Si search
+(plan `sha256:014ef52c…0ebbc`, code `2bbd1ba` + `b13f01f`) was staged as
+`bmdguest` in `/bmd/bmdguest/searches/uspex_search-20261107-173622-5ead0670`
+and reached `STAGED`; a fresh read-only re-verification passed. The bound
+bridge, `INPUT.txt`, the five INCARs, the plan and the manifests passed
+independent checks; the staged Si POTCAR was byte-identical to the POWER
+library with mode 0600. The attempt recovered from two genuine SSH timeouts
+in finalization (then 60 s) without re-uploading any scientific input.
+Finalization took 74.9 s (POTCAR identity checks about 37 s, staged-input
+verification about 20 s); the recovering request took 104.4 s in all. No
+SLURM job, USPEX search or VASP calculation ran, and collecting the evidence
+did not change the run. Record and evidence checksums:
+`reference/uspex_pilot/staging_validation/RESULTS_20261107_5ead0670.md`.
+
+### Managed submission: job definition and state model (USPEX integration step 4D-1)
+
+Not yet reachable from the API: promotion, submission, monitoring and
+cancellation are steps 4D-2 to 4D-4.
+
+- **Job script** (`backend/structure_search/job.py`, schema
+  `bmd_compute.structure_search_job_script` v1), rendered deterministically
+  from the staged attempt's spec, frozen plan, resource acknowledgement,
+  runtime-package manifest and the configured VASP modules: the plan's
+  `sbatch_directives` verbatim, then `--job-name=bmds-<attempt[:8]>`,
+  `--comment=bmd_attempt:<attempt>` (the reconciliation identity),
+  `--chdir=<run dir>` (the working directory SLURM records),
+  `--output=<run dir>/slurm-%j.out` and `--no-requeue`. It creates
+  `job_started` exclusively first, so a duplicate or requeued job stops
+  (status 84) without touching anything; drops every `BMD_*` and jobflow
+  variable; loads the modules (recorded as requested and as loaded); and runs
+  the job entry point from the uploaded package after the embedded guard has
+  verified it (status 85 and no package code if it does not match).
+- **Job entry point** (`job.job_main`): re-verifies the staged inputs
+  against the frozen plan, including the POTCAR identities (status 80 if
+  anything changed); runs the USPEX runtime check (81); then starts the USPEX
+  master (`master.build_master_command`, with the plan's bind) and the existing
+  launch loop (`launcher.run_search`) with the plan's launch settings and the
+  candidate-validity check always on. SIGTERM (cancellation, walltime) stops
+  USPEX before its steps. It records each phase in `search_status.json`.
+- **Memory per relaxation** (`launcher.allocated_node_memory`, the launcher's
+  one policy): node memory less 10 %, divided across the parallel
+  relaxations (four 48-rank steps), as before. The node memory is what SLURM
+  allocated, never a configured size: `SLURM_MEM_PER_NODE` when it is a
+  positive number of MB (or `SLURM_MEM_PER_CPU` × `SLURM_CPUS_ON_NODE`);
+  under the plan's exclusive `--mem=0`, where it may be `0` or absent, the
+  memory allocated to the running job in its own `scontrol -o show job`
+  record (`AllocTRES mem=`; `MinMemoryNode` is a request, `0` under
+  `--mem=0`, and is only a cross-check: a positive request that differs makes
+  the record ambiguous). A malformed value, or no positive amount, stops the job
+  before USPEX starts (status 82, `node_memory_unavailable`). The amount, its
+  source and the per-step `--mem` are recorded in `search_status.json`.
+- **Three separate answers** (`backend/structure_search/lifecycle.py`):
+  SLURM's state, the job's execution outcome, and scientific validity, which
+  4D does not assess (`not_assessed`; every step is still held to the
+  validity rules). `SEARCH_COMPLETED` needs SLURM `COMPLETED` *and* a
+  recorded `uspex_finished` with master status 0; it means the search ended,
+  not that a structure is determined (`finalists.status: not_started`).
+- **States.** Remote: `STAGING → STAGED → SEARCH_PREPARED → SEARCH_SUBMITTING
+  → SEARCH_SUBMITTED`, disjoint from the calculation states, which the
+  calculation claim and `sbatch` path refuse. `SEARCH_SUBMITTING` returns to
+  `SEARCH_PREPARED` only after a definite `sbatch` refusal, or an operator's
+  confirmation that no job exists; an uncertain submission is never repeated
+  automatically. Local: `… STAGED → PREPARED → SUBMITTING →
+  SUBMITTED | SUBMISSION_UNCERTAIN → SEARCH_COMPLETED | SEARCH_FAILED |
+  SEARCH_CANCELLED | SEARCH_TIMED_OUT`.
+- **Resource acknowledgement** (schema
+  `bmd_compute.structure_search_resource_acknowledgement` v1): the user's
+  explicit acknowledgement of the plan's provisional resource request, frozen
+  for one attempt and plan with a SHA-256 over the whole record; the job
+  script refuses any other.
+- **POTCAR identity within one operation** is parsed once per distinct file
+  content (`search_plan.ContentAddressedPotcarIdentity`): each check re-reads
+  and hashes the file and reuses an identity only for identical bytes, so it
+  is as strong as parsing every time. Nothing is kept across operations.
+
+Adding the job module changes the runtime package, so attempts staged before
+4D (including the 7 Nov 2026 validation attempt) cannot be submitted.
+
+### Submission-ready promotion (USPEX integration step 4D-2)
+
+`PUT /api/v1/structure-search-attempts/{id}/promotion` (`docs/machine_api.md`)
+takes a `STAGED` attempt to `PREPARED` (`SEARCH_PREPARED` on POWER) after the
+owner explicitly acknowledges the plan's provisional resource request. It
+freezes the acknowledgement, the module snapshot and the job script's
+identity, uploads the job script and `resource_acknowledgement.json` without
+replacing anything, verifies the whole run directory afresh (including the
+job script and the USPEX readiness check on the login node), and only then
+records the transition, atomically. It never submits. The frozen plan, ladder,
+POTCAR policy and validity rules are untouched. The promotion-only POWER
+validation is part C of `reference/uspex_pilot/staging_validation/README.md`.
+
+**Checked on POWER (10 Nov 2026, attempt `14bfbbac`):** a new Si search
+(plan `sha256:014ef52c…0ebbc`, code `b7bd184`) was staged and promoted as
+`bmdguest` to `SEARCH_PREPARED`. The job script (SHA-256 `a52bee7e…619f`)
+and the resource acknowledgement matched the promotion record and the script
+parsed; the bridge, scientific inputs and POTCAR identity passed independent
+checks; the login-node readiness check passed; no job started and nothing ran.
+Record and evidence checksums:
+`reference/uspex_pilot/staging_validation/RESULTS_20261110_14bfbbac.md`.
+
+### Exactly-once submission (USPEX integration step 4D-3)
+
+`PUT /api/v1/structure-search-attempts/{id}/submission` (`docs/machine_api.md`)
+submits a `PREPARED` attempt to SLURM at most once. Under the attempt's claim
+it verifies the run directory afresh (plan, job script, acknowledgement,
+runtime package, bridge, POTCAR identities, login-node readiness), records
+`SEARCH_SUBMITTING`, then runs `sbatch --parsable` once with no options, so
+the frozen `#SBATCH` lines are the acknowledged request. A job ID gives
+`SEARCH_SUBMITTED`; a definite refusal returns the attempt to submission-ready;
+any other outcome is uncertain and is never resubmitted automatically.
+Repeating the request reconciles read-only through `squeue`/`sacct` by the
+SLURM comment `bmd_attempt:<id>`, with the job name and working directory as
+further checks, and adopts only exactly one job reporting all three, with no
+other candidate or contradiction; there is no automatic reset or retry (the
+future operator procedure is in `docs/machine_api.md`). The job ID is kept
+locally as soon as `sbatch` answers; if POWER's `SEARCH_SUBMITTED` write is
+lost, `PUT …/submission/remote-record` completes it after verifying the job
+against SLURM, without submitting.
+
+**POWER accounting (read-only checks, Nov 2026):** `sacct` on POWER returns
+`JobID`, `JobName`, `State`, `Comment` and `WorkDir` (completed job
+`23406856`; its comment was empty, as that probe set none). No `bmdguest` job
+since 1 November carries a `bmd_attempt:` comment, so whether an explicitly
+supplied `--comment` persists in accounting is unverified. An empty comment
+is therefore never taken as evidence either way, and a job whose comment
+SLURM does not report is never adopted automatically. The first controlled
+POWER submission acceptance test must check, read-only, that the job's
+comment is `bmd_attempt:<attempt_id>` in `squeue` while it is queued and in
+`sacct -X` after it ends (with `scontrol show config | grep -i
+AccountingStoreFlags` recorded), alongside its name and working directory. Scheduler state,
+execution outcome and scientific validity are reported separately and none is
+read or assessed yet; monitoring, cancellation and finalist refinement are
+later steps. The change is service-side only (the runtime package is
+unchanged). The plan, ladder, POTCAR policy and validity rules are untouched.
+
+### Monitoring and cancellation (USPEX integration step 4D-4)
+
+`POST …/observations` and `PUT …/cancellation` (`docs/machine_api.md`) are
+service-side only; the runtime package is unchanged. An observation reads
+SLURM (`squeue`, `sacct`), POWER's clock and the job's own records
+(`job_started`, `search_status.json`, launcher heartbeat) read-only, checks
+the job against the identity bound at submission (job ID, comment where
+reported, exact name and run directory, and a submission time inside the
+attempt's submission window, read in UTC with the clock skew measured; times
+that cannot be interpreted leave the identity unverified), and appends
+write-once evidence. A missing comment is enough to follow an already-bound
+job (`partial`), never to adopt an uncertain submission or to cancel. Scheduler state, execution outcome and scientific validity
+(`not_assessed`) stay separate. Missing or delayed accounting is `UNKNOWN`;
+a terminal state is recorded only from accounting, 120 s after the job's end
+by POWER's clock, and never changed afterwards (contradictions go to operator
+review). Cancellation records the request, then, after verifying the queued
+job's full identity under the attempt's claim, runs `scancel` with the exact
+job ID; the outcome is only what a later observation of SLURM shows. A
+request refused before any remote cancellation request returns the attempt
+to `SUBMITTED`; one stopped later stays `CANCEL_REQUESTED` and is resumed only
+by repeating it, with a fresh identity check. There is
+no background poller, resubmission or restart; finalists stay `not_started`.
+
+**Checked on POWER (10 Nov 2026, attempt `c6edaf94`, SLURM job 23576570):**
+a new Si search with a 15-minute allocation (plan `sha256:4c85cec6…0d42f993`,
+job script `71aa6125…6547`, code `364712a`) was submitted once through the
+machine API (HTTP 200), its identity verified through `squeue`, observed three
+times, cancelled through the machine API after a fresh identity check, and
+settled at SLURM `CANCELLED` / `SEARCH_CANCELLED`. The job never started, so
+no USPEX or VASP ran: the operational pathway is validated, scientific
+execution is not. POWER's accounting does not keep the attempt comment (it is
+in `squeue`, not in `sacct`), so a finished job's identity is `partial`, as
+designed. Record and evidence checksums:
+`reference/uspex_pilot/staging_validation/RESULTS_20261110_c6edaf94.md`.
 
 ## 9. Open questions
 
@@ -424,10 +821,14 @@ values from that module when submission is wired.
   `reference/uspex_pilot/si_bridge/sample_results1/README.md`.)
 - Is `value : sleepSeconds` the right `INPUT.txt` form? The manual shows the
   keyword only in prose.
-- Who maintains `/bmd/shared/uspex_cache` and the sandbox, and does
-  `bmdguest` reach them with the current permissions?
+- Who maintains the sandbox `/bmd/shared/uspex25_sandbox`? (Searches use
+  their own unpack cache, `/bmd/bmdguest/uspex_cache`, owned by `bmdguest`
+  and initialised for the 7 Nov 2026 staging validation.)
 - Lab sign-off on the INCAR ladder (#75): final-step smearing, the early-step
   ENCUT (must not fall below any POTCAR's ENMAX in a search), `PREC` of the
   loose steps, how tightly step 4 relaxes every candidate, and `KPAR`.
 - BMD review of the resume and cancel exception (#69).
 - Who looks after multi-week searches that occupy a whole node?
+- The production search workspace is `/bmd/bmdguest/searches` (approved
+  7 Nov 2026, used by the staging validation). Its quota, and how old runs
+  are retired, are not settled.

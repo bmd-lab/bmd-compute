@@ -3,15 +3,21 @@
 Installed as ``srun`` and as ``mpirun`` on the PATH of the VASP step
 environment; it checks the command line for whichever name it was called by. It checks the
 command line the launcher built, records what it saw, and writes the two
-files USPEX reads after a VASP relaxation: OSZICAR (last line holds the
-energy) and CONTCAR (the relaxed structure; here, POSCAR with a marker).
+files USPEX reads after a VASP relaxation (OSZICAR, CONTCAR: POSCAR with a
+marker) and the evidence the launcher's validity check reads (vasprun.xml,
+OUTCAR), all from ``fake_vasp_outputs.py`` in FAKE_SRUN_FIXTURES.
 
 Environment:
     FAKE_SRUN_RECORDS  directory; one JSON file per call, rewritten at exit
     FAKE_SRUN_CONTROL  JSON file: {"sleep": seconds,
                                    "fail": {"CalcFold2:2": exit_code},
                                    "hang": ["CalcFold1:1"],
-                                   "ignore_term": ["CalcFold3:1"]}
+                                   "ignore_term": ["CalcFold3:1"],
+                                   "variant": {"CalcFold1:4": "nsw"}}
+    FAKE_SRUN_FIXTURES directory holding fake_vasp_outputs.py
+"variant" picks the output written for a step that exits 0 (see
+fake_vasp_outputs.py; default "valid"). An INCAR line "NELM = 3" (the
+validity probe's injection) gives the "nelm" variant.
 "hang" sleeps until SIGTERM; "ignore_term" ignores SIGTERM and needs SIGKILL.
 The step number comes from the "STEP = n" line the fake USPEX writes in INCAR.
 """
@@ -82,14 +88,15 @@ def main():
 
     code = int(control.get("fail", {}).get(key, 0))
     if code == 0:
+        sys.path.insert(0, os.environ["FAKE_SRUN_FIXTURES"])
+        from fake_vasp_outputs import write_outputs
+
         energy = -10.0 * step - len(cwd.name)
-        (cwd / "OSZICAR").write_text(
-            "       N       E                     dE             d eps       ncg     rms          rms(c)\n"
-            f"   1 F= {energy:.8E} E0= {energy:.8E}  d E =-.1E-03\n"
-        )
-        poscar = (cwd / "POSCAR").read_text().splitlines()
-        poscar[0] = f"{poscar[0]} relaxed-step-{step}"
-        (cwd / "CONTCAR").write_text("\n".join(poscar) + "\n")
+        variant = control.get("variant", {}).get(key, "valid")
+        incar = (cwd / "INCAR").read_text()
+        if any(line.replace(" ", "") == "NELM=3" for line in incar.splitlines()):
+            variant = "nelm"  # like VASP, the SCF loop stops at the injected NELM
+        write_outputs(cwd, step, energy, variant, label=f"relaxed-step-{step}")
     record["end"] = time.time()
     record["exit"] = code
     save()

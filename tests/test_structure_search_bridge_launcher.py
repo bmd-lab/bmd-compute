@@ -196,3 +196,121 @@ def test_launcher_module_does_not_import_scientific_stack():
     )
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "[]"
+
+
+# --- memory SLURM allocated to the job (exclusive --mem=0 allocations) -------------------------
+
+from backend.structure_search.bridge.launcher import (  # noqa: E402
+    NodeMemoryUnavailable,
+    allocated_node_memory,
+    node_memory_from_job_record,
+)
+
+_RECORD = ("JobId=4242 JobName=bmds-x JobState=RUNNING NumNodes=1 NumCPUs=192 MinMemoryNode=0 "
+           "AllocTRES=cpu=192,mem=500G,node=1,billing=192")
+
+
+def _never_asked(job_id, environment):
+    raise AssertionError("SLURM must not be asked when the job's variables give an amount")
+
+
+def test_a_positive_slurm_mem_per_node_is_used_and_divided_as_before(tmp_path):
+    memory = allocated_node_memory({"SLURM_MEM_PER_NODE": "512000", "SLURM_JOB_ID": "4242"}, show_job=_never_asked)
+    assert (memory.mb, memory.source) == (512000, "SLURM_MEM_PER_NODE")
+    settings = _settings(tmp_path, mem=None, max_parallel=4, node_memory_mb=memory.mb)
+    assert settings.step_mem == "115200M"  # less 10 %, over 4 relaxations
+    environment_only = _settings(tmp_path, mem=None, max_parallel=4, environment={"SLURM_MEM_PER_NODE": "512000"})
+    assert environment_only.step_mem == settings.step_mem  # one policy, either way in
+
+
+def test_per_cpu_memory_counts_the_cpus_on_the_node():
+    memory = allocated_node_memory({"SLURM_MEM_PER_CPU": "2000", "SLURM_CPUS_ON_NODE": "192"}, show_job=_never_asked)
+    assert (memory.mb, memory.source) == (384000, "SLURM_MEM_PER_CPU")
+
+
+@pytest.mark.parametrize("environment", [
+    {"SLURM_JOB_ID": "4242"},                              # SLURM_MEM_PER_NODE missing
+    {"SLURM_JOB_ID": "4242", "SLURM_MEM_PER_NODE": "0"},   # --mem=0: all memory, not an amount
+])
+def test_missing_or_zero_slurm_mem_per_node_asks_slurm_for_the_allocation(environment):
+    asked = []
+
+    def show_job(job_id, env):
+        asked.append(job_id)
+        return _RECORD
+
+    memory = allocated_node_memory(environment, show_job=show_job)
+    assert asked == ["4242"]
+    assert (memory.mb, memory.source) == (512000, "scontrol AllocTRES mem")
+
+
+@pytest.mark.parametrize("value", ["512G", "", "-1", "1e6", "512000 ", "abc"])
+def test_malformed_slurm_mem_per_node_is_refused_without_guessing(value):
+    with pytest.raises(NodeMemoryUnavailable, match="not a number of MB"):
+        allocated_node_memory({"SLURM_JOB_ID": "4242", "SLURM_MEM_PER_NODE": value}, show_job=_never_asked)
+
+
+@pytest.mark.parametrize("environment, record, message", [
+    ({"SLURM_MEM_PER_NODE": "0"}, _RECORD, "no SLURM_JOB_ID"),
+    ({"SLURM_MEM_PER_NODE": "0", "SLURM_JOB_ID": "4242"}, None, "did not answer"),
+    ({"SLURM_MEM_PER_NODE": "0", "SLURM_JOB_ID": "4242"},
+     "JobId=4242 JobState=RUNNING NumNodes=1 MinMemoryNode=0 AllocTRES=cpu=192,node=1", "no unambiguous"),
+    ({"SLURM_MEM_PER_NODE": "0", "SLURM_JOB_ID": "4242"}, _RECORD.replace("4242", "4243"), "no unambiguous"),
+    ({"SLURM_MEM_PER_NODE": "0", "SLURM_JOB_ID": "4242"}, _RECORD.replace("NumNodes=1", "NumNodes=2"),
+     "no unambiguous"),
+    ({"SLURM_MEM_PER_NODE": "0", "SLURM_JOB_ID": "4242"}, _RECORD + "\n" + _RECORD, "no unambiguous"),
+])
+def test_allocated_memory_fails_closed(environment, record, message):
+    with pytest.raises(NodeMemoryUnavailable, match=message):
+        allocated_node_memory(environment, show_job=lambda job_id, env: record)
+
+
+@pytest.mark.parametrize("value, mb", [("512000", 512000), ("512000M", 512000), ("500G", 512000),
+                                        ("1.5T", 1572864), ("2048K", 2)])
+def test_slurm_memory_units(value, mb):
+    record = f"JobId=7 JobState=RUNNING NumNodes=1 AllocTRES=cpu=1,mem={value},node=1"
+    assert node_memory_from_job_record(record, "7").mb == mb
+
+
+@pytest.mark.parametrize("record", [
+    "JobId=7 JobState=RUNNING NumNodes=1 MinMemoryNode=250G AllocTRES=cpu=96,node=1",  # a request, no allocation
+    "JobId=7 JobState=RUNNING NumNodes=1 MinMemoryNode=0 AllocTRES=cpu=96,node=1",     # --mem=0 request only
+    "JobId=7 JobState=RUNNING NumNodes=1 MinMemoryNode=250G",                          # no AllocTRES at all
+    "JobId=7 JobState=RUNNING NumNodes=1 AllocTRES=cpu=96,mem=0,node=1",               # zero allocation
+    "JobId=7 JobState=RUNNING NumNodes=1 AllocTRES=cpu=96,mem=0M,node=1",
+    "JobId=7 JobState=RUNNING NumNodes=1 AllocTRES=cpu=96,mem=0.5K,node=1",            # rounds to 0 MB
+    "JobId=7 JobState=RUNNING NumNodes=1 AllocTRES=cpu=96,mem=?,node=1",               # unreadable
+    "JobId=7 JobState=RUNNING NumNodes=1 AllocTRES=cpu=96,mem=500G,mem=400G,node=1",   # two allocations
+    "JobId=7 JobState=RUNNING NumNodes=1 MinMemoryNode=400G AllocTRES=cpu=96,mem=500G,node=1",  # contradicts
+    "JobId=7 JobState=RUNNING NumNodes=1 MinMemoryNode=lots AllocTRES=cpu=96,mem=500G,node=1",  # unreadable
+    "JobId=7 JobState=PENDING NumNodes=1 AllocTRES=cpu=96,mem=500G,node=1",            # not running
+    "JobId=7 JobState=RUNNING AllocTRES=cpu=96,mem=500G,node=1",                       # node count unknown
+    "JobId=7 JobState=RUNNING NumNodes=1 NumNodes=2 AllocTRES=cpu=96,mem=500G,node=1",  # repeated field
+])
+def test_a_request_or_an_ambiguous_record_is_never_taken_as_an_allocation(record):
+    assert node_memory_from_job_record(record, "7") is None
+
+
+@pytest.mark.parametrize("min_memory_node", ["0", "500G", "512000M", None])
+def test_a_zero_or_matching_request_does_not_block_the_allocation(min_memory_node):
+    request = f" MinMemoryNode={min_memory_node}" if min_memory_node is not None else ""
+    record = f"JobId=7 JobState=RUNNING NumNodes=1{request} AllocTRES=cpu=192,mem=500G,node=1"
+    memory = node_memory_from_job_record(record, "7")
+    assert (memory.mb, memory.source) == (512000, "scontrol AllocTRES mem")
+
+
+def test_scontrol_is_found_on_the_job_path_and_its_absence_fails_closed(tmp_path):
+    environment = {"SLURM_JOB_ID": "4242", "SLURM_MEM_PER_NODE": "0", "PATH": str(tmp_path)}
+    with pytest.raises(NodeMemoryUnavailable, match="did not answer"):
+        allocated_node_memory(environment)
+    scontrol = tmp_path / "scontrol"
+    scontrol.write_text(f"#!{sys.executable}\nimport sys\nassert sys.argv[1:] == ['-o', 'show', 'job', '4242']\n"
+                        f"print({_RECORD!r})\n")
+    scontrol.chmod(0o755)
+    assert allocated_node_memory(environment).mb == 512000
+
+
+def test_launcher_settings_still_refuse_zero_and_never_query_slurm(tmp_path):
+    with pytest.raises(NodeMemoryUnavailable, match="allocated_node_memory"):
+        _settings(tmp_path, mem=None, environment={"SLURM_MEM_PER_NODE": "0", "SLURM_JOB_ID": "4242",
+                                                   "PATH": "/nonexistent"})

@@ -1,0 +1,71 @@
+{
+ "archived_to": "/bmd/bmdguest/validation/uspex_validity_probe_20261106_a/search/bmd_step_validity/s2-1793961403-3933520-6b0834a739e9",
+ "calcfold": "/bmd/bmdguest/validation/uspex_validity_probe_20261106_a/search/Calculation/Calcfold_1_2",
+ "classification": "invalid_convergence",
+ "criteria": {
+  "electronic_convergence": true,
+  "ionic_convergence": false,
+  "step": 2,
+  "valid_energy": true
+ },
+ "evidence": {
+  "converged_electronic": false,
+  "converged_ionic": true,
+  "final_electronic_steps": 3,
+  "free_energy_ev": -40.85764546,
+  "ionic_steps": 17,
+  "natoms": 8,
+  "nelm": 3,
+  "nsw": 50,
+  "outcar_free_energy_ev": -40.85764546
+ },
+ "files": [
+  {
+   "bytes": 446118,
+   "name": "OUTCAR",
+   "sha256": "dd920586c22fe6dd87ca396bbafbd4c253dbae0cd6faccabcf8497d14bae4787",
+   "withheld_as": "OUTCAR.bmd_invalid.s2-1793961403-3933520-6b0834a739e9"
+  },
+  {
+   "bytes": 6539,
+   "name": "OSZICAR",
+   "sha256": "b73472030e81b06bb3c4907e716b1d561114a66b3a8b36e76967dbddf1893ff0",
+   "withheld_as": "OSZICAR.bmd_invalid.s2-1793961403-3933520-6b0834a739e9"
+  },
+  {
+   "bytes": 1172,
+   "name": "CONTCAR",
+   "sha256": "df212c90ec119aa781f30023480502b436c4abbe6ebc226e4414298e2cbae194",
+   "withheld_as": "CONTCAR.bmd_invalid.s2-1793961403-3933520-6b0834a739e9"
+  },
+  {
+   "bytes": 110219,
+   "name": "vasprun.xml",
+   "sha256": "8416d411c211dda1479e00e3f3c19a6d7419738836be80fd7a32f9b4cacd99f8",
+   "withheld_as": "vasprun.xml.bmd_invalid.s2-1793961403-3933520-6b0834a739e9"
+  },
+  {
+   "bytes": 254,
+   "name": "INCAR",
+   "sha256": "4460ab7aa20a5859ce69d4d9fde6716b5172afd9c2fe36f2f6d04ea20851b5ae"
+  },
+  {
+   "bytes": 26,
+   "name": "KPOINTS",
+   "sha256": "53a10e983fc5d8490d4893f74a541e7b5997cb689ef2ced5b205c39dce5df52f"
+  },
+  {
+   "bytes": 738,
+   "name": "POSCAR",
+   "sha256": "86364ca9b7f83dbbd10a939ceb938b6c2c292d8f69664d0f7f1e1194f87a5321"
+  }
+ ],
+ "id": "s2-1793961403-3933520-6b0834a739e9",
+ "policy_id": "bmd_compute.structure_search_step_validity",
+ "policy_version": 1,
+ "reasons": [
+  "electronic loop not converged: the final ionic step used 3 of NELM = 3 electronic steps"
+ ],
+ "returncode": 0,
+ "step": 2
+}

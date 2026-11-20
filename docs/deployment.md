@@ -161,10 +161,15 @@ relying on atomate2's `VASP_HANDLE_UNSUCCESSFUL` setting.
 
 ## Structure Searches (USPEX)
 
-Structure searches are being added (#58; design in
-`docs/structure_search.md`). The settings, resources and checks below exist,
-but no search can be submitted yet: preparation and `run_submission` are not
-wired to them (#67, part 2).
+Structure searches (USPEX) are **experimental** (design and provisional
+methodology in `docs/structure_search.md`). The machine API can plan, prepare,
+stage, promote, submit, observe and cancel a search, but everything that writes
+to POWER or submits is **off** unless the service is started with
+`BMD_STRUCTURE_SEARCH_EXECUTION=enabled`; production leaves it unset. The
+browser page only previews a search plan. Execution on POWER was accepted for
+the shared-node pilot on 18 Nov 2026 with a documented qualification
+(`reference/uspex_pilot/execution_validation/ACCEPTANCE_209898bc.md`); that is
+not a validation of the search methodology.
 
 ### Settings
 
@@ -177,7 +182,9 @@ values, not against its own environment.
 | Setting | Variable | POWER default |
 |---|---|---|
 | USPEX 25.0 sandbox (unpacked image, not the `.sif`) | `BMD_USPEX_SANDBOX_DIR` | `/bmd/shared/uspex25_sandbox` |
-| Shared unpack cache, used as `XDG_CACHE_HOME` for the USPEX command only | `BMD_USPEX_CACHE_DIR` | `/bmd/shared/uspex_cache` |
+| Production unpack cache, used as `XDG_CACHE_HOME` for the USPEX command only | `BMD_USPEX_CACHE_DIR` | `/bmd/bmdguest/uspex_cache` |
+| Search workspace (run directories; must be under `/bmd`) | `BMD_SEARCH_WORKSPACE_DIR` | `/bmd/bmdguest/searches` |
+| Search attempt states (`submission_attempts/`) | `BMD_SEARCH_LOGS_DIR` | `/bmd-db/guest/logs/structure_search` |
 | Expected payload SHA-256 of `/opt/uspex/uspex` | `BMD_USPEX_PAYLOAD_SHA256` | `fc4a08e6…e87e95c8c` (USPEX 25.0, 11 Nov 2025) |
 | Singularity executable | `BMD_SINGULARITY_EXECUTABLE` | `/powerapps/share/rocky9/mamba/mamba-1.5.8/envs/singularity-3.8.6/bin/singularity` |
 | `I_MPI_PMI_LIBRARY` for `srun --mpi=pmi2` steps | `BMD_SEARCH_I_MPI_PMI_LIBRARY` | `/usr/lib64/libpmi2.so` |
@@ -188,6 +195,17 @@ values, not against its own environment.
 | Sockets per node | `BMD_SEARCH_NODE_SOCKETS` | `2` |
 | Cores per socket | `BMD_SEARCH_CORES_PER_SOCKET` | `96` |
 | Nodes searches exclude (SLURM host list; empty for none) | `BMD_SEARCH_EXCLUDED_NODES` | `compute-0-[332-333]` |
+| Whole node (`--exclusive`, `true`) or a shared node (`false`) | `BMD_SEARCH_EXCLUSIVE_NODE` | `true` |
+| Job memory (SLURM amount such as `32G`; `0` = the whole node, exclusive only) | `BMD_SEARCH_JOB_MEMORY` | `0` |
+| Structure-search execution on POWER (machine API; anything but `enabled` is off) | `BMD_STRUCTURE_SEARCH_EXECUTION` | unset (off) |
+
+The settings are read when a search is planned and frozen into its plan (and
+its digest); changing them later never changes an existing plan. The shared-node
+profile accepted on POWER is `BMD_SEARCH_EXCLUSIVE_NODE=false`,
+`BMD_SEARCH_JOB_MEMORY=32G`, `BMD_SEARCH_PARALLEL_RELAXATIONS=3`,
+`BMD_SEARCH_RANKS_PER_RELAXATION=16` (48 CPUs); the defaults remain the
+exclusive 4 × 48 node. `BMD_STRUCTURE_SEARCH_EXECUTION` is read by the web
+service only, not frozen into plans.
 
 `compute-0-332` and `compute-0-333` are excluded because they use a different
 NUMA layout (NPS4, 8 × 24 cores), so the 2 × 96 layout does not hold there.
@@ -200,7 +218,9 @@ replace it with a measured value.
 
 A search uses its own preset, `StructureSearchResources` in
 `backend/calculations/resources.py`. Ordinary workflows do not use it and are
-unchanged.
+unchanged. The default is one exclusive node (below); with
+`BMD_SEARCH_EXCLUSIVE_NODE=false` there is no `--exclusive` line, `--mem` is the
+configured amount and the launch mode must be `srun_steps`.
 
 ```text
 partition = leeburton-pool

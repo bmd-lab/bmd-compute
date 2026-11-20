@@ -69,6 +69,7 @@ class Rig:
             "PATH": f"{self.bin}:/usr/bin:/bin",
             "FAKE_SRUN_RECORDS": str(self.records),
             "FAKE_SRUN_CONTROL": str(self.control_path),
+            "FAKE_SRUN_FIXTURES": str(FIXTURES),
             **extra,
         }
 
@@ -557,7 +558,7 @@ def test_request_whose_bridge_died_is_still_run_and_answered(rig):
     event = rig.start_launcher_thread(rig.settings())
     folder = rig.calcfold("CalcFold1")
     request = "id=lost-1\nstep=1\ncalcfold={}\ncreated={}\n".format(folder, int(time.time()))
-    (rig.spool / "requests" / "lost-1.req").write_text(request)
+    publish(rig, "lost-1.req", request)
     rig.wait_for(lambda: (rig.spool / "done" / "lost-1.done").exists())
     assert rig.done("lost-1")["status"] == "0"
     rig.join(event)
@@ -598,18 +599,34 @@ def test_missing_step_command_is_answered_with_127(rig):
 # -- duplicates ------------------------------------------------------------------
 
 
+def publish(rig, name: str, text: str) -> None:
+    """Publish a request file whole, as bmd_bridge.sh does (written elsewhere, then linked into place).
+
+    A plain ``write_text`` into requests/ truncates the file first: the launcher, polling every 50 ms,
+    can read it empty and reject it as malformed. For a request ID that is running, that rejection
+    writes an early done file (122), and the step's own done file (here 123, stopped at the end of the
+    test) replaces it later: the intermittent failure of test_duplicate_request_id_runs_vasp_once.
+    """
+
+    tmp = rig.spool / "tmp" / f"{name}.{time.time_ns()}"
+    tmp.parent.mkdir(exist_ok=True)
+    tmp.write_text(text)
+    os.replace(tmp, rig.spool / "requests" / name)
+
+
 def test_duplicate_request_id_runs_vasp_once(rig):
     rig.set_control({"sleep": 1.0})
     event = rig.start_launcher_thread(rig.settings())
     folder = rig.calcfold("CalcFold1")
     text = "id=dup-1\nstep=1\ncalcfold={}\ncreated={}\n".format(folder, int(time.time()))
-    (rig.spool / "requests" / "dup-1.req").write_text(text)
+    publish(rig, "dup-1.req", text)
     rig.wait_for(lambda: len(rig.srun_records()) == 1)
     # Same ID again while the first is running, and once more after it finished.
-    (rig.spool / "requests" / "dup-1.req").write_text(text)
+    publish(rig, "dup-1.req", text)
     rig.wait_for(lambda: not (rig.spool / "requests" / "dup-1.req").exists())
     rig.wait_for(lambda: (rig.spool / "done" / "dup-1.done").exists())
-    (rig.spool / "requests" / "dup-1.req").write_text(text)
+    assert rig.done("dup-1")["status"] == "0"  # the step's own answer, not an early rejection
+    publish(rig, "dup-1.req", text)
     rig.wait_for(lambda: not (rig.spool / "requests" / "dup-1.req").exists())
     rig.join(event)
     assert len(rig.srun_records()) == 1
@@ -642,3 +659,125 @@ def test_concurrent_bridges_get_distinct_request_ids(rig):
     rig.join(event)
     ids = [done["id"] for done in rig.done_files()]
     assert len(ids) == len(set(ids)) == 12
+
+
+# -- step validity through the bridge (USPEX integration step 2) ------------------
+
+
+def _fake_search(rig, *, steps: int, structures: int = 2, **settings) -> dict:
+    status = run_search(
+        [
+            sys.executable, str(FIXTURES / "fake_uspex.py"),
+            "--search-dir", str(rig.search), "--bridge", BRIDGE,
+            "--structures", str(structures), "--steps", str(steps), "--parallel", "2",
+        ],
+        rig.bridge_environment(),
+        rig.search,
+        rig.settings(max_parallel=2, **settings),
+        master_log=rig.root / "master.log",
+    )
+    assert status == 0, (rig.root / "master.log").read_text()
+    return json.loads((rig.search / "fake_uspex_results.json").read_text())
+
+
+def _validity_records(calcfold: Path) -> list[dict]:
+    path = calcfold / "bmd_step_validity.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def test_valid_five_step_ladder_passes_and_every_step_is_recorded(rig):
+    results = _fake_search(rig, steps=5)
+    for name, result in results.items():
+        assert result["exit_codes"] == [0] * 5
+        records = _validity_records(rig.search / name)
+        assert [record["step"] for record in records] == [1, 2, 3, 4, 5]
+        assert {record["classification"] for record in records} == {"valid"}
+    assert all(done["validity"] == "valid" for done in rig.done_files())
+    assert not (rig.search / "bmd_step_validity").exists()
+
+
+@pytest.mark.parametrize("step", [1, 2, 3])
+def test_reaching_nsw_is_allowed_in_screening_steps_1_to_3(rig, step):
+    rig.set_control({"sleep": 0.05, "variant": {f"CalcFold1:{step}": "nsw"}})
+    results = _fake_search(rig, steps=5)
+    assert results["CalcFold1"]["exit_codes"] == [0] * 5
+    record = _validity_records(rig.search / "CalcFold1")[step - 1]
+    assert record["classification"] == "valid"
+    assert record["evidence"]["converged_ionic"] is False
+
+
+def test_ionic_nonconvergence_in_step_4_is_reported_to_uspex_as_failure(rig):
+    rig.set_control({"sleep": 0.05, "variant": {"CalcFold1:4": "nsw"}})
+    results = _fake_search(rig, steps=5)
+    # USPEX saw a failed step 4 and stopped this candidate; the other ran on.
+    assert results["CalcFold1"]["exit_codes"] == [0, 0, 0, protocol.EXIT_INVALID_CONVERGENCE]
+    assert len(results["CalcFold1"]["energies"]) == 3
+    assert results["CalcFold2"]["exit_codes"] == [0] * 5
+    record = _validity_records(rig.search / "CalcFold1")[-1]
+    assert record["step"] == 4 and record["classification"] == "invalid_convergence"
+    assert "ionic relaxation not converged" in record["reasons"][0]
+    failed = [done for done in rig.done_files() if done["status"] != "0"]
+    assert len(failed) == 1
+    assert failed[0]["validity"] == "invalid_convergence"
+    assert failed[0]["returncode"] == "0"  # VASP itself exited 0
+    assert "NSW" in failed[0]["reason"]
+    # The files USPEX would read are withheld, and preserved unchanged.
+    calcfold = rig.search / "CalcFold1"
+    for name in ("OUTCAR", "OSZICAR", "CONTCAR", "vasprun.xml"):
+        assert not (calcfold / name).exists()
+        withheld = list(calcfold.glob(f"{name}.bmd_invalid.*"))
+        assert len(withheld) == 1
+        archived = rig.search / "bmd_step_validity" / record["id"] / name
+        assert archived.read_bytes() == withheld[0].read_bytes()
+    stored = json.loads((rig.search / "bmd_step_validity" / record["id"] / "validity.json").read_text())
+    assert stored["classification"] == "invalid_convergence"
+    assert {entry["name"] for entry in stored["files"]} >= {"OUTCAR", "vasprun.xml", "INCAR", "POSCAR"}
+
+
+def test_nelm_exhaustion_is_reported_as_failure_in_any_step(rig):
+    rig.set_control({"sleep": 0.05, "variant": {"CalcFold2:1": "nelm"}})
+    results = _fake_search(rig, steps=5)
+    assert results["CalcFold2"]["exit_codes"] == [protocol.EXIT_INVALID_CONVERGENCE]
+    record = _validity_records(rig.search / "CalcFold2")[0]
+    assert "electronic loop not converged" in record["reasons"][0]
+
+
+@pytest.mark.parametrize(
+    ("variant", "classification", "status"),
+    [
+        ("nan", "invalid_convergence", protocol.EXIT_INVALID_CONVERGENCE),
+        ("no_energy", "invalid_evidence", protocol.EXIT_INVALID_EVIDENCE),
+        ("truncated", "invalid_evidence", protocol.EXIT_INVALID_EVIDENCE),
+        ("missing_outcar", "invalid_evidence", protocol.EXIT_INVALID_EVIDENCE),
+    ],
+)
+def test_step_5_needs_a_valid_ranking_energy(rig, variant, classification, status):
+    rig.set_control({"sleep": 0.05, "variant": {"CalcFold1:5": variant}})
+    results = _fake_search(rig, steps=5)
+    assert results["CalcFold1"]["exit_codes"] == [0, 0, 0, 0, status]
+    record = _validity_records(rig.search / "CalcFold1")[-1]
+    assert (record["step"], record["classification"]) == (5, classification)
+    assert not (rig.search / "CalcFold1" / "OSZICAR").exists()
+
+
+def test_vasp_nonzero_exit_keeps_its_status_and_withholds_stale_outputs(rig):
+    rig.set_control({"sleep": 0.05, "fail": {"CalcFold1:2": 7}})
+    results = _fake_search(rig, steps=3)
+    assert results["CalcFold1"]["exit_codes"] == [0, 7]
+    record = _validity_records(rig.search / "CalcFold1")[-1]
+    assert record["classification"] == "execution_failed"
+    assert record["reasons"] == ["VASP exited with status 7"]
+    # Step 1's OUTCAR and vasprun.xml were still in the CalcFold; they are
+    # withheld so USPEX cannot read step 1's energy as step 2's.
+    calcfold = rig.search / "CalcFold1"
+    assert not (calcfold / "OUTCAR").exists() and not (calcfold / "vasprun.xml").exists()
+    failed = [done for done in rig.done_files() if done["status"] != "0"]
+    assert failed[0]["status"] == "7" and failed[0]["validity"] == "execution_failed"
+
+
+def test_validity_check_can_be_turned_off_for_transport_pilots(rig):
+    rig.set_control({"sleep": 0.05, "variant": {"CalcFold1:4": "nsw"}})
+    results = _fake_search(rig, steps=5, step_validity=False)
+    assert results["CalcFold1"]["exit_codes"] == [0] * 5
+    assert not (rig.search / "CalcFold1" / "bmd_step_validity.jsonl").exists()
+    assert all("validity" not in done for done in rig.done_files())

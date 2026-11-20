@@ -1,0 +1,8 @@
+generation   number   num_atoms_all    energy   cell_volume   space_group            origin   parents   e_above_hull   opt_property   quasi_entropy   a_order   s_order
+         1        3             [8]   -39.893       193.796             1   RandTopFirstGen        []          0.000          0.000           0.041     2.633     2.541
+         1        4             [8]   -33.682       279.364             1    PyxtalFirstGen        []          6.211          6.211           0.188     2.321     1.844
+         2        5             [8]   -39.593       163.963             1      SoftMutation       [4]          1.003          1.003           0.183     1.919     1.538
+         2        6             [8]   -40.596       130.432             2            Pyxtal        []          0.000          0.000           0.003     2.880     2.878
+         2        7             [8]   -40.057       183.561             1          Heredity    [3, 4]          0.538          0.538           0.111     2.281     2.049
+         2        8             [8]   -39.659       150.597             1          Heredity    [4, 3]          0.937          0.937           0.150     1.940     1.646
+         2        9             [8]   -39.894       193.774             1          keptBest       [3]          0.702          0.702           0.043     2.567     2.472

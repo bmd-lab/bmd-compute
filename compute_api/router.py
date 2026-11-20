@@ -8,7 +8,14 @@ Every route runs the same fixed sequence before doing any work:
 3. authenticate the bearer token and check the route's scope;
 4. only then read and validate the request body.
 
-``/identity`` and ``/plans`` never contact POWER. ``PUT /attempts/{id}``
+``/identity``, ``/plans`` and ``/structure-search-plans`` never contact POWER.
+``/structure-search-plans`` plans a formula-based USPEX structure search
+(New structure); it is read-only and uses the same planning entry point as the
+browser's New structure preview (``backend.structure_search.planning``).
+``PUT``/``GET /structure-search-attempts/{id}`` prepare a search plan locally,
+idempotently, in the API state root and read it back
+(``compute_api.structure_search_execution``); they never contact POWER and
+there is no search submission. ``PUT /attempts/{id}``
 prepares, or prepares and submits, one calculation and ``GET /attempts/{id}``
 reads its state, both through Compute's existing remote machinery and
 server-owned connection profiles (see ``compute_api.execution``). The planner
@@ -34,6 +41,7 @@ from backend.provenance import source_metadata
 
 from compute_api import API_VERSION
 from compute_api.auth import (
+    SCOPE_CANCEL,
     SCOPE_PLAN,
     SCOPE_PREPARE,
     SCOPE_READ,
@@ -55,6 +63,13 @@ from compute_api.schemas import (
     PlanRequestError,
     parse_execution_request,
     parse_plan_request,
+    parse_structure_search_attempt_request,
+    parse_structure_search_cancellation_request,
+    parse_structure_search_promotion_request,
+    parse_structure_search_remote_record_request,
+    parse_structure_search_submission_request,
+    parse_structure_search_staging_request,
+    parse_structure_search_plan_request,
 )
 
 
@@ -102,6 +117,22 @@ def _non_loopback_allowed() -> bool:
     return str(os.environ.get(ALLOW_NON_LOOPBACK_ENV, "")).strip().lower() in {"1", "true", "yes"}
 
 
+# Structure-search execution (anything that writes to POWER or submits) is off unless the service is
+# started with BMD_STRUCTURE_SEARCH_EXECUTION=enabled. Planning, local preparation, observation and
+# cancellation of an attempt already submitted stay available: turning execution off must never prevent
+# stopping a job that is already running.
+SEARCH_EXECUTION_ENV = "BMD_STRUCTURE_SEARCH_EXECUTION"
+
+
+def _require_search_execution() -> None:
+    if os.environ.get(SEARCH_EXECUTION_ENV, "") != "enabled":
+        raise _ApiError(
+            503,
+            "structure_search_execution_disabled",
+            "Structure-search execution is disabled on this service; nothing was changed.",
+        )
+
+
 def _authorize(request: Request, scope: str | None) -> Principal:
     if request.url.query:
         raise _ApiError(400, "query_not_allowed", "Machine API requests must not carry a query string.")
@@ -140,7 +171,13 @@ async def _read_json_body(request: Request) -> Any:
         raise _ApiError(400, "invalid_json", "The request body is not valid UTF-8 JSON.") from None
 
 
-def build_machine_api_router(*, planner: Planner) -> APIRouter:
+def _default_search_planner():
+    from backend.structure_search.planning import plan_structure_search
+
+    return plan_structure_search
+
+
+def build_machine_api_router(*, planner: Planner, search_planner: Planner | None = None) -> APIRouter:
     # The machine API is deliberately left out of /openapi.json: it is not
     # advertised on the browser service, and the browser surface stays unchanged.
     router = APIRouter(prefix="/api/v1", include_in_schema=False)
@@ -199,6 +236,334 @@ def build_machine_api_router(*, planner: Planner) -> APIRouter:
         except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
             return _error_response(_scientific_error(exc, "plan generation", "plan_failed", "BMD Compute could not generate this plan."))
         return _json(200, response)
+
+    @router.post("/structure-search-plans")
+    async def structure_search_plans(request: Request):
+        from backend.structure_search.planning import StructureSearchPlanRequest
+        from backend.structure_search.search_plan import STALE_PLAN_CODE, SearchPlanError
+
+        try:
+            _authorize(request, scope=SCOPE_PLAN)
+            document = await _read_json_body(request)
+            try:
+                shape = parse_structure_search_plan_request(document)
+            except PlanRequestError as exc:
+                raise _ApiError(
+                    422, "invalid_request", "The structure-search plan request is invalid.", fields=exc.errors
+                ) from None
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+
+        plan_search = search_planner or _default_search_planner()
+
+        def build_search_plan() -> dict:
+            result = plan_search(
+                StructureSearchPlanRequest(
+                    formula=shape.formula,
+                    expected_plan_digest=shape.expected_plan_digest,
+                    **shape.search,
+                )
+            )
+            return {"api_version": API_VERSION, **result.response()}
+
+        try:
+            response = await run_in_threadpool(build_search_plan)
+        except SearchPlanError as exc:
+            if exc.code == STALE_PLAN_CODE:
+                diagnostic = exc.diagnostic or {}
+                return _error_response(
+                    _ApiError(
+                        409,
+                        "plan_changed",
+                        _bounded(exc.message),
+                        suggestion=_bounded(exc.suggestion),
+                        plan_digest=diagnostic.get("plan_digest"),
+                    )
+                )
+            return _error_response(_scientific_error(exc, "search planning", "plan_failed", "BMD Compute could not plan this search."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            return _error_response(_scientific_error(exc, "search planning", "plan_failed", "BMD Compute could not plan this search."))
+        return _json(200, response)
+
+    @router.put("/structure-search-attempts/{attempt_id}")
+    async def put_structure_search_attempt(attempt_id: str, request: Request):
+        from backend.structure_search.search_plan import STALE_PLAN_CODE, SearchPlanError
+        from compute_api.structure_search_execution import prepare_search_attempt
+
+        try:
+            principal = _authorize(request, scope=SCOPE_PREPARE)
+            canonical = _canonical_attempt_id(attempt_id)
+            document = await _read_json_body(request)
+            try:
+                shape = parse_structure_search_attempt_request(document)
+            except PlanRequestError as exc:
+                raise _ApiError(
+                    422, "invalid_request", "The structure-search attempt request is invalid.", fields=exc.errors
+                ) from None
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+
+        try:
+            response = await run_in_threadpool(
+                prepare_search_attempt,
+                search_planner=search_planner or _default_search_planner(),
+                principal=principal.principal,
+                attempt_id=canonical,
+                shape=shape,
+            )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except SearchPlanError as exc:
+            if exc.code == STALE_PLAN_CODE:
+                diagnostic = exc.diagnostic or {}
+                return _error_response(
+                    _ApiError(409, "plan_changed", _bounded(exc.message), suggestion=_bounded(exc.suggestion),
+                              plan_digest=diagnostic.get("plan_digest"))
+                )
+            return _error_response(_scientific_error(exc, "search preparation", "preparation_failed",
+                                                     "BMD Compute could not prepare this search."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            return _error_response(_scientific_error(exc, "search preparation", "preparation_failed",
+                                                     "BMD Compute could not prepare this search."))
+        return _json(200, {"api_version": API_VERSION, **response})
+
+    @router.put("/structure-search-attempts/{attempt_id}/staging")
+    async def put_structure_search_staging(attempt_id: str, request: Request):
+        from backend.remote import RemoteOperationBusy, SubmissionAttemptError
+        from backend.structure_search.staging import StagingError
+        from compute_api.structure_search_execution import stage_search_attempt
+
+        try:
+            principal = _authorize(request, scope=SCOPE_PREPARE)
+            _require_search_execution()
+            canonical = _canonical_attempt_id(attempt_id)
+            document = await _read_json_body(request)
+            try:
+                shape = parse_structure_search_staging_request(document)
+            except PlanRequestError as exc:
+                raise _ApiError(
+                    422, "invalid_request", "The structure-search staging request is invalid.", fields=exc.errors
+                ) from None
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+
+        try:
+            response = await run_in_threadpool(
+                stage_search_attempt, principal=principal.principal, attempt_id=canonical, shape=shape
+            )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except StagingError as exc:
+            return _error_response(_ApiError(409, exc.code, _bounded(exc.message)))
+        except RemoteOperationBusy:
+            return _error_response(_ApiError(503, "remote_busy", "BMD Compute is busy with other remote operations; retry shortly."))
+        except SubmissionAttemptError:
+            return _error_response(_ApiError(409, "remote_attempt_mismatch", "The remote attempt state does not match this attempt."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            LOGGER.error("Machine API search staging failed (%s).", type(exc).__name__, exc_info=True)
+            return _error_response(_ApiError(503, "staging_unavailable", "BMD Compute could not stage this search; retry."))
+        return _json(200, {"api_version": API_VERSION, **response})
+
+    @router.put("/structure-search-attempts/{attempt_id}/promotion")
+    async def put_structure_search_promotion(attempt_id: str, request: Request):
+        from backend.remote import RemoteOperationBusy, SubmissionAttemptError
+        from backend.structure_search.lifecycle import LifecycleError
+        from backend.structure_search.staging import StagingError
+        from compute_api.structure_search_promotion import promote_search_attempt
+
+        try:
+            principal = _authorize(request, scope=SCOPE_SUBMIT)
+            _require_search_execution()
+            canonical = _canonical_attempt_id(attempt_id)
+            document = await _read_json_body(request)
+            try:
+                shape = parse_structure_search_promotion_request(document)
+            except PlanRequestError as exc:
+                raise _ApiError(
+                    422, "invalid_request", "The structure-search promotion request is invalid.", fields=exc.errors
+                ) from None
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+
+        try:
+            response = await run_in_threadpool(
+                promote_search_attempt, principal=principal.principal, attempt_id=canonical, shape=shape
+            )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except (StagingError, LifecycleError) as exc:
+            return _error_response(_ApiError(409, exc.code, _bounded(exc.message)))
+        except RemoteOperationBusy:
+            return _error_response(_ApiError(503, "remote_busy", "BMD Compute is busy with other remote operations; retry shortly."))
+        except SubmissionAttemptError:
+            return _error_response(_ApiError(409, "remote_attempt_mismatch", "The remote attempt state does not match this attempt."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            LOGGER.error("Machine API search promotion failed (%s).", type(exc).__name__, exc_info=True)
+            return _error_response(_ApiError(503, "promotion_unavailable",
+                                             "BMD Compute could not promote this search; retry."))
+        return _json(200, {"api_version": API_VERSION, **response})
+
+    @router.put("/structure-search-attempts/{attempt_id}/submission")
+    async def put_structure_search_submission(attempt_id: str, request: Request):
+        from backend.remote import RemoteOperationBusy, SubmissionAttemptError
+        from backend.structure_search.lifecycle import LifecycleError
+        from backend.structure_search.staging import StagingError
+        from compute_api.structure_search_submission import submit_search_attempt
+
+        try:
+            principal = _authorize(request, scope=SCOPE_SUBMIT)
+            _require_search_execution()
+            canonical = _canonical_attempt_id(attempt_id)
+            document = await _read_json_body(request)
+            try:
+                shape = parse_structure_search_submission_request(document)
+            except PlanRequestError as exc:
+                raise _ApiError(
+                    422, "invalid_request", "The structure-search submission request is invalid.", fields=exc.errors
+                ) from None
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+
+        try:
+            response = await run_in_threadpool(
+                submit_search_attempt, principal=principal.principal, attempt_id=canonical, shape=shape
+            )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except (StagingError, LifecycleError) as exc:
+            return _error_response(_ApiError(409, exc.code, _bounded(exc.message)))
+        except RemoteOperationBusy:
+            return _error_response(_ApiError(503, "remote_busy", "BMD Compute is busy with other remote operations; retry shortly."))
+        except SubmissionAttemptError:
+            return _error_response(_ApiError(409, "remote_attempt_mismatch", "The remote attempt state does not match this attempt."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            LOGGER.error("Machine API search submission failed (%s).", type(exc).__name__, exc_info=True)
+            return _error_response(_ApiError(503, "submission_unavailable",
+                                             "BMD Compute could not complete this request; query the attempt, "
+                                             "then retry. An uncertain submission is never repeated."))
+        return _json(200, {"api_version": API_VERSION, **response})
+
+    @router.put("/structure-search-attempts/{attempt_id}/submission/remote-record")
+    async def put_structure_search_remote_record(attempt_id: str, request: Request):
+        from backend.remote import RemoteOperationBusy, SubmissionAttemptError
+        from backend.structure_search.lifecycle import LifecycleError
+        from backend.structure_search.staging import StagingError
+        from compute_api.structure_search_submission import recover_remote_record
+
+        try:
+            principal = _authorize(request, scope=SCOPE_SUBMIT)
+            _require_search_execution()
+            canonical = _canonical_attempt_id(attempt_id)
+            document = await _read_json_body(request)
+            try:
+                shape = parse_structure_search_remote_record_request(document)
+            except PlanRequestError as exc:
+                raise _ApiError(
+                    422, "invalid_request", "The remote-record request is invalid.", fields=exc.errors
+                ) from None
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+
+        try:
+            response = await run_in_threadpool(
+                recover_remote_record, principal=principal.principal, attempt_id=canonical, shape=shape
+            )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except (StagingError, LifecycleError) as exc:
+            return _error_response(_ApiError(409, exc.code, _bounded(exc.message)))
+        except RemoteOperationBusy:
+            return _error_response(_ApiError(503, "remote_busy", "BMD Compute is busy with other remote operations; retry shortly."))
+        except SubmissionAttemptError:
+            return _error_response(_ApiError(409, "remote_attempt_mismatch", "The remote attempt state does not match this attempt."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            LOGGER.error("Machine API search remote-record recovery failed (%s).", type(exc).__name__, exc_info=True)
+            return _error_response(_ApiError(503, "remote_record_unavailable",
+                                             "BMD Compute could not complete the remote record; retry. "
+                                             "Nothing is ever submitted by this request."))
+        return _json(200, {"api_version": API_VERSION, **response})
+
+    @router.post("/structure-search-attempts/{attempt_id}/observations")
+    async def post_structure_search_observation(attempt_id: str, request: Request):
+        from backend.remote import RemoteOperationBusy, SubmissionAttemptError
+        from compute_api.structure_search_monitoring import observe_search_attempt
+
+        try:
+            principal = _authorize(request, scope=SCOPE_READ)
+            canonical = _canonical_attempt_id(attempt_id)
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+        try:
+            response = await run_in_threadpool(
+                observe_search_attempt, principal=principal.principal, attempt_id=canonical
+            )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except RemoteOperationBusy:
+            return _error_response(_ApiError(503, "remote_busy", "BMD Compute is busy with other remote operations; retry shortly."))
+        except SubmissionAttemptError:
+            return _error_response(_ApiError(409, "remote_attempt_mismatch", "The remote attempt state does not match this attempt."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            LOGGER.error("Machine API search observation failed (%s).", type(exc).__name__, exc_info=True)
+            return _error_response(_ApiError(503, "observation_unavailable",
+                                             "BMD Compute could not observe this search; nothing was changed. Retry."))
+        return _json(200, {"api_version": API_VERSION, **response})
+
+    @router.put("/structure-search-attempts/{attempt_id}/cancellation")
+    async def put_structure_search_cancellation(attempt_id: str, request: Request):
+        from backend.remote import RemoteOperationBusy, SubmissionAttemptError
+        from backend.structure_search.lifecycle import LifecycleError
+        from backend.structure_search.staging import StagingError
+        from compute_api.structure_search_monitoring import cancel_search_attempt
+
+        try:
+            principal = _authorize(request, scope=SCOPE_CANCEL)
+            canonical = _canonical_attempt_id(attempt_id)
+            document = await _read_json_body(request)
+            try:
+                shape = parse_structure_search_cancellation_request(document)
+            except PlanRequestError as exc:
+                raise _ApiError(
+                    422, "invalid_request", "The cancellation request is invalid.", fields=exc.errors
+                ) from None
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+        try:
+            response = await run_in_threadpool(
+                cancel_search_attempt, principal=principal.principal, attempt_id=canonical, shape=shape
+            )
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except (StagingError, LifecycleError) as exc:
+            return _error_response(_ApiError(409, exc.code, _bounded(exc.message)))
+        except RemoteOperationBusy:
+            return _error_response(_ApiError(503, "remote_busy", "BMD Compute is busy with other remote operations; retry shortly."))
+        except SubmissionAttemptError:
+            return _error_response(_ApiError(409, "remote_attempt_mismatch", "The remote attempt state does not match this attempt."))
+        except Exception as exc:  # noqa: BLE001 - classified below, never echoed raw
+            LOGGER.error("Machine API search cancellation failed (%s).", type(exc).__name__, exc_info=True)
+            return _error_response(_ApiError(503, "cancellation_unavailable",
+                                             "BMD Compute could not complete the cancellation request; observe the "
+                                             "attempt, then repeat it (repeating is safe)."))
+        return _json(200, {"api_version": API_VERSION, **response})
+
+    @router.get("/structure-search-attempts/{attempt_id}")
+    async def get_structure_search_attempt(attempt_id: str, request: Request):
+        from compute_api.structure_search_execution import lookup_search_attempt
+
+        try:
+            principal = _authorize(request, scope=SCOPE_READ)
+            canonical = _canonical_attempt_id(attempt_id)
+        except (_ApiError, ApiAuthError) as exc:
+            return _error_response(exc)
+        try:
+            response = await run_in_threadpool(lookup_search_attempt, principal=principal.principal, attempt_id=canonical)
+        except ExecutionError as exc:
+            return _error_response(_ApiError(exc.status_code, exc.code, exc.message, **exc.details))
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.error("Machine API search attempt lookup failed (%s).", type(exc).__name__, exc_info=True)
+            return _error_response(_ApiError(500, "lookup_failed", "BMD Compute could not read this attempt."))
+        return _json(200, {"api_version": API_VERSION, **response})
 
     @router.put("/attempts/{attempt_id}")
     async def put_attempt(attempt_id: str, request: Request):

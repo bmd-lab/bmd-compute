@@ -15,6 +15,8 @@ from backend.config import (
     DEFAULT_RESOURCES,
     STRUCTURE_SEARCH_CORES_PER_SOCKET,
     STRUCTURE_SEARCH_EXCLUDED_NODES,
+    STRUCTURE_SEARCH_EXCLUSIVE_NODE,
+    STRUCTURE_SEARCH_JOB_MEMORY,
     STRUCTURE_SEARCH_NODE_SOCKETS,
     STRUCTURE_SEARCH_PARALLEL_RELAXATIONS,
     STRUCTURE_SEARCH_RANKS_PER_RELAXATION,
@@ -98,24 +100,33 @@ class ExecutionResources:
 # Restricted to characters that are safe on an #SBATCH line.
 _HOSTLIST_PATTERN = re.compile(r"^[A-Za-z0-9._\-]+(\[[0-9,\-]+\])?(,[A-Za-z0-9._\-]+(\[[0-9,\-]+\])?)*$")
 STRUCTURE_SEARCH_RESOURCE_PRESET = "structure_search_exclusive_node"
+STRUCTURE_SEARCH_SHARED_RESOURCE_PRESET = "structure_search_shared_node"
+_SLURM_MEMORY_PATTERN = re.compile(r"^[1-9][0-9]*[KMGT]?$")
 
 
 @dataclass(frozen=True)
 class StructureSearchResources:
-    """SLURM request for one USPEX structure search: one whole node.
+    """SLURM request for one USPEX structure search on one node, whole or shared.
 
     Used **only** for structure searches (docs/structure_search.md §4). Ordinary
     workflows keep using ``ExecutionResources`` and the automatic estimator,
     and this class is deliberately not accepted where ``ExecutionResources`` is.
 
-    The request is ``-N 1 --exclusive --mem=0`` under the ``owner100d`` QOS:
+    The default request is ``-N 1 --exclusive --mem=0`` under the ``owner100d`` QOS:
 
-    * ``--exclusive``: the USPEX master runs several VASP relaxations side by
-      side on the node, so no other job may share it.
+    * ``--exclusive``: the whole node, no other job on it.
     * ``--mem=0``: all of the node's memory. The partition's default is 1 GB
       per job, far too little.
     * ``ntasks``: relaxations in parallel x ranks per relaxation (4 x 48 = 192
       by default), so that the job's ``srun`` steps can start that many ranks.
+
+    With ``exclusive=False`` (a shared node) there is no ``--exclusive`` line
+    and ``memory`` must be a positive amount (``32G``): ``--mem=0`` on a shared
+    node would ask for all of its memory. SLURM then allocates ``ntasks`` cores
+    and that memory, and confines the job to them (POWER: ``CR_CORE_MEMORY``,
+    ``ConstrainCores``, ``ConstrainRAMSpace``). The launch mode must then be
+    ``srun_steps``; that is checked where the launch mode is known
+    (``backend.structure_search.search_plan`` and the job).
     * ``exclude``: nodes whose core layout differs from the configured
       sockets x cores per socket (compute-0-332/333 by default).
 
@@ -128,6 +139,8 @@ class StructureSearchResources:
     walltime: str
     ntasks: int = STRUCTURE_SEARCH_PARALLEL_RELAXATIONS * STRUCTURE_SEARCH_RANKS_PER_RELAXATION
     exclude: str = STRUCTURE_SEARCH_EXCLUDED_NODES
+    exclusive: bool = STRUCTURE_SEARCH_EXCLUSIVE_NODE
+    memory: str = STRUCTURE_SEARCH_JOB_MEMORY
     queue: str = DEFAULT_PARTITION
     node_cores: int = field(
         default=STRUCTURE_SEARCH_NODE_SOCKETS * STRUCTURE_SEARCH_CORES_PER_SOCKET,
@@ -135,8 +148,6 @@ class StructureSearchResources:
     )
 
     nodes = 1
-    exclusive = True
-    memory = "0"
     account = DEFAULT_ACCOUNT
     qos = DEFAULT_QOS
 
@@ -167,10 +178,29 @@ class StructureSearchResources:
             )
         object.__setattr__(self, "exclude", exclude)
         object.__setattr__(self, "queue", validate_queue(self.queue))
+        if not isinstance(self.exclusive, bool):
+            raise CalculationValidationError("A structure search's node exclusivity must be true or false.")
+        memory = str(self.memory or "").strip().upper()
+        if memory == "0":
+            if not self.exclusive:
+                raise CalculationValidationError(
+                    "A structure search on a shared node needs an explicit memory amount, not --mem=0.",
+                    suggestion="Set the job memory to a positive amount such as 32G, or use an exclusive node.",
+                )
+        elif not _SLURM_MEMORY_PATTERN.fullmatch(memory):
+            raise CalculationValidationError(
+                f"Job memory {self.memory!r} is not a SLURM memory amount.",
+                suggestion="Use a positive amount such as 32G or 32768M (or 0 for a whole exclusive node).",
+            )
+        object.__setattr__(self, "memory", memory)
+
+    @property
+    def preset(self) -> str:
+        return STRUCTURE_SEARCH_RESOURCE_PRESET if self.exclusive else STRUCTURE_SEARCH_SHARED_RESOURCE_PRESET
 
     def to_dict(self) -> dict:
         return {
-            "preset": STRUCTURE_SEARCH_RESOURCE_PRESET,
+            "preset": self.preset,
             "nodes": self.nodes,
             "ntasks": self.ntasks,
             "exclusive": self.exclusive,
@@ -192,7 +222,7 @@ class StructureSearchResources:
             f"#SBATCH --time={self.walltime}",
             f"#SBATCH --nodes={self.nodes}",
             f"#SBATCH --ntasks={self.ntasks}",
-            "#SBATCH --exclusive",
+            *(["#SBATCH --exclusive"] if self.exclusive else []),
             f"#SBATCH --mem={self.memory}",
         ]
         if self.exclude:
@@ -200,10 +230,24 @@ class StructureSearchResources:
         return lines
 
 
-def structure_search_resources(walltime) -> StructureSearchResources:
-    """The exclusive-node request for a structure search with ``walltime``."""
+def structure_search_resources(walltime, *, ntasks: int | None = None) -> StructureSearchResources:
+    """The node request for a structure search with ``walltime`` (configured exclusivity and memory).
 
-    return StructureSearchResources(walltime=walltime)
+    ``ntasks`` is the search's relaxations in parallel x ranks per relaxation; the configured
+    product when not given.
+    """
+
+    from backend import config  # read when planning, like SearchRuntimeSettings.from_config
+
+    if ntasks is None:
+        ntasks = config.STRUCTURE_SEARCH_PARALLEL_RELAXATIONS * config.STRUCTURE_SEARCH_RANKS_PER_RELAXATION
+    return StructureSearchResources(
+        walltime=walltime,
+        ntasks=ntasks,
+        exclude=config.STRUCTURE_SEARCH_EXCLUDED_NODES,
+        exclusive=config.STRUCTURE_SEARCH_EXCLUSIVE_NODE,
+        memory=config.STRUCTURE_SEARCH_JOB_MEMORY,
+    )
 
 
 def default_execution_resources() -> ExecutionResources:
@@ -339,6 +383,7 @@ __all__ = [
     "WALLTIME_PATTERN",
     "ExecutionResources",
     "STRUCTURE_SEARCH_RESOURCE_PRESET",
+    "STRUCTURE_SEARCH_SHARED_RESOURCE_PRESET",
     "StructureSearchResources",
     "default_execution_resources",
     "ncore_for_execution_resources",

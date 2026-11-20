@@ -1,0 +1,10 @@
+status=118
+id=s2-1793961403-3933520-6b0834a739e9
+step=2
+calcfold=/bmd/bmdguest/validation/uspex_validity_probe_20261106_a/search/Calculation/Calcfold_1_2
+command=/bmd/bmdguest/validation/bmd-compute-uspex-probe-20261106d/reference/uspex_pilot/validity_probe/inject_vasp.sh 2 srun --exact --mpi=pmi2 -n 4 --mem=8G vasp_std
+returncode=0
+started=1793961404.329
+finished=1793961482.647
+validity=invalid_convergence
+reason=electronic loop not converged: the final ionic step used 3 of NELM = 3 electronic steps
