@@ -16,6 +16,17 @@ allocation, and runs VASP for each request:
 * before each run, append the exact command, the variables the launcher set
   and the slot index to ``<CalcFold>/bmd_launch.jsonl``, so core placement can
   be checked afterwards against the ``I_MPI_DEBUG=4`` report in the step log
+* when the step's process (``srun``) is seen to have exited, journal
+  ``srun_returned`` at once, before anything else is done for the step: the
+  return code, the wall-clock and monotonic times of that observation and the
+  monotonic seconds since the process was started (``started_step`` records
+  ``popen_time`` and ``popen_monotonic``, taken just before it was started).
+  Both events name the launcher instance, so monotonic times are compared only
+  within one launcher process. This is when the launcher
+  *observed* the exit, at most one poll interval after it; it is not the
+  moment SLURM released the step's CPUs. The same values go into the step's
+  evidence record (``launch.popen``, ``launch.returned``). A step whose
+  process never exited (abandoned at shutdown) has no such event
 * after VASP exits, check the step's validity
   (``backend.structure_search.step_validity``): a step that exited 0 but
   failed the lab's convergence criteria, or whose evidence is missing or
@@ -70,6 +81,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -536,6 +548,9 @@ class _RunningStep:
     process: subprocess.Popen
     log: IO[bytes]
     started_wall: float
+    popen_wall: float | None = None
+    popen_monotonic: float | None = None
+    returned: dict | None = None
     input_structure: dict = field(default_factory=dict)
     input_bytes: bytes | None = None
     stop_status: int | None = None
@@ -559,6 +574,9 @@ class Launcher:
         self._last_heartbeat = -math.inf
         self._prepared = False
         self._stopped = False
+        # Identifies this launcher process in its timing events: monotonic times are compared only
+        # between steps of the same instance (one process, one clock).
+        self.instance = uuid.uuid4().hex
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -721,7 +739,33 @@ class Launcher:
                     _signal_group(running.process, signal.SIGKILL)
                     running.killed = True
                 continue
+            self._record_return(request_id, running, returncode)
             self._finish(request_id, running, returncode=returncode)
+
+    def _record_return(self, request_id: str, running: _RunningStep, returncode: int) -> None:
+        """Journal ``srun_returned`` for a step whose process has just been seen to exit.
+
+        Called the moment ``poll()`` reports the exit, before the validity check, the evidence record
+        and the done file. Records what the launcher observed, on its own clock: the wall-clock time of
+        the observation and the monotonic seconds since the process was started. Whether the launcher
+        had asked the step to stop (SIGTERM) or killed it (SIGKILL) is recorded, because then the step's
+        tasks need not have ended when ``srun`` did. Never raises and never changes the step's status.
+        """
+
+        observed_monotonic = time.monotonic()
+        observed_wall = time.time()
+        running.returned = {
+            "observed_at": round(observed_wall, 6),
+            "observed_monotonic": round(observed_monotonic, 6),
+            "monotonic_seconds": (None if running.popen_monotonic is None
+                                  else round(observed_monotonic - running.popen_monotonic, 6)),
+            "launcher_instance": self.instance,
+            "returncode": returncode,
+            "stop_requested": running.stop_status is not None,
+            "killed": running.killed,
+        }
+        self._journal_or_report("srun_returned", id=request_id, step=running.request.step, slot=running.slot,
+                                **running.returned)
 
     def _finish(self, request_id: str, running: _RunningStep, *, returncode: int | None) -> None:
         """Write the done file for a step and forget it. ``returncode`` is None if it never exited."""
@@ -866,6 +910,7 @@ class Launcher:
                 request_id=request_id, step=running.request.step, calcfold=running.calcfold,
                 created=running.request.created, slot=running.slot, argv=running.argv,
                 started=running.started_wall, finished=finished, returncode=returncode, status=status,
+                popen=running.popen_wall, popen_monotonic=running.popen_monotonic, returned=running.returned,
                 reason=reason, validity=validity, validity_record_line=validity_line, step_log=step_log,
                 input_structure=running.input_structure, output_structure=output,
             )
@@ -982,6 +1027,8 @@ class Launcher:
         input_structure, input_bytes = evidence_archive.read_structure(
             calcfold / evidence_archive.INPUT_STRUCTURE, name=evidence_archive.INPUT_STRUCTURE)
         log = open(log_path, "ab")
+        popen_monotonic = time.monotonic()
+        popen_wall = time.time()
         try:
             process = subprocess.Popen(
                 argv,
@@ -1015,6 +1062,8 @@ class Launcher:
             process=process,
             log=log,
             started_wall=started,
+            popen_wall=popen_wall,
+            popen_monotonic=popen_monotonic,
             input_structure=input_structure,
             input_bytes=input_bytes,
         )
@@ -1027,6 +1076,9 @@ class Launcher:
             argv=argv,
             environment_set=launch_record["environment_set"],
             pid=process.pid,
+            popen_time=round(popen_wall, 6),
+            popen_monotonic=round(popen_monotonic, 6),
+            launcher_instance=self.instance,
         )
         return True
 

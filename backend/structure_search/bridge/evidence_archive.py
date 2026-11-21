@@ -139,8 +139,16 @@ def build_record(*, request_id: str, step: int, calcfold: Path, created: int | N
                  argv: list[str] | None, started: float | None, finished: float | None, returncode: int | None,
                  status: int, reason: str, validity: Mapping[str, Any] | None,
                  validity_record_line: str | None, step_log: Mapping[str, Any] | None,
-                 input_structure: Mapping[str, Any], output_structure: Mapping[str, Any]) -> dict[str, Any]:
-    """The record of one step. Pure: everything it holds is passed in."""
+                 input_structure: Mapping[str, Any], output_structure: Mapping[str, Any],
+                 popen: float | None = None, popen_monotonic: float | None = None,
+                 returned: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The record of one step. Pure: everything it holds is passed in.
+
+    ``launch.popen`` and ``launch.popen_monotonic`` are the wall-clock and monotonic times just before the
+    step's process was started, and ``launch.returned`` the launcher's ``srun_returned`` observation (None if
+    the process never exited). These keys are additive within schema version 1: records written before them
+    have none of them, and readers must accept both.
+    """
 
     classification = None if validity is None else validity.get("classification")
     return {
@@ -157,7 +165,10 @@ def build_record(*, request_id: str, step: int, calcfold: Path, created: int | N
         "launch": {"slot": slot, "argv": list(argv) if argv is not None else None,
                    "started": None if started is None else round(started, 3),
                    "finished": None if finished is None else round(finished, 3),
-                   "returncode": returncode, "status": status, "reason": reason},
+                   "returncode": returncode, "status": status, "reason": reason,
+                   "popen": None if popen is None else round(popen, 6),
+                   "popen_monotonic": None if popen_monotonic is None else round(popen_monotonic, 6),
+                   "returned": None if returned is None else dict(returned)},
         "step_log": dict(step_log) if step_log is not None else None,
         "validity": None if validity is None else json.loads(json.dumps(validity, default=str)),
         "validity_record_line_sha256": (None if validity_record_line is None

@@ -69,7 +69,7 @@ Each check is `verified`, `failed` or `missing` (evidence absent):
 | `bridge` | every bridge request ran once and was answered; no rejected, lost or abandoned steps |
 | `vasp_steps` | every step an `srun` of the plan's MPI ranks (16 shared, 48 exclusive) with the per-step memory, a SLURM step of that many CPUs, VASP printed a final F. The job allocation (48 or 192 CPUs) holds up to 3 or 4 such steps at once |
 | `parallel` | between 2 steps and the plan's concurrency at a time |
-| `pinning` | every step that ran has Intel MPI's table: ranks 0–15 (shared) or 0–47 (exclusive) each once, distinct PIDs, one host, each rank with CPUs, in either row format (`{12}`, or bare `12` as Intel MPI 2021.10 prints it under `srun` on POWER; the bare form was missed before attempt 209898bc). CPUs shared by ranks of one step fail. Two steps sharing CPUs on a host fail only if their SLURM steps genuinely overlapped (sacct intervals, matched to the launcher's steps); reuse by steps that did not overlap is never rejected; an overlap that sacct's one-second resolution cannot settle is `missing`. An absent, partial or unreadable table is `missing`, never success. Tables read later from the original logs can be supplied as a pinning supplement, used only for logs whose SHA-256 and size equal the collector's and the archived record's |
+| `pinning` | every step that ran has Intel MPI's table: ranks 0–15 (shared) or 0–47 (exclusive) each once, distinct PIDs, one host, each rank with CPUs, in either row format (`{12}`, or bare `12` as Intel MPI 2021.10 prints it under `srun` on POWER; the bare form was missed before attempt 209898bc). CPUs shared by ranks of one step fail. Two steps sharing CPUs on a host fail only if their SLURM steps genuinely overlapped (sacct intervals, matched to the launcher's steps); reuse by steps that did not overlap is never rejected; an overlap that sacct's one-second resolution cannot settle is `missing`. Evidence from a launcher with the `srun_returned` event also settles reuse on the launcher's own clock: a step whose `srun` was seen to return normally strictly before the other step's `srun` was started (`started_step.popen_time`) is sequential (see *Launcher timing* below). An absent, partial or unreadable table is `missing`, never success. Tables read later from the original logs can be supplied as a pinning supplement, used only for logs whose SHA-256 and size equal the collector's and the archived record's |
 | `validity_decisions` | one decision per step, the same in journal, done file and status; done status 0 / 118 / 119 / non-zero |
 | `chains` | each candidate ran steps 1, 2, … in order, once each, and stopped at its first step not accepted; a step is accepted only with completion evidence: the `finished` event and the done file USPEX read both say `valid`, status 0 (an archived verdict alone is not delivery) |
 | `energy_semantics` | the quantity USPEX lists is established from its own tables, not assumed (below) |
@@ -318,3 +318,36 @@ Stop conditions: any `STOP:`/`VALIDATION FAILED:` line, a non-200 status, an
 uncertain submission, a contradiction in an observation, a collector failure,
 or an analysis that is not `PASSED`. Keep everything; nothing is retried or
 removed.
+
+## Launcher timing: `srun_returned`
+
+Launchers from v1.3.1 on journal `srun_returned` the moment they observe a step's `srun` exit, before
+the validity check. `started_step` records `popen_time` and `popen_monotonic` (wall-clock and
+monotonic times just before `srun` was started); `srun_returned` records the return code,
+`observed_at` and `observed_monotonic` (the wall-clock and monotonic times of the observation), the
+monotonic seconds since `srun` was started, whether the launcher had asked the step to stop or killed
+it, and `launcher_instance` (one launcher process). The evidence record holds the same values
+(`launch.popen`, `launch.popen_monotonic`, `launch.returned`), as additive keys within schema version
+1; the analyser requires them to equal the journal's. Records written before them have none of these
+keys and are read as before.
+
+- **What it is:** when the launcher *observed* `srun` returning, at most one poll interval after the
+  exit. It is not the moment SLURM released the step's CPUs, and the analyser never treats it as such.
+- **What it settles:** when two steps share CPUs, sequential reuse is established only if the earlier
+  step's `srun` returned normally (return code ≥ 0, not stopped or killed by the launcher) strictly
+  before the later step's `srun` was started on **all three** of the same launcher instance's measures:
+  its monotonic clock (the ordering basis, which a wall-clock adjustment cannot move), its wall clock,
+  and its journal order. The earlier step's MPI tasks had then ended before the later step existed.
+- **What it cannot settle:** steps of different launcher instances; a step stopped or killed by the
+  launcher, or whose `srun` died from a signal (its tasks may outlive `srun`); equal times. If the three
+  measures disagree (for example after a wall-clock step), launcher timing settles nothing for the
+  pair (`pinning.srun_returned.pairs_whose_launcher_timings_disagree`). In all these cases the earlier
+  sacct-based treatment decides.
+- **Fail-safe:** a duplicate or missing event, a negative duration, a monotonic duration that is not
+  `observed_monotonic − popen_monotonic`, wall-clock and monotonic durations that differ by more than
+  0.5 s, times outside the step's journal interval, or the event before `started_step` or after the
+  step's verdict make the step's timing unusable (`pinning.srun_returned.unusable_reasons`). A
+  separation that SLURM's intervals contradict is unresolved. None of these can turn a verdict into a
+  pass.
+- **Older evidence** (attempt 209898bc and earlier) is analysed exactly as before; 209898bc's result
+  stays INCOMPLETE EVIDENCE and its acceptance record is unchanged.

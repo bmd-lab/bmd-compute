@@ -50,6 +50,10 @@ Direct
 """
 
 
+MONOTONIC_OFFSET = 1_790_000_000.0  # the fake launcher's monotonic clock: wall-clock time minus a constant
+INSTANCE = "0123456789abcdef0123456789abcdef"
+
+
 @dataclass
 class Scenario:
     """What the fake run looks like. Defaults: a clean natural completion, diamond the best."""
@@ -105,6 +109,9 @@ class Scenario:
     crash_before_done: tuple = ()  # (individual, step): record committed, launcher died before the done file
     archive_duplicate: bool = False  # the first step's record offered twice, identically
     critical_line: bool = False  # the launcher could not journal an evidence event (stderr line)
+    # The launcher's srun_returned timing: none (a launcher from before it) | ok | archive_differs (the
+    # archived observation is not the journal's) | after_verdict (journaled after the validity verdict)
+    srun_returned: str = "none"
     # (individual, step) -> rewrite_poscar() options: the step's input is its predecessor's output as USPEX
     # rewrote it (another basis, a strain, moved atoms, a rigid shift, another composition).
     input_changes: dict = field(default_factory=dict)
@@ -240,13 +247,31 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
                 calcfold = f"{identity_run_dir}/search/Calculation/Calcfold_{individual}_{step}"
                 seconds = 30.0
                 argv = ["srun", "--exact", "--mpi=pmi2", "-n", str(ranks), f"--mem={STEP_MEM}", "vasp_std"]
-                journal.append({"event": "started_step", "id": request_id, "step": step, "slot": slot,
-                                "calcfold": calcfold, "argv": argv, "time": t, "pid": 1000 + step_index,
-                                "environment_set": {"I_MPI_DEBUG": "4"}})
+                started_event = {"event": "started_step", "id": request_id, "step": step, "slot": slot,
+                                 "calcfold": calcfold, "argv": argv, "time": t, "pid": 1000 + step_index,
+                                 "environment_set": {"I_MPI_DEBUG": "4"}}
                 reasons = [] if classification == "valid" else ["injected"]
                 returncode = 7 if classification == "execution_failed" else 0
+                popen = returned = None
+                popen_mono = None
+                if scenario.srun_returned != "none":
+                    popen, popen_mono = t - 0.0002, round(t - 0.0002 - MONOTONIC_OFFSET, 6)
+                    started_event.update(popen_time=popen, popen_monotonic=popen_mono, launcher_instance=INSTANCE)
+                    returned = {"observed_at": t + seconds - 2,
+                                "observed_monotonic": round(t + seconds - 2 - MONOTONIC_OFFSET, 6),
+                                "monotonic_seconds": round(seconds - 2 + 0.0002, 6),
+                                "returncode": returncode, "stop_requested": False, "killed": False,
+                                "launcher_instance": INSTANCE}
+                journal.append(started_event)
+                returned_event = None if returned is None else {"event": "srun_returned", "id": request_id,
+                                                                 "step": step, "slot": slot, **returned,
+                                                                 "time": t + seconds - 2}
+                if returned_event and scenario.srun_returned != "after_verdict":
+                    journal.append(returned_event)
                 journal.append({"event": "validity", "id": request_id, "step": step, "classification": classification,
                                 "reasons": reasons, "time": t + seconds})
+                if returned_event and scenario.srun_returned == "after_verdict":
+                    journal.append(returned_event)
                 free_energy = energy(individual, step, scenario)
                 version = "[0] MPI startup(): Intel(R) MPI Library, Version 2021.9  Build 20230307 (id: d82b3071db)\n"
                 if scenario.pin == "none":
@@ -307,7 +332,10 @@ def build_run(run: Path, *, identity_run_dir: str, attempt: str, job: str, plan_
                         request_id=request_id, step=step, calcfold=Path(calcfold), created=int(t), slot=slot,
                         argv=argv, started=t, finished=t + seconds, returncode=returncode, status=status,
                         reason="; ".join(reasons), validity=archived_verdict, validity_record_line=line,
-                        step_log=log_facts, input_structure=in_facts, output_structure=out_facts)
+                        step_log=log_facts, input_structure=in_facts, output_structure=out_facts, popen=popen,
+                        popen_monotonic=popen_mono,
+                        returned=(dict(returned, observed_at=returned["observed_at"] + 1)
+                                  if returned and scenario.srun_returned == "archive_differs" else returned))
                     files = {"POSCAR": given, "CONTCAR": output}
                     evidence_sha = ea.commit(search / ea.ARCHIVE_DIR, record, files)["record_sha256"]
                     journal.append({"event": "evidence", "id": request_id, "step": step, "outcome": "committed",
