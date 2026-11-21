@@ -449,6 +449,15 @@ and the launcher journal, and the done file carries `validity=` and
 `--no-step-validity` exists only for transport pilots. The launcher's Python
 needs pymatgen for it.
 
+Before the check, the launcher journals `srun_returned` for the step: its
+return code, the wall-clock and monotonic times at which the launcher
+observed `srun`'s exit and the monotonic seconds since `srun` was started
+(`started_step` records `popen_time` and `popen_monotonic`; both events name
+the launcher instance); the evidence record keeps the same values. This is the
+launcher's observation, at most one poll interval late, not the moment SLURM
+released the step's CPUs. The execution analyser uses it only to establish
+sequential CPU reuse (`reference/uspex_pilot/execution_validation/README.md`).
+
 **Checked on POWER (6 Nov 2026, SLURM job 23406856):** the validity probe
 (`reference/uspex_pilot/validity_probe/`) ran the real USPEX 25.0 through
 the production bridge and launcher on Si8 (population 4, 2 generations,

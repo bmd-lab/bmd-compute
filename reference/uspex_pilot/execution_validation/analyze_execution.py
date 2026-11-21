@@ -49,6 +49,11 @@ INDIVIDUALS_TOLERANCE_EV = 0.0015  # Individuals prints energies with 3 decimals
 GATHERED_TOLERANCE_EV = 1e-4  # gatheredPOSCARS prints them with 6
 MEMORY_MARGIN_FRACTION = 0.10  # the launcher's default (backend.structure_search.bridge.launcher)
 _CALCFOLD = re.compile(r"Calcfold_(\d+)_(\d+)$")
+JOURNAL_TIME_ROUNDING_S = 0.0005  # the journal's own "time" is rounded to milliseconds
+WALL_MONOTONIC_TOLERANCE_S = 0.5  # srun_returned's wall-clock and monotonic durations must agree this well
+MONOTONIC_ROUNDING_S = 1e-5  # the launcher rounds monotonic times to microseconds
+RETURNED_FIELDS = ("observed_at", "observed_monotonic", "monotonic_seconds", "returncode", "stop_requested",
+                   "killed", "launcher_instance")
 
 
 class Report:
@@ -730,6 +735,10 @@ def verify_archive(files: Path, manifest: dict, steps: list[dict], chains: dict[
         records[folder.name] = {"record": record, "sha256": hashlib.sha256(data).hexdigest(), "problems": own}
 
     evidence_events = {e.get("id"): e for e in journal if e.get("event") == "evidence"}
+    returned_events: dict[str, list[dict]] = {}
+    for e in journal:
+        if e.get("event") == "srun_returned":
+            returned_events.setdefault(e.get("id"), []).append(e)
     write_failures = sorted({e.get("id") for e in journal if e.get("event") == "evidence_write_failed"})
     contradictions: dict[str, list[str]] = {}
     absent: list[str] = []
@@ -783,6 +792,14 @@ def verify_archive(files: Path, manifest: dict, steps: list[dict], chains: dict[
                  ("journal verdict", verdict.get("classification"), events[0].get("classification")),
                  ("reasons", verdict.get("reasons"), events[0].get("reasons")),
                  ("done verdict", verdict.get("classification"), done.get(request_id, {}).get("validity")))
+        if (any(key in launch for key in ("popen", "popen_monotonic", "returned"))
+                or any(key in start for key in ("popen_time", "popen_monotonic")) or request_id in returned_events):
+            # A launcher with srun_returned: the archived launch timing must be the journal's, both or neither.
+            journal_returned = [{k: e.get(k) for k in RETURNED_FIELDS} for e in returned_events.get(request_id, [])]
+            pairs += (("popen", launch.get("popen"), start.get("popen_time")),
+                      ("popen_monotonic", launch.get("popen_monotonic"), start.get("popen_monotonic")),
+                      ("srun_returned", launch.get("returned"),
+                       journal_returned[0] if len(journal_returned) == 1 else journal_returned or None))
         for name, archived, other in pairs:
             if archived != other:
                 contradict(request_id, f"{name}: archive {archived!r}, launcher {other!r}")
@@ -1103,6 +1120,118 @@ def pinning_table(rows: list | None, ranks: int) -> tuple[dict | None, str | Non
                              if shared else None)
 
 
+def _number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def launch_timing(journal: list[dict], started: dict, finished: dict) -> tuple[dict[str, dict[str, Any]], dict]:
+    """Each step's ``srun`` timing on the launcher's own clocks, where the evidence is complete and consistent.
+
+    From ``started_step`` (``popen_time``, ``popen_monotonic``: just before ``srun`` was started) and the
+    ``srun_returned`` event (``observed_at``, ``observed_monotonic``: when the launcher observed ``srun``'s
+    exit, before the validity check), both naming the same ``launcher_instance``. This bounds the step's MPI
+    tasks only if ``srun`` exited normally: an ``srun`` the launcher asked to stop or killed, or that died from
+    a signal, may return while its tasks still run, so such steps get no timing. It is the launcher's
+    observation of ``srun`` returning, not the moment SLURM released the step's CPUs.
+
+    Steps from launchers that predate the event have none of these fields and get no timing (the analysis
+    then uses only the earlier evidence). Anything missing or inconsistent makes the step's timing unusable
+    and never makes a verdict more favourable: a duplicate or missing event, another launcher instance, a
+    negative duration, a monotonic duration that is not ``observed_monotonic - popen_monotonic``, wall-clock
+    and monotonic durations that disagree by more than ``WALL_MONOTONIC_TOLERANCE_S``, a wall-clock time
+    outside the step's journal interval, or the event before ``started_step`` or after the step's verdict or
+    ``finished`` in the journal. Returns ``(usable, unusable)``: ``usable`` maps a step to its timing
+    (wall-clock and monotonic times, launcher instance, journal positions); ``unusable`` to the reason.
+    """
+
+    positions: dict[str, dict[str, list[int]]] = {}
+    returned: dict[str, list[dict]] = {}
+    for index, event in enumerate(journal):
+        name = event.get("event")
+        if name in ("started_step", "srun_returned", "validity", "finished"):
+            positions.setdefault(event.get("id"), {}).setdefault(name, []).append(index)
+        if name == "srun_returned":
+            returned.setdefault(event.get("id"), []).append(event)
+    usable: dict[str, dict[str, Any]] = {}
+    unusable: dict[str, str] = {}
+    for request_id in sorted(set(started) | set(returned)):
+        start, end, events = started.get(request_id), finished.get(request_id), returned.get(request_id, [])
+        if not events and not any(key in (start or {}) for key in ("popen_time", "popen_monotonic")):
+            continue  # a launcher from before srun_returned: no timing evidence, the earlier treatment applies
+        start = start or {}
+        event = events[0] if len(events) == 1 else {}
+        popen, popen_mono = start.get("popen_time"), start.get("popen_monotonic")
+        observed, observed_mono = event.get("observed_at"), event.get("observed_monotonic")
+        duration, returncode = event.get("monotonic_seconds"), event.get("returncode")
+        instance = start.get("launcher_instance")
+        where = positions.get(request_id, {})
+        later = [where[name][0] for name in ("validity", "finished") if name in where]
+        if request_id not in started:
+            reason = "srun_returned without started_step"
+        elif len(events) != 1:
+            reason = f"{len(events)} srun_returned events"
+        elif not all(_number(v) for v in (popen, popen_mono, start.get("time"))):
+            reason = "started_step has no numeric popen times"
+        elif not all(_number(v) for v in (observed, observed_mono, duration)):
+            reason = "srun_returned has no numeric times"
+        elif not (isinstance(instance, str) and instance and event.get("launcher_instance") == instance):
+            reason = "started_step and srun_returned are not from one launcher instance"
+        elif end is None:
+            reason = "no finished event"
+        elif not isinstance(returncode, int) or isinstance(returncode, bool) or returncode < 0:
+            reason = "srun died from a signal: its tasks may have outlived it"
+        elif event.get("killed") is not False or event.get("stop_requested") is not False:
+            reason = "the launcher stopped or killed the step: srun's return need not end its tasks"
+        elif returncode != end.get("returncode"):
+            reason = "return code differs from the finished event"
+        elif duration < 0 or observed_mono < popen_mono:
+            reason = "negative monotonic duration"
+        elif abs(duration - (observed_mono - popen_mono)) > MONOTONIC_ROUNDING_S:
+            reason = "monotonic duration is not observed_monotonic - popen_monotonic"
+        elif abs((observed - popen) - duration) > WALL_MONOTONIC_TOLERANCE_S:
+            reason = "wall-clock and monotonic durations disagree"
+        elif not (popen <= start["time"] + JOURNAL_TIME_ROUNDING_S and popen <= observed):
+            reason = "popen_time is after the step started or after srun returned"
+        elif not (_number(end.get("time")) and observed <= end["time"] + JOURNAL_TIME_ROUNDING_S):
+            reason = "srun_returned is after the step finished"
+        elif not later or not (where["started_step"][0] < where["srun_returned"][0]
+                               and all(where["srun_returned"][0] < i for i in later)):
+            reason = "srun_returned is not between started_step and the step's verdict in the journal"
+        else:
+            usable[request_id] = {"popen": float(popen), "observed": float(observed), "popen_monotonic":
+                                  float(popen_mono), "observed_monotonic": float(observed_mono), "instance": instance,
+                                  "started_index": where["started_step"][0],
+                                  "returned_index": where["srun_returned"][0]}
+            continue
+        unusable[request_id] = reason
+    return usable, unusable
+
+
+def launcher_order(first: dict | None, second: dict | None) -> str | None:
+    """Whether the launcher's own records show one step's ``srun`` returning before the other's started.
+
+    ``separated`` needs all three, for one of the two orders: the same launcher instance and the earlier
+    step's ``observed_monotonic`` strictly before the later step's ``popen_monotonic`` (one process, one
+    monotonic clock, which a wall-clock adjustment cannot move), the same order on the wall clock, and the
+    same order in the journal (the launcher journals ``srun_returned`` before it starts any further step).
+    ``disagree`` if only some of them say so (for example after a wall-clock step); None if none do, or if
+    the steps lack usable timing or come from different launcher instances. Only ``separated`` settles
+    anything.
+    """
+
+    if not first or not second or first["instance"] != second["instance"]:
+        return None
+    verdicts = set()
+    for a, b in ((first, second), (second, first)):
+        votes = (a["observed_monotonic"] < b["popen_monotonic"], a["observed"] < b["popen"],
+                 a["returned_index"] < b["started_index"])
+        if all(votes):
+            return "separated"
+        if any(votes):
+            verdicts.add("disagree")
+    return "disagree" if verdicts else None
+
+
 def assess_pinning(steps: list[dict], sacct_steps: list[list[str]], *, ranks: int) -> tuple[str, dict[str, Any]]:
     """Whether VASP steps that ran at the same time used disjoint CPUs, from Intel MPI's tables.
 
@@ -1114,6 +1243,15 @@ def assess_pinning(steps: list[dict], sacct_steps: list[list[str]], *, ranks: in
     expected and never rejected. Disjoint launcher intervals prove disjoint SLURM steps on the launcher's
     own clock (each SLURM step runs inside its srun, which runs inside the launcher's interval); otherwise
     the verdict must hold under every feasible matching of launcher steps to SLURM steps.
+
+    Where both steps carry usable ``process`` timing (``launch_timing``) and ``launcher_order`` finds one
+    step's ``srun`` seen to return normally strictly before the other's ``srun`` was started (on the same
+    launcher's monotonic clock, its wall clock and its journal), the pair is sequential reuse: the earlier
+    step's tasks had ended before the later step existed. That is an inference about when the processes ran,
+    not about when SLURM released the CPUs. If SLURM's intervals nevertheless show the two steps overlapping by
+    a second or more, the pair is unresolved. If the launcher's measures disagree, launcher timing settles
+    nothing for the pair (it is counted) and the earlier treatment decides. Without usable timing the earlier
+    treatment applies unchanged.
     """
 
     required = [s_ for s_ in steps if s_["returncode"] == 0]
@@ -1127,9 +1265,9 @@ def assess_pinning(steps: list[dict], sacct_steps: list[list[str]], *, ranks: in
             continue
         if shared:
             own_overlap.append([s_["id"], shared])
-        placements[s_["id"]] = {**placement, "start": s_["start"], "end": s_["end"]}
+        placements[s_["id"]] = {**placement, "start": s_["start"], "end": s_["end"], "process": s_.get("process")}
     mapping = map_slurm_steps(steps, sacct_steps)
-    conflicts, unresolved, reused = [], [], 0
+    conflicts, unresolved, reused, reused_by_return, disagreements = [], [], 0, 0, []
     ids = sorted(placements, key=lambda i: (placements[i]["start"] or 0, i))
     for index, first in enumerate(ids):
         a_ = placements[first]
@@ -1143,6 +1281,18 @@ def assess_pinning(steps: list[dict], sacct_steps: list[list[str]], *, ranks: in
                 continue
             if a_["end"] <= b_["start"] or b_["end"] <= a_["start"]:
                 reused += 1  # the launcher intervals are disjoint: SLURM's lie inside them
+                continue
+            order = launcher_order(a_["process"], b_["process"])
+            if order == "disagree":
+                disagreements.append([first, second])
+            elif order == "separated":
+                if (first in mapping["candidates"] and second in mapping["candidates"]
+                        and _overlap_verdict(mapping, first, second) == "overlapping"):
+                    unresolved.append([first, second, "srun_returned separates the steps but SLURM's intervals "
+                                                      "overlap: the timings disagree"])
+                    continue
+                reused += 1  # one srun was seen to return before the other was started
+                reused_by_return += 1
                 continue
             if first not in mapping["candidates"] or second not in mapping["candidates"]:
                 unresolved.append([first, second, "not mapped to SLURM steps in every feasible matching"])
@@ -1158,7 +1308,16 @@ def assess_pinning(steps: list[dict], sacct_steps: list[list[str]], *, ranks: in
                                   [mapping["candidates"][first], mapping["candidates"][second]]])
     status = (FAILED if conflicts or own_overlap else
               MISSING if uninterpretable or unresolved or not required else VERIFIED)
-    return status, {
+    timed = [s_ for s_ in steps if s_.get("process") is not None or s_.get("process_unusable")]
+    extra = {} if not timed else {"srun_returned": {
+        "steps_with_process_interval": sum(1 for s_ in steps if s_.get("process") is not None),
+        "steps_with_unusable_timing": sum(1 for s_ in steps if s_.get("process_unusable")),
+        "unusable_reasons": _counts(s_.get("process_unusable") for s_ in steps if s_.get("process_unusable")),
+        "reuse_settled_by_srun_returned": reused_by_return,
+        "pairs_whose_launcher_timings_disagree": len(disagreements),
+        "basis": "the launcher's observation that srun returned (before the validity check), not the moment "
+                 "SLURM released the step's CPUs"}}
+    return status, {**extra,
         "steps_ran": len(required), "interpretable": sum(1 for s_ in required if s_["id"] in placements),
         "uninterpretable": uninterpretable[:10], "uninterpretable_total": len(uninterpretable),
         "uninterpretable_reasons": reasons,
@@ -1174,6 +1333,13 @@ def assess_pinning(steps: list[dict], sacct_steps: list[list[str]], *, ranks: in
         "ranks_sharing_a_core": own_overlap[:10],
         "hosts": sorted({p["host"] for p in placements.values()}),
         "distinct_cpus": len(set().union(*[p["cpus"] for p in placements.values()])) if placements else 0}
+
+
+def _counts(values) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return counts
 
 
 def merge_pinning_supplement(steps: list[dict], logs: dict, archived_sha256: dict, supplement: dict | None) -> dict:
@@ -1396,6 +1562,7 @@ def analyse(evidence: Path, expected: dict[str, Any], *, pinning_supplement: dic
                                  "anomalies": [e.get("event") for e in anomalies][:20]})
 
     # The steps: individual, step, timing, status, validity, energy.
+    process, process_unusable = launch_timing(journal, started, finished)
     steps = []
     for request_id, event in started.items():
         match = _CALCFOLD.search(str(event.get("calcfold", "")))
@@ -1410,6 +1577,7 @@ def analyse(evidence: Path, expected: dict[str, Any], *, pinning_supplement: dic
             "free_energy_ev": log.get("final_free_energy_ev"), "e0_ev": log.get("final_e0_ev"),
             "ionic_steps": log.get("ionic_steps"),
             "pin_rows": log.get("pin_rows"), "log_errors": log.get("error_lines"), "has_log": request_id in logs,
+            "process": process.get(request_id), "process_unusable": process_unusable.get(request_id),
             # Accepted only with completion evidence: the launcher's finished event and the done file USPEX
             # read both say valid, status 0. An archived verdict alone is not delivery.
             "delivered_status": done.get(request_id, {}).get("status"),
