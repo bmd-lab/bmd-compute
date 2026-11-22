@@ -1015,8 +1015,10 @@ def test_the_runtime_package_is_the_reviewed_one():
     ``f31cfab5…``, commit 42a24ce), and the job script's start-up fix (system and module scripts without
     ``set -u``, start-up failures recorded; job 23616052): 80 files, ``b7682918…`` (v1.3.0, accepted with attempt
     209898bc). Then the launcher's ``srun_returned`` event and the evidence record's ``launch.popen`` /
-    ``launch.returned`` (v1.3.1 candidate): still 80 files. Attempts staged with an earlier package are refused with
-    ``runtime_package_changed`` and need a new attempt ID.
+    ``launch.returned`` (v1.3.1 candidate): still 80 files, ``31837cc6…`` (v1.3.1). Then the capability record's
+    description sections (``backend/calculations/capabilities.py`` only, read-only producer; planner, admission,
+    INCAR/KPOINTS/POTCAR and job scripts unchanged): still 80 files. Attempts staged with an earlier package are
+    refused with ``runtime_package_changed`` and need a new attempt ID.
     """
 
     from backend.runtime_package import build_runtime_package_manifest, runtime_package_manifest_digest
@@ -1024,7 +1026,7 @@ def test_the_runtime_package_is_the_reviewed_one():
     manifest = build_runtime_package_manifest()
     assert len(manifest) == 80
     assert runtime_package_manifest_digest(manifest) == (
-        "31837cc6de0cf824c9bcfe32ff46ada9021873ba23b015faf3e02cc90bd7cfc2")
+        "e1b24bb50a8d34e33ef85ab23b7850c6bc57c53181ab2887d592d3dd0869ade3")
 
 
 def test_scancel_command_takes_only_a_numeric_job_id():
