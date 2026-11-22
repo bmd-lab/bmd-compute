@@ -32,17 +32,33 @@ SCHEMA_VERSION = 1
 SCOPE = EXECUTABLE_METHODOLOGY_SCOPE
 REPOSITORY_ID = "bmd_compute"
 
-# Structure-search description. The structure-search modules (and the machine
-# API router) import runtime configuration and are deliberately not imported by
-# this producer, which must stay free of runtime machinery
-# (tests/test_capabilities_contract.py). These values therefore restate the
-# authoritative constants, and tests/test_capability_descriptions.py keeps each
-# one equal to its source:
+# Validation vocabulary. The record never claims that a capability is
+# scientifically validated or adopted by the lab; the only validation statuses
+# it may carry are these negative ones (tests/test_capabilities_contract.py
+# enforces this structurally).
+VALIDATION_STATUS_NOT_VALIDATED = "not_validated"
+VALIDATION_STATUS_NOT_ASSERTED = "not_asserted"
+VALIDATION_STATUSES = (VALIDATION_STATUS_NOT_VALIDATED, VALIDATION_STATUS_NOT_ASSERTED)
+
+# Availability vocabulary for stage/theory/modifier combinations.
+COMBINATION_IMPLEMENTED = "implemented_internal_stage"
+COMBINATION_LEGACY_RECORD_ONLY = "legacy_record_only"
+
+# TECHNICAL DEBT (restated structure-search description).
+# The structure-search modules (and the machine API router) import runtime
+# configuration and are deliberately not imported by this producer, which must
+# stay free of runtime machinery (tests/test_capabilities_contract.py). These
+# values therefore restate the authoritative constants, including the
+# provisional search limits. They are the only restated scientific constants
+# in this producer; do not add others. tests/test_capability_descriptions.py
+# keeps each one equal to its source:
 #   backend.structure_search.spec.SEARCH_DEFAULTS_POLICY_ID / _VERSION / _STATUS
 #   backend.structure_search.admission.admission_scope_record()
 #   compute_api.router.SEARCH_EXECUTION_ENV and its enabling value
 # The producer never reads the execution setting: it describes the gate, not
-# the state of any running service.
+# the state of any running service. Removing this debt requires an
+# import-light module in backend.structure_search that both the runtime and
+# this producer read; see docs/calculation_architecture.md.
 STRUCTURE_SEARCH_DEFAULTS_POLICY = {
     "policy_id": "bmd_compute.structure_search_defaults",
     "policy_version": 1,
@@ -104,15 +120,15 @@ def build_capability_payload(
         "contract": {
             "base_stage_definitions": "Theory-neutral stage definitions from list_stage_definitions().",
             "capabilities": "Supported stage/theory descriptions from describe_stage(); unsupported combinations are not invented.",
-            "stage_modifier_support": "Complete stage-local explicit modifier sets accepted by the BMD Compute registry for each supported stage/theory pair.",
+            "stage_modifier_support": "Implemented internal stage combinations: every stage-local explicit modifier set the BMD Compute registry accepts for each supported stage/theory pair, including combinations kept only so historical records remain readable. Not a statement of availability for new calculations; see new_calculation_admission.",
             "modifier_policies": "Stage-local executable modifiers with controlled options; unsupported pairings are not invented.",
             "automatic_default_treatments": "Read-only policy describing BMD-managed Desired Output treatment resolution.",
             "release_identity": "Release tag and source revision of this checkout. Describes source code only; it is never evidence of what a running service executes.",
             "desired_outputs": "Every Desired Output identifier with its requested stage sequence, from the registry; structure-dependent resolution applies afterwards.",
-            "new_calculation_admission": "Combinations refused for new calculations although stage validation accepts them, and the admissible modifier sets that remain, from the admission policy.",
+            "new_calculation_admission": "Which implemented combinations are available for new calculations and which are legacy-record-only, from the admission policy.",
             "protocols": "Workflow-level methodology that overrides stage-definition defaults for new calculations: the geometry relaxation protocol, the plane-wave cutoff rule and the adaptive geometry-convergence check.",
             "experimental_capabilities": "Implemented capabilities outside the stage methodology described in capabilities, with their status.",
-            "validation": "What this record does and does not assert about scientific validation.",
+            "validation": "What this record asserts about scientific validation: it makes no validation claims.",
         },
         "base_stage_definitions": base_stage_definitions,
         "capabilities": capabilities,
@@ -136,9 +152,9 @@ def desired_output_catalogue() -> list[dict[str, Any]]:
 
     Unlike the browser menu, this includes identifiers that are accepted but not
     offered in the browser (``browser_hidden``) and marks the Custom entry, which
-    has no fixed workflow. Each managed entry carries the stage sequence it
-    requests before structure-dependent resolution (automatic treatments and
-    frozen plane-wave cutoffs). Free-text menu descriptions are not included.
+    has no fixed workflow. Each managed entry carries the registry's menu
+    description and the stage sequence it requests before structure-dependent
+    resolution (automatic treatments and frozen plane-wave cutoffs).
     """
 
     return [
@@ -146,10 +162,11 @@ def desired_output_catalogue() -> list[dict[str, Any]]:
             "value": value,
             "label": label,
             "workflow_mode": "custom_workflow" if workflow_spec is None else "bmd_managed_desired_output",
+            "description": description,
             "browser_hidden": value in BROWSER_HIDDEN_DESIRED_OUTPUTS,
             "workflow_spec": validate_workflow_spec(workflow_spec).to_dict() if workflow_spec is not None else None,
         }
-        for value, label, _description, workflow_spec in _desired_output_workflows()
+        for value, label, description, workflow_spec in _desired_output_workflows()
     ]
 
 
@@ -174,24 +191,29 @@ def release_identity(source: dict[str, Any], *, tag: str | None) -> dict[str, An
 
 
 def new_calculation_admission_description(capabilities: list[dict[str, Any]]) -> dict[str, Any]:
-    """The admission policy, as data, and its effect on stage_modifier_support."""
+    """The admission policy, as data: implemented versus available combinations."""
 
-    admissible = []
+    availability = []
     for capability in capabilities:
         stage_type = capability["stage_type"]
         theory = capability["theory"]
-        combinations = supported_stage_modifier_combinations(stage_type, theory)
-        admissible.append(
+        implemented = []
+        available = []
+        legacy_only = []
+        for modifiers in supported_stage_modifier_combinations(stage_type, theory):
+            names = sorted(modifier.value for modifier in modifiers)
+            implemented.append(names)
+            if admission.stage_is_admissible_for_new_calculation(StageSpec(stage_type, theory, modifiers)):
+                available.append(names)
+            else:
+                legacy_only.append(names)
+        availability.append(
             {
                 "stage_type": stage_type,
                 "theory": theory,
-                "admissible_modifier_combinations": [
-                    sorted(modifier.value for modifier in modifiers)
-                    for modifiers in combinations
-                    if admission.stage_is_admissible_for_new_calculation(
-                        StageSpec(stage_type, theory, modifiers)
-                    )
-                ],
+                "implemented_modifier_combinations": implemented,
+                "available_for_new_calculations": available,
+                "legacy_record_only": legacy_only,
                 "source": "backend.calculations.admission.stage_is_admissible_for_new_calculation",
             }
         )
@@ -200,17 +222,33 @@ def new_calculation_admission_description(capabilities: list[dict[str, Any]]) ->
         "policy_version": admission.ADMISSION_POLICY_VERSION,
         "applies_to": "every new calculation built, prepared or submitted (browser and machine API), after automatic treatments are resolved",
         "not_applied_to": "reading historical records, which may contain combinations now closed",
+        "vocabulary": {
+            COMBINATION_IMPLEMENTED: (
+                "accepted by stage validation, so records containing it can be read; "
+                "says nothing about availability for new calculations"
+            ),
+            "available_for_new_calculations": "implemented and accepted by the admission policy for new calculations",
+            COMBINATION_LEGACY_RECORD_ONLY: (
+                "implemented so that historical records remain readable, but refused for "
+                "every new calculation; it must not be presented as available"
+            ),
+        },
         "relationship_to_stage_modifier_support": (
-            "stage_modifier_support lists combinations stage validation accepts, including "
-            "combinations kept only so historical records remain readable. A combination "
-            "listed in closed_combinations is refused for new calculations; "
-            "admissible_modifier_support lists what remains open."
+            "stage_modifier_support lists implemented internal stage combinations. Only "
+            "modifier_availability[].available_for_new_calculations lists what a new "
+            "calculation may use; combinations in legacy_record_only, such as HSE06 + SOC, "
+            "are refused with the diagnostic code given in closed_combinations."
         ),
         "closed_combinations": [
-            {**entry, "diagnostic_code": admission.HSE06_SOC_NOT_SUPPORTED_CODE}
+            {
+                **entry,
+                "status": COMBINATION_LEGACY_RECORD_ONLY,
+                "available_for_new_calculations": False,
+                "diagnostic_code": admission.HSE06_SOC_NOT_SUPPORTED_CODE,
+            }
             for entry in admission.unsupported_new_calculation_combinations_payload()
         ],
-        "admissible_modifier_support": admissible,
+        "modifier_availability": availability,
         "phonon_workflow_restrictions": {
             "diagnostic_code": admission.PHONONS_UNSUPPORTED_TREATMENT_CODE,
             "required_theory": Theory.PBE.value,
@@ -256,25 +294,39 @@ def protocol_descriptions() -> dict[str, Any]:
             **geometry_convergence.policy_payload(),
             "applies_to": "the final pass of the geometry relaxation protocol and the phonon force stage it feeds",
         },
-        "stage_definition_defaults": {
-            "statement": (
-                "For new calculations, every Geometry Optimisation stage runs with the resolved "
-                "plane-wave cutoff, the protocol's common settings and pass convergence, which "
-                "replace the relax stage's executable_defaults for the settings listed here. "
-                "Those stage defaults (including ENCUT 580 eV and ADDGRID) are used only to "
-                "rebuild workflows recorded before the protocol existed."
-            ),
-            "stage_type": "relax",
-            "settings_replaced_for_new_calculations": sorted(
-                {"ENCUT", *geometry_relaxation.COMMON_RELAX_SETTINGS, *geometry_relaxation.PASS_CONVERGENCE[1]}
-            ),
-            "source": "backend.calculations.geometry_relaxation.relaxation_incar_settings",
+        "stage_definition_defaults": _relax_stage_defaults_description(),
+    }
+
+
+def _relax_stage_defaults_description() -> dict[str, Any]:
+    replaced = sorted(
+        {"ENCUT", *geometry_relaxation.COMMON_RELAX_SETTINGS, *geometry_relaxation.PASS_CONVERGENCE[1]}
+    )
+    relax_definition = next(
+        definition for definition in list_stage_definitions() if definition["stage_type"] == "relax"
+    )
+    executable_defaults = relax_definition["base_bmd_incar_amendments"]["executable_defaults"]
+    return {
+        "statement": (
+            "For new calculations, every Geometry Optimisation stage runs with the resolved "
+            "plane-wave cutoff, the protocol's common settings and pass convergence. These "
+            "replace the relax stage's executable_defaults for the settings listed here; the "
+            "replaced stage-default values are shown in replaced_stage_default_values and are "
+            "used only to rebuild workflows recorded before the protocol existed. A protocol "
+            "setting whose value is null is left unset."
+        ),
+        "stage_type": "relax",
+        "settings_replaced_for_new_calculations": replaced,
+        "replaced_stage_default_values": {
+            key: executable_defaults[key] for key in replaced if key in executable_defaults
         },
+        "new_calculation_values": "protocols.geometry_relaxation and protocols.plane_wave_cutoff",
+        "source": "backend.calculations.geometry_relaxation.relaxation_incar_settings",
     }
 
 
 def experimental_capability_descriptions() -> list[dict[str, Any]]:
-    """Implemented capabilities that are not standard methodology."""
+    """Implemented capabilities outside the stage methodology, with their status."""
 
     defaults_status = STRUCTURE_SEARCH_DEFAULTS_POLICY["status"]
     return [
@@ -284,7 +336,12 @@ def experimental_capability_descriptions() -> list[dict[str, Any]]:
             "status": "experimental",
             "part_of_stage_methodology": False,
             "methodology_status": defaults_status,
-            "validation_status": "not_established" if defaults_status == "provisional" else "not_recorded",
+            "validation_status": VALIDATION_STATUS_NOT_VALIDATED,
+            "validation_statement": "Structure search is implemented but not validated; its defaults and limits are provisional.",
+            "description_provenance": (
+                "restated in backend.calculations.capabilities and equality-tested against "
+                "backend.structure_search and compute_api.router (technical debt)"
+            ),
             "defaults_policy": dict(STRUCTURE_SEARCH_DEFAULTS_POLICY),
             "admission": json.loads(json.dumps(STRUCTURE_SEARCH_ADMISSION_SCOPE)),
             "interfaces": "machine API structure-search routes; the browser page is a preview",
@@ -304,11 +361,13 @@ def experimental_capability_descriptions() -> list[dict[str, Any]]:
 
 def validation_statement() -> dict[str, Any]:
     return {
-        "status": "not_recorded",
+        "status": VALIDATION_STATUS_NOT_ASSERTED,
+        "claims": [],
+        "permitted_statuses": list(VALIDATION_STATUSES),
         "statement": (
-            "This record describes implemented, executable methodology. It does not "
-            "assert scientific validation or lab adoption of any capability; that is "
-            "a human judgement recorded separately."
+            "This record describes implemented, executable methodology. Nothing in it is "
+            "a claim that a capability is validated or adopted by the lab; that is a "
+            "human judgement recorded separately. Implemented does not mean validated."
         ),
     }
 
@@ -383,6 +442,15 @@ def _stage_modifier_support(capabilities: list[dict[str, Any]]) -> list[dict[str
                     sorted(modifier.value for modifier in modifiers)
                     for modifiers in combinations
                 ],
+                "describes": COMBINATION_IMPLEMENTED,
+                "legacy_record_only_modifier_combinations": [
+                    sorted(modifier.value for modifier in modifiers)
+                    for modifiers in combinations
+                    if not admission.stage_is_admissible_for_new_calculation(
+                        StageSpec(stage_type, theory, modifiers)
+                    )
+                ],
+                "availability_for_new_calculations": "new_calculation_admission.modifier_availability",
                 "source": (
                     "backend.calculations.registry."
                     "supported_stage_modifier_combinations"

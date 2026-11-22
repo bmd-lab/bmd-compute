@@ -23,6 +23,8 @@ import main
 import test_input_reference_contract as reference_cases
 from backend.calculations import admission, geometry_relaxation as gr
 from backend.calculations.capabilities import (
+    COMBINATION_IMPLEMENTED,
+    COMBINATION_LEGACY_RECORD_ONLY,
     STRUCTURE_SEARCH_EXECUTION_ENABLED_VALUE,
     STRUCTURE_SEARCH_EXECUTION_SETTING,
     build_capability_payload,
@@ -33,6 +35,7 @@ from backend.calculations.registry import (
     BROWSER_HIDDEN_DESIRED_OUTPUTS,
     CalculationValidationError,
     _desired_output_options,
+    _desired_output_workflows,
     desired_output_workflow_spec,
     supported_stage_modifier_combinations,
 )
@@ -116,6 +119,9 @@ def test_desired_outputs_are_exactly_the_registry_identifiers():
         else:
             assert desired_output_workflow_spec(value) is not None, value
         assert entry["browser_hidden"] is (value in BROWSER_HIDDEN_DESIRED_OUTPUTS)
+    assert {value: entry["description"] for value, entry in described.items()} == {
+        value: description for value, _label, description, _spec in _desired_output_workflows()
+    }
     menu = {option["value"] for option in _desired_output_options()}
     assert menu == {value for value, entry in described.items() if not entry["browser_hidden"]}
 
@@ -142,36 +148,65 @@ def test_closed_combinations_are_exactly_the_admission_policy():
     assert PAYLOAD["new_calculation_admission"]["policy_version"] == admission.ADMISSION_POLICY_VERSION
 
 
+def _registry_combinations(stage_type, theory):
+    return [sorted(m.value for m in combination) for combination in supported_stage_modifier_combinations(stage_type, theory)]
+
+
+def _availability(stage_type, theory):
+    return next(
+        item for item in PAYLOAD["new_calculation_admission"]["modifier_availability"]
+        if (item["stage_type"], item["theory"]) == (stage_type, theory)
+    )
+
+
 def test_stage_modifier_support_still_lists_registry_acceptance_unchanged():
+    for entry in PAYLOAD["stage_modifier_support"]:
+        assert entry["supported_modifier_combinations"] == _registry_combinations(entry["stage_type"], entry["theory"])
+        assert entry["describes"] == COMBINATION_IMPLEMENTED
+        assert entry["availability_for_new_calculations"] == "new_calculation_admission.modifier_availability"
+        assert entry["legacy_record_only_modifier_combinations"] == _availability(
+            entry["stage_type"], entry["theory"])["legacy_record_only"]
     hse_static = next(
         item for item in PAYLOAD["stage_modifier_support"] if (item["stage_type"], item["theory"]) == ("static", "hse06")
     )
     assert ["soc"] in hse_static["supported_modifier_combinations"]
+    # The legacy entry is marked next to where it is listed.
+    assert ["soc"] in hse_static["legacy_record_only_modifier_combinations"]
 
 
-def test_admissible_support_is_registry_support_minus_closed_combinations():
+def test_availability_partitions_implemented_combinations_by_the_admission_policy():
     closed = {(item["theory"], item["modifier"]) for item in PAYLOAD["new_calculation_admission"]["closed_combinations"]}
-    for entry in PAYLOAD["new_calculation_admission"]["admissible_modifier_support"]:
-        registry = [
-            sorted(modifier.value for modifier in combination)
-            for combination in supported_stage_modifier_combinations(entry["stage_type"], entry["theory"])
-        ]
-        expected = [combo for combo in registry if not any((entry["theory"], m) in closed for m in combo)]
-        assert entry["admissible_modifier_combinations"] == expected, (entry["stage_type"], entry["theory"])
+    pairs = {(entry["stage_type"], entry["theory"]) for entry in PAYLOAD["stage_modifier_support"]}
+    assert {(e["stage_type"], e["theory"]) for e in PAYLOAD["new_calculation_admission"]["modifier_availability"]} == pairs
+    for entry in PAYLOAD["new_calculation_admission"]["modifier_availability"]:
+        registry = _registry_combinations(entry["stage_type"], entry["theory"])
+        is_closed = [any((entry["theory"], m) in closed for m in combo) for combo in registry]
+        assert entry["implemented_modifier_combinations"] == registry
+        assert entry["available_for_new_calculations"] == [c for c, x in zip(registry, is_closed) if not x]
+        assert entry["legacy_record_only"] == [c for c, x in zip(registry, is_closed) if x]
+
+
+def test_hse06_soc_is_never_described_as_available_for_new_calculations():
+    section = PAYLOAD["new_calculation_admission"]
+    (hse_soc,) = [c for c in section["closed_combinations"] if (c["theory"], c["modifier"]) == ("hse06", "soc")]
+    assert hse_soc["status"] == COMBINATION_LEGACY_RECORD_ONLY
+    assert hse_soc["available_for_new_calculations"] is False
+    assert hse_soc["diagnostic_code"] == admission.HSE06_SOC_NOT_SUPPORTED_CODE
+    assert set(section["vocabulary"]) == {COMBINATION_IMPLEMENTED, "available_for_new_calculations",
+                                          COMBINATION_LEGACY_RECORD_ONLY}
+    for entry in section["modifier_availability"]:
+        if entry["theory"] == "hse06":
+            assert all("soc" not in combo for combo in entry["available_for_new_calculations"])
+            if entry["stage_type"] == "static":
+                assert ["soc"] in entry["legacy_record_only"]
 
 
 @pytest.mark.parametrize("theory", ["pbe", "hse06"])
 def test_planner_refuses_exactly_the_described_closed_static_combinations(theory):
     admission_section = PAYLOAD["new_calculation_admission"]
     closed_code = admission_section["closed_combinations"][0]["diagnostic_code"]
-    admissible = next(
-        item["admissible_modifier_combinations"]
-        for item in admission_section["admissible_modifier_support"]
-        if (item["stage_type"], item["theory"]) == ("static", theory)
-    )
-    registry = [
-        sorted(m.value for m in combination) for combination in supported_stage_modifier_combinations("static", theory)
-    ]
+    admissible = _availability("static", theory)["available_for_new_calculations"]
+    registry = _registry_combinations("static", theory)
     for modifiers in registry:
         try:
             _plan(custom={"stages": [_stage("static", theory, modifiers)]})
@@ -241,21 +276,28 @@ def test_custom_relaxations_also_use_the_resolved_cutoff_as_described():
 
 
 def test_replaced_settings_are_the_ones_relaxation_incar_settings_sets():
-    replaced = PAYLOAD["protocols"]["stage_definition_defaults"]["settings_replaced_for_new_calculations"]
+    section = PAYLOAD["protocols"]["stage_definition_defaults"]
+    replaced = section["settings_replaced_for_new_calculations"]
     plan = _plan(desired_output="relaxed_structure")
     settings = gr.relaxation_incar_settings(plan.workflow_spec, 0)
     assert replaced == sorted(settings)
+    stage_defaults = describe_stage("relax", "pbe")["base_bmd_incar_amendments"]["executable_defaults"]
+    assert section["replaced_stage_default_values"] == {k: stage_defaults[k] for k in replaced if k in stage_defaults}
+    # The statement carries no restated numbers; values come from the stage definition.
+    assert not any(char.isdigit() for char in section["statement"])
 
 
 # ------------------------------------------------------------ experimental capabilities
 
 
-def test_structure_search_is_described_as_experimental_and_not_established():
+def test_structure_search_is_described_as_experimental_and_not_validated():
     (search,) = PAYLOAD["experimental_capabilities"]
     assert search["id"] == "structure_search"
     assert search["status"] == "experimental" and search["part_of_stage_methodology"] is False
     assert search["methodology_status"] == search_spec.SEARCH_DEFAULTS_STATUS == "provisional"
-    assert search["validation_status"] == "not_established"
+    assert search["validation_status"] == "not_validated"
+    assert "not validated" in search["validation_statement"]
+    assert "technical debt" in search["description_provenance"]
     assert search["execution_gate"]["reported_state"] is None
 
 
@@ -298,8 +340,9 @@ def test_described_structure_search_operations_are_the_routers_routes():
 
 
 def test_the_record_never_asserts_validation():
-    assert PAYLOAD["validation"]["status"] == "not_recorded"
-    assert "does not assert" in PAYLOAD["validation"]["statement"]
+    assert PAYLOAD["validation"]["status"] == "not_asserted"
+    assert PAYLOAD["validation"]["claims"] == []
+    assert "Implemented does not mean validated" in PAYLOAD["validation"]["statement"]
 
 
 def test_producer_still_needs_only_the_standard_library():
@@ -318,3 +361,11 @@ def test_existing_bmd_check_consumer_still_accepts_the_payload():
     compute = pytest.importorskip("bmd_agent.resources.compute")
     capabilities = compute.parse_capability_payload(json.dumps(build_capability_payload()))
     assert len(capabilities.capabilities) == len(PAYLOAD["capabilities"])
+
+
+def test_bmd_check_still_reads_the_unchanged_registry_combinations():
+    compute = pytest.importorskip("bmd_agent.resources.compute")
+    capabilities = compute.parse_capability_payload(json.dumps(PAYLOAD))
+    for entry in PAYLOAD["stage_modifier_support"]:
+        read = compute.supported_modifier_combinations(capabilities, entry["stage_type"], entry["theory"])
+        assert read == tuple(frozenset(c) for c in entry["supported_modifier_combinations"])
