@@ -52,6 +52,12 @@ def test_capability_payload_has_versioned_contract_and_provenance_shape():
         "capabilities": "Supported stage/theory descriptions from describe_stage(); unsupported combinations are not invented.",
         "stage_modifier_support": "Complete stage-local explicit modifier sets accepted by the BMD Compute registry for each supported stage/theory pair.",
         "modifier_policies": "Stage-local executable modifiers with controlled options; unsupported pairings are not invented.",
+        "release_identity": "Release tag and source revision of this checkout. Describes source code only; it is never evidence of what a running service executes.",
+        "desired_outputs": "Every Desired Output identifier with its requested stage sequence, from the registry; structure-dependent resolution applies afterwards.",
+        "new_calculation_admission": "Combinations refused for new calculations although stage validation accepts them, and the admissible modifier sets that remain, from the admission policy.",
+        "protocols": "Workflow-level methodology that overrides stage-definition defaults for new calculations: the geometry relaxation protocol, the plane-wave cutoff rule and the adaptive geometry-convergence check.",
+        "experimental_capabilities": "Implemented capabilities outside the stage methodology described in capabilities, with their status.",
+        "validation": "What this record does and does not assert about scientific validation.",
     }
     assert payload["source"] == {
         "repository": "bmd_compute",

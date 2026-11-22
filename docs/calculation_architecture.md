@@ -269,4 +269,15 @@ The payload describes bmd-compute's executable calculation methodology: the stag
 
 Consumers establish compatibility from the machine-readable fields `schema_version` and `source.repository` (`"bmd_compute"`). The `scope` strings are human-readable descriptions and may be reworded without a schema change; consumers must not compare them for equality. Schema-v1 consumers must ignore unknown additive object fields, which keeps the new modifier-support description compatible with existing consumers.
 
+The stage-level sections (`base_stage_definitions`, `capabilities`, `stage_modifier_support`) describe stage definitions and structural acceptance. Six additive sections describe the layers above them, so a consumer does not mistake stage defaults or registry acceptance for what a new calculation runs:
+
+- `release_identity`: the exact release tag of the checkout (`git describe --tags --exact-match`, or `null`), its commit and dirty state, and `released_code` (an exact tag on a clean checkout). `deployment_verified` is always `false`: the record describes source code, never a running service.
+- `desired_outputs`: every Desired Output identifier from the registry, with its requested stage sequence and protocol passes, whether the browser hides it (`energy_only`) and the Custom entry. Automatic treatments and frozen cutoffs are resolved per structure afterwards.
+- `new_calculation_admission`: the admission policy as data. `closed_combinations` lists what stage validation accepts but new calculations refuse (HSE06 + SOC), `admissible_modifier_support` lists the modifier sets that remain open per stage/theory pair, and `phonon_workflow_restrictions` states the workflow-level phonon limits.
+- `protocols`: the two-pass geometry relaxation protocol, the species-dependent plane-wave cutoff rule (applied to every new relax and phonon force stage, managed or Custom), the adaptive geometry-convergence check, and `stage_definition_defaults`, which names the relax settings these replace. The relax stage's `executable_defaults` (including `ENCUT` 580 eV and `ADDGRID`) are used only to rebuild workflows recorded before the protocol.
+- `experimental_capabilities`: structure search (USPEX), with status `experimental`, methodology status `provisional`, validation status `not_established`, its admission scope and the name of the service setting that gates execution. The record never reports that setting's state in a running service. The structure-search modules import runtime configuration, so these values are restated in the producer and tests keep them equal to their sources.
+- `validation`: the record does not assert scientific validation or lab adoption of any capability.
+
+`tests/test_capability_descriptions.py` checks every section against the planner (`main.plan_calculation_request`), the admission policy and the registry.
+
 Provenance inspection runs `git` with `--no-optional-locks` (and `GIT_OPTIONAL_LOCKS=0`), so invoking the producer never refreshes or rewrites the checkout's Git index.
