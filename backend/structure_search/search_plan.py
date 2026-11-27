@@ -377,6 +377,7 @@ def build_search_plan_from_formula(
         parse_formula,
         reduce_composition,
     )
+    from backend.structure_search.planning import OPTIONAL_REQUEST_FIELDS
     from backend.structure_search.spec import default_search_spec
 
     advanced = advanced or AdvancedSettings()
@@ -397,16 +398,26 @@ def build_search_plan_from_formula(
                else str(getattr(advanced, name)).strip())
         for name in ("min_atoms", "max_atoms", "num_generations", "walltime")
     }
-    spec = default_search_spec(composition, **overrides)
+    # Optional fields without a default (random_seed, excluded_nodes): recorded
+    # only when given, so a request without them plans exactly as before.
+    optional = {
+        name: getattr(advanced, name)
+        for name in OPTIONAL_REQUEST_FIELDS
+        if not (getattr(advanced, name) is None or str(getattr(advanced, name)).strip() == "")
+    }
+    spec = default_search_spec(composition, **overrides, random_seed=optional.get("random_seed"))
+    excluded_nodes = canonical_excluded_nodes(optional.get("excluded_nodes"))
     # The plan records each override as the spec resolved it (for example
     # "048:00:00" as "48:00:00", "08" as 8), so equivalent spellings give one
     # plan; the text as entered is kept in provenance.
     resolved = {"min_atoms": spec.min_atoms, "max_atoms": spec.max_atoms,
                 "num_generations": spec.num_generations, "walltime": spec.walltime}
+    resolved_optional = {"random_seed": spec.random_seed, "excluded_nodes": excluded_nodes}
     request = {
         "kind": "formula",
         "advanced_overrides": {
-            name: (None if value is None else resolved[name]) for name, value in overrides.items()
+            **{name: (None if value is None else resolved[name]) for name, value in overrides.items()},
+            **{name: resolved_optional[name] for name in optional},
         },
     }
     provenance_request = {
@@ -414,20 +425,66 @@ def build_search_plan_from_formula(
         "entered_formula": str(formula).strip(),
         "entered_composition": _composition_rows(entered.keys(), entered.values()),
         "advanced_overrides_as_entered": {
-            name: getattr(advanced, name) for name in ("min_atoms", "max_atoms", "num_generations", "walltime")
+            **{name: getattr(advanced, name) for name in ("min_atoms", "max_atoms", "num_generations", "walltime")},
+            **optional,
         },
         "reduced_from_entered": dict(reduced) != dict(entered),
         "reordered_from_entered": list(composition) != list(reduced),
     }
     return _build(spec, request=request, provenance_request=provenance_request,
-                  runtime_settings=runtime_settings, generator=generator)
+                  runtime_settings=runtime_settings, generator=generator, excluded_nodes=excluded_nodes)
 
 
-def build_search_plan(spec, *, runtime_settings=None, generator: Mapping[str, Any] | None = None) -> StructureSearchPlan:
+# The random-seed record of a plan (only in plans whose spec requests a seed).
+RANDOM_SEED_RECORD_SCHEMA = "bmd_compute.structure_search_random_seed"
+RANDOM_SEED_RECORD_SCHEMA_VERSION = 1
+
+
+def canonical_excluded_nodes(value) -> str | None:
+    """A per-search additional exclusion in canonical form (distinct host names, natural order), or ``None``."""
+
+    from backend.calculations.resources import merge_excluded_nodes
+
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return merge_excluded_nodes("", value)[1]
+
+
+def random_seed_record(spec) -> dict[str, Any] | None:
+    """What a plan states about its USPEX random seed, or ``None`` when no seed is requested.
+
+    It distinguishes three things: the seed requested (the spec), the line
+    ``INPUT.txt`` will contain (checked again when the files are written and
+    recorded in ``prepared_inputs.json``), and whether USPEX's random number
+    generator reproduces a search with that seed, which has not been verified.
+    """
+
+    from backend.structure_search import spec as spec_module
+
+    if spec.random_seed is None:
+        return None
+    return {
+        "schema": RANDOM_SEED_RECORD_SCHEMA,
+        "schema_version": RANDOM_SEED_RECORD_SCHEMA_VERSION,
+        "requested": spec.random_seed,
+        "uspex_keyword": spec_module.RANDOM_SEED_KEYWORD,
+        "input_txt_line": f"{spec.random_seed} : {spec_module.RANDOM_SEED_KEYWORD}",
+        "effective_rng_determinism": spec_module.RANDOM_SEED_DETERMINISM_STATUS,
+    }
+
+
+def build_search_plan(
+    spec,
+    *,
+    runtime_settings=None,
+    generator: Mapping[str, Any] | None = None,
+    excluded_nodes=None,
+) -> StructureSearchPlan:
     """The plan of an explicit :class:`~backend.structure_search.spec.StructureSearchSpec`.
 
     The spec's elements are put in canonical order (counts follow them); the
-    spec as given is kept in the plan's provenance.
+    spec as given is kept in the plan's provenance. ``excluded_nodes`` is an
+    optional SLURM host list excluded in addition to the deployment's nodes.
     """
 
     from backend.structure_search.spec import StructureSearchSpec
@@ -435,17 +492,20 @@ def build_search_plan(spec, *, runtime_settings=None, generator: Mapping[str, An
     if not isinstance(spec, StructureSearchSpec):
         raise TypeError("build_search_plan expects a StructureSearchSpec")
     ordered = canonical_spec(spec)
+    excluded = canonical_excluded_nodes(excluded_nodes)
     provenance_request = {
         "kind": "spec",
         "spec_as_given": spec.to_record(),
         "reduced_from_entered": False,
         "reordered_from_entered": ordered.elements != spec.elements,
+        **({"excluded_nodes_as_given": excluded_nodes} if excluded is not None else {}),
     }
-    return _build(ordered, request={"kind": "spec"}, provenance_request=provenance_request,
-                  runtime_settings=runtime_settings, generator=generator)
+    request = {"kind": "spec", **({"excluded_nodes": excluded} if excluded is not None else {})}
+    return _build(ordered, request=request, provenance_request=provenance_request,
+                  runtime_settings=runtime_settings, generator=generator, excluded_nodes=excluded)
 
 
-def _build(spec, *, request, provenance_request, runtime_settings, generator) -> StructureSearchPlan:
+def _build(spec, *, request, provenance_request, runtime_settings, generator, excluded_nodes=None) -> StructureSearchPlan:
     from backend.calculations.resources import structure_search_resources
     from backend.structure_search import admission, incar_policy, input_writer, potcar
     from backend.structure_search import spec as spec_module
@@ -474,7 +534,10 @@ def _build(spec, *, request, provenance_request, runtime_settings, generator) ->
         if from_defaults else "explicit search specification"
     )
     resources = structure_search_resources(
-        spec.walltime, ntasks=settings.parallel_relaxations * settings.ranks_per_relaxation)
+        spec.walltime,
+        ntasks=settings.parallel_relaxations * settings.ranks_per_relaxation,
+        additional_exclude=excluded_nodes,
+    )
     if not resources.exclusive and settings.launch_mode != "srun_steps":
         raise SearchPlanError(
             f"A structure search on a shared node needs the srun_steps launch mode, not {settings.launch_mode}: "
@@ -505,6 +568,7 @@ def _build(spec, *, request, provenance_request, runtime_settings, generator) ->
             "formula_units": [n // formula_atoms for n in cell_sizes],
             "energy_grade": incar_policy.SEARCH_ENERGY_GRADE,
             "equivalent_to_bmd_adaptive_relaxation": incar_policy.EQUIVALENT_TO_BMD_ADAPTIVE_RELAXATION,
+            **({"random_seed": random_seed_record(spec)} if spec.random_seed is not None else {}),
         },
         "admission": {
             "decision": "admitted",
@@ -673,7 +737,8 @@ def rebuild_plan(plan: StructureSearchPlan, *, runtime_settings=None) -> Structu
             )
         if request.get("kind") == "spec":
             return build_search_plan(StructureSearchSpec.from_mapping(record["search"]["spec"]),
-                                     runtime_settings=runtime_settings, generator=unrecorded)
+                                     runtime_settings=runtime_settings, generator=unrecorded,
+                                     excluded_nodes=request.get("excluded_nodes"))
     except (KeyError, TypeError, AttributeError) as exc:
         raise SearchPlanError(f"The search plan is incomplete: {exc!r}.", code=INVALID_PLAN_CODE) from exc
     raise SearchPlanError("The search plan has no recognised request.", code=INVALID_PLAN_CODE)
@@ -779,8 +844,9 @@ def render_prepared_files(
         INPUT_FILENAME,
         SearchExecutionSettings,
         render_input_text,
+        written_random_seed,
     )
-    from backend.structure_search.spec import StructureSearchSpec
+    from backend.structure_search.spec import RANDOM_SEED_DETERMINISM_STATUS, StructureSearchSpec
 
     record = plan.record
     try:
@@ -801,6 +867,15 @@ def render_prepared_files(
             sleep_seconds=execution["sleep_seconds"],
         ),
     )
+    seed_record = record["search"].get("random_seed")
+    if (seed_record or {}).get("requested") != spec.random_seed or (seed_record is None) != (spec.random_seed is None):
+        raise SearchPlanError("The plan's random-seed record does not match its spec.", code=INVALID_PLAN_CODE)
+    written_seed = written_random_seed(input_text)
+    if written_seed != spec.random_seed:  # pragma: no cover - the writer is the only source
+        raise SearchPlanError(
+            f"INPUT.txt would contain fixRndSeed {written_seed!r}, not the planned seed {spec.random_seed!r}.",
+            code=INVALID_PLAN_CODE,
+        )
     files: dict[str, bytes] = {INPUT_FILENAME: input_text.encode("utf-8")}
     for entry in record["incar_files"].values():
         files[entry["path"]] = entry["text"].encode("utf-8")
@@ -821,6 +896,17 @@ def render_prepared_files(
         ],
         "contains_potcar_contents": False,
         "submitted": False,
+        # Only with a requested seed (the manifest is otherwise unchanged).
+        **(
+            {
+                "random_seed": {
+                    "requested": spec.random_seed,
+                    "written_in_input_txt": written_seed,
+                    "effective_rng_determinism": RANDOM_SEED_DETERMINISM_STATUS,
+                }
+            }
+            if spec.random_seed is not None else {}
+        ),
     }
     files[PREPARED_FILE] = (json.dumps(manifest, indent=1, sort_keys=True, ensure_ascii=True) + "\n").encode("utf-8")
     return files

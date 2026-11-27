@@ -21,7 +21,8 @@ opening                   closing
 
 Two groups of settings go into the file:
 
-- the user's choices, from :class:`~backend.structure_search.spec.StructureSearchSpec`;
+- the user's choices, from :class:`~backend.structure_search.spec.StructureSearchSpec`
+  (``fixRndSeed`` only when the spec requests a seed);
 - execution settings that bmd-compute fixes and the user never sets,
   from :class:`SearchExecutionSettings` and the constants below.
 
@@ -38,7 +39,7 @@ from typing import Iterable
 
 from backend.calculations.registry import CalculationValidationError
 from backend.structure_search.admission import require_admissible_search
-from backend.structure_search.spec import StructureSearchSpec
+from backend.structure_search.spec import RANDOM_SEED_KEYWORD, StructureSearchSpec
 
 
 INPUT_FILENAME = "INPUT.txt"
@@ -146,6 +147,9 @@ def render_input_text(spec: StructureSearchSpec, settings: SearchExecutionSettin
         _scalar(spec.resolved_initial_population_size, "initialPopSize"),
         _scalar(spec.num_generations, "numGenerations"),
         _scalar(spec.stop_criterion, "stopCrit"),
+        # fixRndSeed only when a seed was requested: without one the file is
+        # byte-identical to the one written before the field existed.
+        *([_scalar(spec.random_seed, RANDOM_SEED_KEYWORD)] if spec.random_seed is not None else []),
         "",
     ]
     lines += _block("abinitioCode", "ENDabinit", [" ".join([str(ABINITIO_CODE_VASP)] * steps)])
@@ -175,6 +179,20 @@ def write_input_file(
     path = Path(directory) / INPUT_FILENAME
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def written_random_seed(text: str) -> int | None:
+    """The ``fixRndSeed`` value an ``INPUT.txt`` written by this module contains, or ``None``.
+
+    This reports what the file says, not what USPEX did with it.
+    """
+
+    values = read_input_keywords(text).get(RANDOM_SEED_KEYWORD)
+    if values is None:
+        return None
+    if len(values) != 1 or not values[0].isdigit():
+        raise ValueError(f"Unexpected {RANDOM_SEED_KEYWORD} value in INPUT.txt: {values!r}")
+    return int(values[0])
 
 
 def read_input_keywords(text: str) -> dict[str, list[str]]:
@@ -246,4 +264,5 @@ __all__ = [
     "read_input_keywords",
     "render_input_text",
     "write_input_file",
+    "written_random_seed",
 ]

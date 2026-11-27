@@ -61,6 +61,24 @@ class StructureSearchSpecError(CalculationValidationError):
 # Upper limit of the default populationSize (manual section 4.2).
 POPULATION_SIZE_DEFAULT_MAX = 60
 
+# fixRndSeed (manual section 4.11): "The random seed number for USPEX
+# calculations. For the same random seed, USPEX should produce the same
+# result. Default: 0". bmd-compute writes it only when a seed is requested.
+# The accepted range, 1 .. 2**31 - 1, is a bmd-compute choice: 0 is the USPEX
+# default (whose meaning the manual does not state) and is refused so that a
+# requested seed is always explicit; the manual's example (-2000) is negative,
+# but negative seeds are refused because their handling by USPEX 25's random
+# number generator is not documented. Writing the keyword is verified here;
+# whether USPEX 25 then reproduces a search exactly is NOT verified (see
+# RANDOM_SEED_DETERMINISM_STATUS).
+RANDOM_SEED_MIN = 1
+RANDOM_SEED_MAX = 2**31 - 1
+RANDOM_SEED_KEYWORD = "fixRndSeed"
+RANDOM_SEED_DETERMINISM_STATUS = (
+    "not verified: fixRndSeed is written to INPUT.txt as requested; whether USPEX 25.0 "
+    "reproduces a search with the same seed has not been tested (T1a)"
+)
+
 
 def default_population_size(atoms_per_cell: int) -> int:
     """USPEX's documented default ``populationSize`` for a cell of ``atoms_per_cell`` atoms.
@@ -104,6 +122,12 @@ class StructureSearchSpec:
     - ``walltime`` -> the SLURM walltime of the search allocation (H:MM:SS).
       A search's length is adaptive, so there is no automatic estimate.
     - ``calculation_type`` -> ``calculationType``.
+    - ``random_seed`` -> ``fixRndSeed``. ``None`` (the default) writes no
+      ``fixRndSeed`` line, exactly as before the field existed, and leaves the
+      spec record and every plan digest unchanged. A seed is a whole number
+      from :data:`RANDOM_SEED_MIN` to :data:`RANDOM_SEED_MAX`. Writing it is
+      not evidence that USPEX's random number generator is reproducible
+      (:data:`RANDOM_SEED_DETERMINISM_STATUS`).
     - ``theory`` and ``spin_polarized`` are not USPEX keywords; they record
       the requested electronic-structure method so that admission can reject
       requests v1 does not support.
@@ -133,6 +157,7 @@ class StructureSearchSpec:
     calculation_type: int = FIXED_COMPOSITION_BULK
     theory: str = THEORY_PBE
     spin_polarized: bool = False
+    random_seed: int | None = None
 
     def __post_init__(self) -> None:
         elements = _element_tuple(self.elements)
@@ -198,6 +223,7 @@ class StructureSearchSpec:
             raise StructureSearchSpecError(
                 "spin_polarized must be true or false.", code="invalid_type", field="spin_polarized"
             )
+        object.__setattr__(self, "random_seed", validate_random_seed(self.random_seed))
 
     @property
     def num_steps(self) -> int:
@@ -239,6 +265,9 @@ class StructureSearchSpec:
             "stop_criterion": self.stop_criterion,
             "kresol_start": list(self.kresol_start),
             "walltime": self.walltime,
+            # Only when requested: a spec without a seed keeps its v1 record
+            # (and so its plan digest) exactly.
+            **({"random_seed": self.random_seed} if self.random_seed is not None else {}),
         }
 
     @classmethod
@@ -254,7 +283,7 @@ class StructureSearchSpec:
             "composition", "external_pressure_gpa", "min_atoms", "max_atoms",
             "population_size", "initial_population_size", "num_generations",
             "stop_criterion", "kresol_start", "walltime", "calculation_type",
-            "theory", "spin_polarized", "schema", "schema_version",
+            "theory", "spin_polarized", "random_seed", "schema", "schema_version",
         }
         unknown = sorted(set(data) - allowed)
         if unknown:
@@ -275,7 +304,7 @@ class StructureSearchSpec:
         optional = {
             key: data[key]
             for key in ("external_pressure_gpa", "population_size", "initial_population_size",
-                        "calculation_type", "theory", "spin_polarized")
+                        "calculation_type", "theory", "spin_polarized", "random_seed")
             if key in data and data[key] is not None
         }
         return cls(
@@ -361,6 +390,7 @@ def default_search_spec(
     max_atoms: Any = None,
     num_generations: Any = None,
     walltime: Any = None,
+    random_seed: Any = None,
 ) -> "StructureSearchSpec":
     """The spec of a formula-only request, with optional overrides.
 
@@ -369,6 +399,7 @@ def default_search_spec(
     overrides (None or an empty string) take the default. Pressure, theory,
     magnetism, k-point resolutions and population sizes are not overridable
     here: they are fixed by the v1 scope or by the defaults above.
+    ``random_seed`` has no default: blank means no ``fixRndSeed`` line.
     """
 
     elements, counts = _composition_rows(composition)
@@ -391,7 +422,38 @@ def default_search_spec(
         kresol_start=DEFAULT_KRESOL_START,
         walltime=chosen(walltime, DEFAULT_SEARCH_WALLTIME),
         external_pressure_gpa=DEFAULT_EXTERNAL_PRESSURE_GPA,
+        random_seed=chosen(random_seed, None),
     )
+
+
+def validate_random_seed(value) -> int | None:
+    """A requested USPEX ``fixRndSeed``: ``None``, or a whole number from 1 to 2**31 - 1.
+
+    Accepts an ``int`` or a string of decimal digits (a form field); refuses
+    booleans, fractional numbers, 0, negative numbers and anything larger.
+    """
+
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise StructureSearchSpecError(
+            "random_seed must be a whole number.", code="invalid_type", field="random_seed"
+        )
+    if isinstance(value, str):
+        text = value.strip()
+        if not re.fullmatch(r"[0-9]+", text):
+            raise StructureSearchSpecError(
+                "random_seed must be a whole number.", code="invalid_type", field="random_seed"
+            )
+        value = int(text)
+    if not RANDOM_SEED_MIN <= value <= RANDOM_SEED_MAX:
+        raise StructureSearchSpecError(
+            f"random_seed must be between {RANDOM_SEED_MIN} and {RANDOM_SEED_MAX}.",
+            code="out_of_range",
+            field="random_seed",
+            suggestion="Leave it blank for no fixRndSeed, or choose a positive seed such as 20261126.",
+        )
+    return int(value)
 
 
 def search_defaults_record() -> dict[str, Any]:
@@ -518,6 +580,10 @@ __all__ = [
     "DEFAULT_SEARCH_WALLTIME",
     "PLANNED_FINALIST_COUNT",
     "PROVISIONAL_DEFAULTS",
+    "RANDOM_SEED_DETERMINISM_STATUS",
+    "RANDOM_SEED_KEYWORD",
+    "RANDOM_SEED_MAX",
+    "RANDOM_SEED_MIN",
     "SEARCH_DEFAULTS_POLICY_ID",
     "SEARCH_DEFAULTS_POLICY_VERSION",
     "SEARCH_DEFAULTS_STATUS",
@@ -533,4 +599,5 @@ __all__ = [
     "StructureSearchSpec",
     "StructureSearchSpecError",
     "default_population_size",
+    "validate_random_seed",
 ]

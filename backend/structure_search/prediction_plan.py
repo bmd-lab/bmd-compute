@@ -174,12 +174,17 @@ class AdvancedSettings:
     """Optional overrides from the collapsed Advanced panel (blank = default).
 
     Pressure is not offered: searches run at ambient pressure only.
+    ``random_seed`` (USPEX ``fixRndSeed``) and ``excluded_nodes`` (SLURM nodes
+    excluded in addition to the deployment's) are optional; when blank they
+    leave the plan and its digest exactly as without them.
     """
 
     min_atoms: Any = None
     max_atoms: Any = None
     num_generations: Any = None
     walltime: Any = None
+    random_seed: Any = None
+    excluded_nodes: Any = None
 
     def is_empty(self) -> bool:
         return all(str(v or "").strip() == "" for v in self.__dict__.values())
@@ -212,6 +217,8 @@ def build_prediction_plan(formula: str, advanced: AdvancedSettings | None = None
         max_atoms=advanced.max_atoms,
         num_generations=advanced.num_generations,
         walltime=advanced.walltime,
+        random_seed=advanced.random_seed,
+        excluded_nodes=advanced.excluded_nodes,
     )
     return plan_structure_search(request).preview()
 
@@ -281,6 +288,7 @@ def preview_from_plan(plan, *, advanced_overrides: bool = False) -> dict[str, An
             "initial_population_size": spec["initial_population_size"],
             "num_generations": spec["num_generations"],
             "stop_criterion": spec["stop_criterion"],
+            "random_seed": spec.get("random_seed"),
             "energy_grade": search["energy_grade"],
             "equivalent_to_bmd_adaptive_relaxation": search["equivalent_to_bmd_adaptive_relaxation"],
             "ladder": ladder,

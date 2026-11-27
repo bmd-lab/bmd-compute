@@ -56,6 +56,42 @@ RETURNED_FIELDS = ("observed_at", "observed_monotonic", "monotonic_seconds", "re
                    "killed", "launcher_instance")
 
 
+_FIX_RND_SEED_LINE = re.compile(r"^\s*(-?[0-9]+)\s*:\s*fixRndSeed\s*$", re.MULTILINE)
+
+
+def _seed_lines(text: str | None) -> list[int] | None:
+    return None if text is None else [int(value) for value in _FIX_RND_SEED_LINE.findall(text)]
+
+
+def _random_seed_check(manifest: dict, input_text: str | None, parameters_text: str | None, *,
+                       planned: Any = None) -> tuple[str, dict]:
+    """(status, detail): planned seed vs prepared_inputs.json vs INPUT.txt vs USPEX's copy (results1/Parameters.txt).
+
+    ``planned`` is the seed in the frozen plan's spec (search_plan.json, digest-covered); without it the
+    manifest's ``requested`` is used. VERIFIED means all of them agree and the seed was written once and read
+    back from USPEX's copy; it says nothing about whether USPEX's random number generator reproduces the search
+    (that needs a repeat run).
+    """
+
+    requested = planned if planned is not None else manifest.get("requested")
+    written, read_back = _seed_lines(input_text), _seed_lines(parameters_text)
+    detail = {"planned": planned, "prepared_inputs_requested": manifest.get("requested"),
+              "prepared_inputs_written": manifest.get("written_in_input_txt"),
+              "input_txt": written, "parameters_txt": read_back,
+              "effective_rng_determinism": "not assessed by this analysis"}
+    if type(requested) is not int or manifest.get("requested") != requested:
+        return FAILED, detail
+    if written is None or read_back is None:
+        return MISSING, detail
+    if not read_back:
+        # How USPEX 25.0 writes the seed in its copy is not yet confirmed on a real run.
+        detail["note"] = "no 'value : fixRndSeed' line found in results1/Parameters.txt"
+        return MISSING, detail
+    ok = (type(requested) is int and manifest.get("written_in_input_txt") == requested
+          and written == [requested] and read_back == [requested])
+    return (VERIFIED if ok else FAILED), detail
+
+
 class Report:
     def __init__(self):
         self.checks: list[dict[str, Any]] = []
@@ -1546,6 +1582,18 @@ def analyse(evidence: Path, expected: dict[str, Any], *, pinning_supplement: dic
                    VERIFIED if banner and master_started and input_sha and input_sha == input_expected else FAILED,
                    {"banner": banner, "master_started": bool(master_started), "input_sha256": input_sha,
                     "manifest_input_sha256": input_expected})
+
+    # The USPEX random seed: only for searches planned or prepared with one (older evidence gets no such check).
+    seed_manifest = prepared_inputs.get("random_seed")
+    stored_plan = _json(files / "search" / "search_plan.json") or {}
+    plan_seed = ((stored_plan.get("search") or {}).get("spec") or {}).get("random_seed")
+    if isinstance(seed_manifest, dict) or plan_seed is not None:
+        report.add("random_seed", "the planned fixRndSeed was written to INPUT.txt and reached USPEX's "
+                   "Parameters.txt (reproducibility of the search itself is not assessed here)",
+                   *_random_seed_check(seed_manifest if isinstance(seed_manifest, dict) else {},
+                                       _text(input_text) if input_text.is_file() else None,
+                                       _text(files / "search" / "results1" / "Parameters.txt"),
+                                       planned=plan_seed))
 
     anomalies = [e for e in journal if e.get("event") in ("rejected", "start_failed", "recovered", "abandoned",
                                                           "validity_record_failed", "launch_record_failed")]

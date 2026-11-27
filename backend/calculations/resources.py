@@ -102,6 +102,113 @@ _HOSTLIST_PATTERN = re.compile(r"^[A-Za-z0-9._\-]+(\[[0-9,\-]+\])?(,[A-Za-z0-9._
 STRUCTURE_SEARCH_RESOURCE_PRESET = "structure_search_exclusive_node"
 STRUCTURE_SEARCH_SHARED_RESOURCE_PRESET = "structure_search_shared_node"
 _SLURM_MEMORY_PATTERN = re.compile(r"^[1-9][0-9]*[KMGT]?$")
+# One host-list item: a name, optionally ending in a bracketed list of numbers
+# and ranges (compute-0-[332-333,7]).
+_HOSTLIST_ITEM = re.compile(r"^([A-Za-z0-9._\-]+)(?:\[([0-9,\-]+)\])?$")
+# Per-search additional exclusions are for a few misbehaving nodes, not for
+# steering a search onto particular nodes.
+MAX_ADDITIONAL_EXCLUDED_NODES = 64
+
+
+def _split_hostlist(text: str) -> list[str]:
+    items, depth, current = [], 0, ""
+    for character in text:
+        if character == "[":
+            depth += 1
+        elif character == "]":
+            depth -= 1
+        if character == "," and depth == 0:
+            items.append(current)
+            current = ""
+        else:
+            current += character
+    items.append(current)
+    return items
+
+
+def expand_hostlist(text: str, *, limit: int = 4096) -> list[str]:
+    """The host names of a SLURM host list (``compute-0-[332-333],compute-0-7``), in order.
+
+    Supports the forms ``_HOSTLIST_PATTERN`` accepts: names, optionally ending in
+    one bracketed list of numbers and ascending ranges; zero padding is kept
+    (``n[01-03]`` gives ``n01 n02 n03``). Raises ``ValueError`` for anything else
+    or for more than ``limit`` names.
+    """
+
+    text = str(text or "").strip()
+    if not text:
+        return []
+    if not _HOSTLIST_PATTERN.fullmatch(text):
+        raise ValueError(f"{text!r} is not a SLURM host list")
+    names: list[str] = []
+    for item in _split_hostlist(text):
+        match = _HOSTLIST_ITEM.fullmatch(item)
+        if not match:
+            raise ValueError(f"{item!r} is not a SLURM host-list item")
+        prefix, ranges = match.groups()
+        if ranges is None:
+            names.append(prefix)
+            continue
+        for part in ranges.split(","):
+            low, separator, high = part.partition("-")
+            if not low.isdigit() or (separator and not high.isdigit()):
+                raise ValueError(f"{part!r} is not a number or range in {item!r}")
+            width = len(low) if low.startswith("0") and len(low) > 1 else 0
+            first, last = int(low), int(high) if separator else int(low)
+            if last < first:
+                raise ValueError(f"The range {part!r} in {item!r} is descending")
+            if last - first + 1 + len(names) > limit:
+                raise ValueError(f"The host list names more than {limit} nodes")
+            names += [f"{prefix}{number:0{width}d}" for number in range(first, last + 1)]
+        if len(names) > limit:
+            raise ValueError(f"The host list names more than {limit} nodes")
+    return names
+
+
+def _natural_key(name: str):
+    return [int(part) if part.isdigit() else part for part in re.split(r"([0-9]+)", name)]
+
+
+def merge_excluded_nodes(default: str, additional) -> tuple[str, str]:
+    """``(effective, additional_canonical)`` for a deployment default plus per-search additions.
+
+    ``additional`` is a SLURM host list (or empty/None). It is validated,
+    expanded and written canonically as its distinct host names in natural
+    order (``compute-0-270``). The effective exclusion is the deployment
+    default **unchanged**, followed by the additional names it does not already
+    cover; a per-search exclusion can therefore never remove a default node.
+    With no additional names the effective exclusion is exactly ``default``.
+    """
+
+    default = str(default or "").strip()
+    if additional is None or (isinstance(additional, str) and not additional.strip()):
+        return default, ""
+    if not isinstance(additional, str):
+        raise CalculationValidationError(
+            "Additional excluded nodes must be given as a SLURM host list (text).",
+            suggestion="For example compute-0-270 or compute-0-[270,271].",
+        )
+    try:
+        covered = set(expand_hostlist(default))
+    except ValueError as exc:
+        raise CalculationValidationError(
+            f"The deployment's excluded nodes {default!r} cannot be combined with a per-search exclusion ({exc}).",
+            suggestion="Check BMD_SEARCH_EXCLUDED_NODES on this deployment.",
+        ) from exc
+    try:
+        requested = expand_hostlist(additional, limit=MAX_ADDITIONAL_EXCLUDED_NODES)
+    except ValueError as exc:
+        raise CalculationValidationError(
+            f"Additional excluded nodes {additional.strip()!r} are not a usable SLURM host list ({exc}).",
+            suggestion=(
+                "Use a form such as compute-0-270 or compute-0-[270,271], with at most "
+                f"{MAX_ADDITIONAL_EXCLUDED_NODES} nodes."
+            ),
+        ) from exc
+    canonical = sorted(set(requested), key=_natural_key)
+    new = [name for name in canonical if name not in covered]
+    effective = ",".join(([default] if default else []) + new)
+    return effective, ",".join(canonical)
 
 
 @dataclass(frozen=True)
@@ -127,8 +234,13 @@ class StructureSearchResources:
     ``ConstrainCores``, ``ConstrainRAMSpace``). The launch mode must then be
     ``srun_steps``; that is checked where the launch mode is known
     (``backend.structure_search.search_plan`` and the job).
-    * ``exclude``: nodes whose core layout differs from the configured
-      sockets x cores per socket (compute-0-332/333 by default).
+    * ``exclude``: the effective ``--exclude``. By default the deployment's
+      nodes whose core layout differs from the configured sockets x cores per
+      socket (compute-0-332/333). A search plan may add nodes
+      (:func:`structure_search_resources`, ``additional_exclude``); then
+      ``exclude_deployment_default`` and ``exclude_additional`` record the two
+      parts, and :meth:`to_dict` reports them. Without additions the request
+      and its record are exactly as before.
 
     The walltime must be given explicitly (H:MM:SS, at most 100 days, the
     owner100d limit). There is no automatic estimate: the estimator is
@@ -142,6 +254,8 @@ class StructureSearchResources:
     exclusive: bool = STRUCTURE_SEARCH_EXCLUSIVE_NODE
     memory: str = STRUCTURE_SEARCH_JOB_MEMORY
     queue: str = DEFAULT_PARTITION
+    exclude_deployment_default: str | None = None
+    exclude_additional: str = ""
     node_cores: int = field(
         default=STRUCTURE_SEARCH_NODE_SOCKETS * STRUCTURE_SEARCH_CORES_PER_SOCKET,
         repr=False,
@@ -177,6 +291,21 @@ class StructureSearchResources:
                 suggestion="Use a form such as compute-0-[332-333],compute-0-7, or leave it empty.",
             )
         object.__setattr__(self, "exclude", exclude)
+        additional = str(self.exclude_additional or "").strip()
+        if additional:
+            default = str(self.exclude_deployment_default or "").strip()
+            effective, canonical = merge_excluded_nodes(default, additional)
+            if canonical != additional or effective != exclude:
+                raise CalculationValidationError(
+                    "A structure search's effective excluded nodes must be the deployment default "
+                    "followed by its additional nodes.",
+                )
+            object.__setattr__(self, "exclude_deployment_default", default)
+        elif self.exclude_deployment_default is not None:
+            raise CalculationValidationError(
+                "A deployment-default exclusion is recorded separately only with additional excluded nodes."
+            )
+        object.__setattr__(self, "exclude_additional", additional)
         object.__setattr__(self, "queue", validate_queue(self.queue))
         if not isinstance(self.exclusive, bool):
             raise CalculationValidationError("A structure search's node exclusivity must be true or false.")
@@ -210,6 +339,15 @@ class StructureSearchResources:
             "account": self.account,
             "qos": self.qos,
             "exclude": self.exclude,
+            # Only with per-search additions, so that requests without them keep
+            # their record (and every plan digest and acknowledgement) unchanged.
+            **(
+                {
+                    "exclude_deployment_default": self.exclude_deployment_default,
+                    "exclude_additional": self.exclude_additional,
+                }
+                if self.exclude_additional else {}
+            ),
         }
 
     def sbatch_directives(self) -> list[str]:
@@ -230,23 +368,31 @@ class StructureSearchResources:
         return lines
 
 
-def structure_search_resources(walltime, *, ntasks: int | None = None) -> StructureSearchResources:
+def structure_search_resources(
+    walltime, *, ntasks: int | None = None, additional_exclude=None
+) -> StructureSearchResources:
     """The node request for a structure search with ``walltime`` (configured exclusivity and memory).
 
     ``ntasks`` is the search's relaxations in parallel x ranks per relaxation; the configured
-    product when not given.
+    product when not given. ``additional_exclude`` is an optional per-search SLURM host list
+    added to the deployment's ``STRUCTURE_SEARCH_EXCLUDED_NODES`` (never replacing it); see
+    :func:`merge_excluded_nodes`. The deployment setting itself is not changed.
     """
 
     from backend import config  # read when planning, like SearchRuntimeSettings.from_config
 
     if ntasks is None:
         ntasks = config.STRUCTURE_SEARCH_PARALLEL_RELAXATIONS * config.STRUCTURE_SEARCH_RANKS_PER_RELAXATION
+    default = config.STRUCTURE_SEARCH_EXCLUDED_NODES
+    effective, additional = merge_excluded_nodes(default, additional_exclude)
     return StructureSearchResources(
         walltime=walltime,
         ntasks=ntasks,
-        exclude=config.STRUCTURE_SEARCH_EXCLUDED_NODES,
+        exclude=effective,
         exclusive=config.STRUCTURE_SEARCH_EXCLUSIVE_NODE,
         memory=config.STRUCTURE_SEARCH_JOB_MEMORY,
+        exclude_deployment_default=default if additional else None,
+        exclude_additional=additional,
     )
 
 
@@ -390,6 +536,9 @@ __all__ = [
     "normalize_execution_resources",
     "stage_allows_automatic_ncore",
     "structure_search_resources",
+    "expand_hostlist",
+    "merge_excluded_nodes",
+    "MAX_ADDITIONAL_EXCLUDED_NODES",
     "format_walltime",
     "validate_queue",
     "validate_walltime",

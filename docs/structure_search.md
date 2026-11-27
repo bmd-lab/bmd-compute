@@ -545,6 +545,42 @@ jobs are confined to their cores and memory (`ConstrainCores=yes`,
 job (validity probe 23406856) used at most 74 MB per VASP rank and 578 MB for
 the USPEX master and launcher.
 
+### Random seed and per-search node exclusion (27 Nov 2026, for the blind Si8 benchmark)
+
+Two optional planning fields, both without a default. A request that omits
+them gives exactly the v1.3.1 plan record, digest, `INPUT.txt` and
+`prepared_inputs.json`.
+
+- **`random_seed`** (spec field; USPEX `fixRndSeed`, manual section 4.11:
+  "For the same random seed, USPEX should produce the same result. Default:
+  0"). A whole number from 1 to 2³¹−1; 0 (the USPEX default, meaning not
+  stated) and negative values (the manual's example is `-2000`; their handling
+  by USPEX 25's generator is not documented) are refused. It is written as one
+  `<n> : fixRndSeed` line after `stopCrit`. Three things are kept apart:
+  the seed **requested** (plan spec and `search.random_seed`), the seed
+  **written** (read back from the rendered `INPUT.txt` and recorded in
+  `prepared_inputs.json`; preparation refuses a mismatch), and
+  **effective RNG determinism**, recorded as *not verified* until a repeat
+  run (T1a) shows whether USPEX 25.0 reproduces a search. The execution
+  analyser (`reference/uspex_pilot/execution_validation/analyze_execution.py`)
+  adds a `random_seed` check for seeded searches only: requested vs
+  `INPUT.txt` vs USPEX's copy in `results1/Parameters.txt`. That check is
+  `missing` until the form in which USPEX 25.0 writes the seed there has been
+  seen on a real run.
+- **`excluded_nodes`** (planning request field): a SLURM host list added to
+  the deployment's `BMD_SEARCH_EXCLUDED_NODES`. The deployment value is read,
+  never changed, and never reduced: the effective `--exclude` is the default
+  followed by the new nodes (already-excluded nodes are not repeated). The
+  resource request records `exclude` (effective),
+  `exclude_deployment_default` and `exclude_additional`, so the exclusion is
+  covered by the plan digest, the resource acknowledgement and the job
+  script. `structure_search.runtime.launch.excluded_nodes` still records the
+  deployment setting. If the deployment default changes, an excluding plan is
+  stale and must be planned again (as for any configuration change).
+
+Neither field touches the ladder, INCARs, POTCARs, k-point resolutions,
+population sizes, `stopCrit`, operators or candidate-validity policy.
+
 ### Job start-up (fixed 13 Nov 2026, after job 23616052)
 
 The first shared-node acceptance job (attempt `fb36402a…`, job 23616052)

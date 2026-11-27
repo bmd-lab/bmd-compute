@@ -78,7 +78,7 @@ def _identity(text: str) -> dict:
 class JobRig:
     """One staged Si search under a temporary bind path, with fake POWER tools."""
 
-    def __init__(self, root: Path, monkeypatch, settings: dict | None = None):
+    def __init__(self, root: Path, monkeypatch, settings: dict | None = None, request: dict | None = None):
         from backend import config
         from backend.runtime_package import runtime_package_manifest_for_sources
         from backend.structure_search.bridge import master
@@ -126,7 +126,7 @@ class JobRig:
         metadata["potcars"]["Si"] = {"TITEL": identity["TITEL"], "ENMAX": identity["ENMAX"],
                                      "sha256": identity["sha256"]}
         use_enmax_metadata(monkeypatch, root / "enmax.json", metadata)
-        self.plan = plan_structure_search(StructureSearchPlanRequest(formula="Si")).plan
+        self.plan = plan_structure_search(StructureSearchPlanRequest(formula="Si", **(request or {}))).plan
 
         # The runtime package uploaded with the attempt, staged as in step 4C.
         sources = build_backend_module_sources()
@@ -771,3 +771,54 @@ def test_a_shared_node_job_sets_no_core_list_and_no_exclusive_node(shared_rig):
     assert records and all(r["I_MPI_PIN_PROCESSOR_LIST"] is None and r["I_MPI_PIN_DOMAIN"] is None
                            and r["tool"] == "srun" and "--exact" in r["argv"] for r in records)
     assert "#SBATCH --exclusive" not in shared_rig.script
+
+
+# -- a seeded search with a per-search node exclusion (the Si8 benchmark's extensions) ---------------------
+
+SEEDED_REQUEST = {"random_seed": 20261126, "excluded_nodes": "compute-0-270"}
+
+
+@pytest.fixture
+def seeded_shared_rig(tmp_path, monkeypatch):
+    return JobRig(tmp_path, monkeypatch, settings=SHARED, request=SEEDED_REQUEST)
+
+
+def test_a_seeded_plan_carries_its_seed_and_exclusion_into_the_staged_search_and_job_script(seeded_shared_rig):
+    rig = seeded_shared_rig
+    directives = [line for line in rig.script.splitlines() if line.startswith("#SBATCH")]
+    excludes = [line for line in directives if line.startswith("#SBATCH --exclude")]
+    assert excludes == ["#SBATCH --exclude=compute-0-[332-333],compute-0-270"]
+    request = rig.plan.record["resources"]["request"]
+    assert request["exclude"] == "compute-0-[332-333],compute-0-270"
+    assert request["exclude_deployment_default"] == "compute-0-[332-333]"
+    assert request["exclude_additional"] == "compute-0-270"
+    assert rig.acknowledgement["resources"]["request"] == request
+    # The deployment's own record of its exclusion is unchanged; the effective one is the plan's.
+    assert rig.plan.record["runtime"]["launch"]["excluded_nodes"] == "compute-0-[332-333]"
+    text = (rig.search_dir / "INPUT.txt").read_text()
+    assert text.count("fixRndSeed") == 1 and "20261126 : fixRndSeed\n" in text
+    prepared = json.loads((rig.search_dir / "prepared_inputs.json").read_text())
+    assert prepared["random_seed"]["requested"] == prepared["random_seed"]["written_in_input_txt"] == 20261126
+    assert prepared["random_seed"]["effective_rng_determinism"].startswith("not verified")
+
+
+@needs_bash
+def test_a_seeded_shared_node_job_runs_and_verifies_its_staged_inputs(seeded_shared_rig):
+    rig = seeded_shared_rig
+    result = rig.run(SLURM_MEM_PER_NODE="32768", SLURM_NTASKS="48")
+    assert result.returncode == 0, result.stdout + result.stderr
+    status = rig.status()
+    assert status["plan_digest"] == rig.plan.digest
+    assert status["execution"]["outcome"] == "uspex_finished"
+    assert status["scientific_validity"]["step_validity_verdicts"] == {"valid": 10}
+
+
+@needs_bash
+def test_a_changed_seed_in_the_staged_input_is_refused_before_uspex_starts(seeded_shared_rig):
+    rig = seeded_shared_rig
+    path = rig.search_dir / "INPUT.txt"
+    path.write_text(path.read_text().replace("20261126 : fixRndSeed", "20261127 : fixRndSeed"))
+    result = rig.run(SLURM_MEM_PER_NODE="32768", SLURM_NTASKS="48")
+    assert result.returncode == search_job.EXIT_REFUSED_INPUTS, result.stdout + result.stderr
+    assert rig.status()["execution"]["outcome"] == "refused_inputs"
+    assert rig.singularity_calls() == [] and rig.srun_env() == []  # USPEX never started

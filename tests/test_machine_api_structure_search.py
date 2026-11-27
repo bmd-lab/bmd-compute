@@ -352,3 +352,64 @@ def test_api_and_browser_agree_on_equivalent_walltimes(client, tokens):
 def test_api_refuses_malformed_or_out_of_range_walltimes(client, tokens, walltime, status):
     response = post_search(client, tokens["planner"], {"formula": "Si", "search": {"walltime": walltime}})
     assert response.status_code == status
+
+
+# --- the optional random seed and per-search node exclusion (S1, S2) ----------------------------
+
+
+@pytest.mark.parametrize(
+    ("search", "field", "problem"),
+    [
+        ({"random_seed": 0}, "search.random_seed", "must_be_integer_1_to_2147483647"),
+        ({"random_seed": -2000}, "search.random_seed", "must_be_integer_1_to_2147483647"),
+        ({"random_seed": 2**31}, "search.random_seed", "must_be_integer_1_to_2147483647"),
+        ({"random_seed": "20261126"}, "search.random_seed", "must_be_integer_1_to_2147483647"),
+        ({"random_seed": True}, "search.random_seed", "must_be_integer_1_to_2147483647"),
+        ({"random_seed": 1.5}, "search.random_seed", "must_be_integer_1_to_2147483647"),
+        ({"excluded_nodes": ""}, "search.excluded_nodes", "must_be_slurm_hostlist_string"),
+        ({"excluded_nodes": ["compute-0-270"]}, "search.excluded_nodes", "must_be_slurm_hostlist_string"),
+        ({"excluded_nodes": "compute-0-270 compute-0-271"}, "search.excluded_nodes", "must_be_slurm_hostlist_string"),
+        ({"excluded_nodes": "n" * 300}, "search.excluded_nodes", "must_be_slurm_hostlist_string"),
+        ({"fixRndSeed": 5}, "search.fixRndSeed", "unknown_field"),
+        ({"exclude": "compute-0-270"}, "search.exclude", "unknown_field"),
+    ],
+)
+def test_malformed_seed_or_exclusion_is_refused_before_planning(client, tokens, no_search_science, search, field,
+                                                                problem):
+    response = post_search(client, tokens["planner"], {"formula": "Si", "search": search})
+    assert response.status_code == 422
+    assert {"field": field, "problem": problem} in response.json()["error"]["fields"]
+
+
+def test_an_unusable_host_list_is_refused_by_planning(client, tokens):
+    response = post_search(client, tokens["planner"], {"formula": "Si", "search": {"excluded_nodes": "n[5-3]"}})
+    assert response.status_code == 422, response.text
+
+
+def test_seed_and_exclusion_are_planned_and_reported(client, tokens):
+    body = {"formula": "Si", "search": {"min_atoms": 8, "max_atoms": 8, "num_generations": 30,
+                                        "random_seed": 20261126, "excluded_nodes": "compute-0-270"}}
+    response = post_search(client, tokens["planner"], body)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["search"]["random_seed"]["requested"] == 20261126
+    assert data["search"]["random_seed"]["effective_rng_determinism"].startswith("not verified")
+    assert data["resources"]["request"]["exclude"] == "compute-0-[332-333],compute-0-270"
+    plan = load_plan(data["plan"])
+    assert plan.digest == data["plan_digest"]
+    assert plan.record["search"]["spec"]["random_seed"] == 20261126
+    # Planned again with the digest, the same request is current; without the new fields it is another plan.
+    again = post_search(client, tokens["planner"], {**body, "expected_plan_digest": data["plan_digest"]})
+    assert again.status_code == 200
+    plain = post_search(client, tokens["planner"], {"formula": "Si", "search": {"min_atoms": 8, "max_atoms": 8,
+                                                                                "num_generations": 30}}).json()
+    assert plain["plan_digest"] != data["plan_digest"]
+    assert "random_seed" not in plain["search"]
+    assert plain["resources"]["request"]["exclude"] == "compute-0-[332-333]"
+
+
+def test_null_seed_and_exclusion_mean_omitted(client, tokens):
+    plain = post_search(client, tokens["planner"], {"formula": "Si"}).json()
+    nulls = post_search(client, tokens["planner"],
+                        {"formula": "Si", "search": {"random_seed": None, "excluded_nodes": None}}).json()
+    assert nulls["plan_digest"] == plain["plan_digest"]
