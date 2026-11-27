@@ -55,6 +55,7 @@ from backend.structure_search.search_plan import (
 )
 from backend.structure_search.spec import (
     RANDOM_SEED_MAX,
+    RANDOM_SEED_MIN,
     StructureSearchSpec,
     StructureSearchSpecError,
     default_search_spec,
@@ -118,8 +119,12 @@ def test_the_seed_is_optional_and_absent_from_the_v1_spec_record():
     assert StructureSearchSpec.from_mapping(spec.to_record()) == spec
 
 
-@pytest.mark.parametrize("value, expected", [(1, 1), (SEED, SEED), (RANDOM_SEED_MAX, RANDOM_SEED_MAX),
-                                             ("20261126", SEED), (" 42 ", 42)])
+@pytest.mark.parametrize("value, expected", [
+    (1, 1), (SEED, SEED), (2**31 - 1, 2**31 - 1), (2**31, 2**31), (RANDOM_SEED_MAX, RANDOM_SEED_MAX),
+    # negative seeds: the manual's own example is -2000 (section 4.11)
+    (-2000, -2000), (-1, -1), (RANDOM_SEED_MIN, RANDOM_SEED_MIN),
+    ("20261126", SEED), (" 42 ", 42), ("-2000", -2000), (" -2000 ", -2000), ("007", 7),
+])
 def test_valid_seeds_are_accepted_and_recorded(value, expected):
     spec = _si8_spec(random_seed=value)
     assert spec.random_seed == expected
@@ -128,10 +133,11 @@ def test_valid_seeds_are_accepted_and_recorded(value, expected):
 
 
 @pytest.mark.parametrize("value, code", [
-    (0, "out_of_range"), (-2000, "out_of_range"), (RANDOM_SEED_MAX + 1, "out_of_range"),
+    (0, "seed_is_uspex_default"), ("0", "seed_is_uspex_default"), ("-0", "seed_is_uspex_default"),
+    (RANDOM_SEED_MAX + 1, "out_of_range"), (RANDOM_SEED_MIN - 1, "out_of_range"),
     (True, "invalid_type"), (False, "invalid_type"), (1.0, "invalid_type"), (1.5, "invalid_type"),
-    ("-5", "invalid_type"), ("1e3", "invalid_type"), ("", "invalid_type"), ("seven", "invalid_type"),
-    ([1], "invalid_type"),
+    ("+5", "invalid_type"), ("--5", "invalid_type"), ("1e3", "invalid_type"), ("", "invalid_type"),
+    ("seven", "invalid_type"), ("1" * 20, "invalid_type"), ([1], "invalid_type"),
 ])
 def test_invalid_seeds_are_refused(value, code):
     with pytest.raises(StructureSearchSpecError) as info:
@@ -156,14 +162,31 @@ def test_without_a_seed_input_txt_is_the_v1_golden_file():
     assert written_random_seed(text) is None
 
 
-def test_a_seed_adds_exactly_one_fixrndseed_line_after_stopcrit():
-    text = render_input_text(_si8_spec(random_seed=SEED), _settings())
+@pytest.mark.parametrize("seed", [SEED, -2000, RANDOM_SEED_MIN, RANDOM_SEED_MAX])
+def test_a_seed_adds_exactly_one_fixrndseed_line_after_stopcrit(seed):
+    text = render_input_text(_si8_spec(random_seed=seed), _settings())
     golden = GOLDEN_SI8.splitlines()
     lines = text.splitlines()
     position = golden.index("8 : stopCrit") + 1
-    assert lines == golden[:position] + [f"{SEED} : fixRndSeed"] + golden[position:]
-    assert read_input_keywords(text)["fixRndSeed"] == [str(SEED)]
-    assert written_random_seed(text) == SEED
+    assert lines == golden[:position] + [f"{seed} : fixRndSeed"] + golden[position:]
+    assert read_input_keywords(text)["fixRndSeed"] == [str(seed)]
+    assert written_random_seed(text) == seed
+
+
+def test_the_manuals_negative_example_is_written_in_the_manuals_form():
+    text = render_input_text(_si8_spec(random_seed=-2000), _settings())
+    assert "-2000 : fixRndSeed" in text.splitlines()  # manual 4.11: "-2000 : fixRndSeed"
+
+
+def test_negative_seeds_plan_prepare_and_rebuild(tmp_path):
+    plan = build_search_plan_from_formula("Si", AdvancedSettings(random_seed="-2000"))
+    assert plan.record["search"]["random_seed"]["requested"] == -2000
+    assert plan.record["search"]["random_seed"]["input_txt_line"] == "-2000 : fixRndSeed"
+    assert "not a documented USPEX limit" in plan.record["search"]["random_seed"]["accepted_values"]
+    require_current_plan(plan)
+    manifest = prepare_search_directory(plan, tmp_path / "search", bridge_path=BRIDGE)
+    assert manifest["random_seed"]["requested"] == manifest["random_seed"]["written_in_input_txt"] == -2000
+    assert plan.digest != build_search_plan_from_formula("Si", AdvancedSettings(random_seed=2000)).digest
 
 
 # --- S1: the plan, its digest and the prepared files -------------------------------------
@@ -490,3 +513,11 @@ def test_an_unexpandable_deployment_default_is_named_in_the_error(monkeypatch):
     monkeypatch.setattr(config, "STRUCTURE_SEARCH_EXCLUDED_NODES", "n[5-3]")
     with pytest.raises(CalculationValidationError, match="deployment's excluded nodes"):
         build_search_plan_from_formula("Si", AdvancedSettings(excluded_nodes="compute-0-270"))
+
+
+def test_the_analyser_reads_negative_seeds():
+    analyser = _analyser()
+    line = "-2000 : fixRndSeed\n"
+    manifest = {"requested": -2000, "written_in_input_txt": -2000}
+    assert analyser._random_seed_check(manifest, line, line, planned=-2000)[0] == "verified"
+    assert analyser._random_seed_check(manifest, line, "2000 : fixRndSeed\n", planned=-2000)[0] == "failed"

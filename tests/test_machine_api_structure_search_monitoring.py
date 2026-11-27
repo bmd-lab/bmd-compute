@@ -1017,7 +1017,7 @@ def test_the_runtime_package_is_the_reviewed_one():
     209898bc). Then the launcher's ``srun_returned`` event and the evidence record's ``launch.popen`` /
     ``launch.returned`` (v1.3.1 candidate): still 80 files, ``31837cc6…`` (v1.3.1). Then the optional USPEX random
     seed (``fixRndSeed``) and per-search node exclusion for the blind Si8 benchmark (S1, S2; spec, input writer,
-    search plan, resources): still 80 files, ``a689ef60…``. Attempts staged with an earlier package are refused with
+    search plan, resources): still 80 files, ``afbaa18f…``. Attempts staged with an earlier package are refused with
     ``runtime_package_changed`` and need a new attempt ID.
     """
 
@@ -1026,7 +1026,7 @@ def test_the_runtime_package_is_the_reviewed_one():
     manifest = build_runtime_package_manifest()
     assert len(manifest) == 80
     assert runtime_package_manifest_digest(manifest) == (
-        "a689ef60ae761c5e314a563ba6028b980e34c733db1276efb29a1fd908a17633")
+        "afbaa18fce4274f33245e1359ce099f75c9b35f3b3c6d04a31cee207eb432391")
 
 
 def test_scancel_command_takes_only_a_numeric_job_id():

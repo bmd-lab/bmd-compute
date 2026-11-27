@@ -61,18 +61,30 @@ class StructureSearchSpecError(CalculationValidationError):
 # Upper limit of the default populationSize (manual section 4.2).
 POPULATION_SIZE_DEFAULT_MAX = 60
 
-# fixRndSeed (manual section 4.11): "The random seed number for USPEX
-# calculations. For the same random seed, USPEX should produce the same
-# result. Default: 0". bmd-compute writes it only when a seed is requested.
-# The accepted range, 1 .. 2**31 - 1, is a bmd-compute choice: 0 is the USPEX
-# default (whose meaning the manual does not state) and is refused so that a
-# requested seed is always explicit; the manual's example (-2000) is negative,
-# but negative seeds are refused because their handling by USPEX 25's random
-# number generator is not documented. Writing the keyword is verified here;
-# whether USPEX 25 then reproduces a search exactly is NOT verified (see
-# RANDOM_SEED_DETERMINISM_STATUS).
-RANDOM_SEED_MIN = 1
-RANDOM_SEED_MAX = 2**31 - 1
+# fixRndSeed (manual section 4.11, "Keywords for developers"): "The random seed
+# number for USPEX calculations. For the same random seed, USPEX should produce
+# the same result. Default: 0. Format: -2000 : fixRndSeed". bmd-compute writes
+# it only when a seed is requested; omitting it (the default) writes nothing,
+# so USPEX uses its default 0.
+#
+# Accepted values: any non-zero whole number, negative ones included (the
+# manual's own example is -2000). The manual states no other limit and the
+# USPEX 25.0 implementation is not available for inspection, so bmd-compute
+# sets no USPEX range of its own. Two rules are bmd-compute's:
+# - 0 is refused: it is USPEX's default (meaning unstated), and a requested
+#   seed must be explicit and non-zero (PI decision); omit the field instead.
+# - RANDOM_SEED_MIN / RANDOM_SEED_MAX, the signed 64-bit range, bound the
+#   input only (like MAX_FORMULA_LENGTH): they are not a documented USPEX
+#   limit. Whether USPEX 25 accepts every value in that range is NOT verified.
+# Writing the keyword is verified here; whether USPEX 25 then reproduces a
+# search exactly is NOT verified (see RANDOM_SEED_DETERMINISM_STATUS).
+RANDOM_SEED_USPEX_DEFAULT = 0
+RANDOM_SEED_MIN = -(2**63)
+RANDOM_SEED_MAX = 2**63 - 1
+RANDOM_SEED_RANGE_STATUS = (
+    "non-zero; signed 64-bit range is a bmd-compute input bound, not a documented USPEX limit; "
+    "manual 4.11 gives default 0 and the example -2000"
+)
 RANDOM_SEED_KEYWORD = "fixRndSeed"
 RANDOM_SEED_DETERMINISM_STATUS = (
     "not verified: fixRndSeed is written to INPUT.txt as requested; whether USPEX 25.0 "
@@ -124,8 +136,9 @@ class StructureSearchSpec:
     - ``calculation_type`` -> ``calculationType``.
     - ``random_seed`` -> ``fixRndSeed``. ``None`` (the default) writes no
       ``fixRndSeed`` line, exactly as before the field existed, and leaves the
-      spec record and every plan digest unchanged. A seed is a whole number
-      from :data:`RANDOM_SEED_MIN` to :data:`RANDOM_SEED_MAX`. Writing it is
+      spec record and every plan digest unchanged. A seed is a non-zero whole
+      number, negative values included (manual example ``-2000``), within the
+      input bound :data:`RANDOM_SEED_MIN` .. :data:`RANDOM_SEED_MAX`. Writing it is
       not evidence that USPEX's random number generator is reproducible
       (:data:`RANDOM_SEED_DETERMINISM_STATUS`).
     - ``theory`` and ``spin_polarized`` are not USPEX keywords; they record
@@ -427,10 +440,12 @@ def default_search_spec(
 
 
 def validate_random_seed(value) -> int | None:
-    """A requested USPEX ``fixRndSeed``: ``None``, or a whole number from 1 to 2**31 - 1.
+    """A requested USPEX ``fixRndSeed``: ``None``, or a non-zero whole number.
 
-    Accepts an ``int`` or a string of decimal digits (a form field); refuses
-    booleans, fractional numbers, 0, negative numbers and anything larger.
+    Negative seeds are accepted (the manual's example is ``-2000``). Accepts an
+    ``int`` or a string of decimal digits with an optional leading ``-`` (a form
+    field); refuses booleans, fractional numbers, 0 (USPEX's default: omit the
+    field instead) and values outside the signed 64-bit input bound.
     """
 
     if value is None:
@@ -441,17 +456,24 @@ def validate_random_seed(value) -> int | None:
         )
     if isinstance(value, str):
         text = value.strip()
-        if not re.fullmatch(r"[0-9]+", text):
+        if not re.fullmatch(r"-?[0-9]{1,19}", text):
             raise StructureSearchSpecError(
                 "random_seed must be a whole number.", code="invalid_type", field="random_seed"
             )
         value = int(text)
+    if value == RANDOM_SEED_USPEX_DEFAULT:
+        raise StructureSearchSpecError(
+            "random_seed 0 is USPEX's default; a requested seed must be non-zero.",
+            code="seed_is_uspex_default",
+            field="random_seed",
+            suggestion="Leave it blank to use USPEX's default, or choose a non-zero seed such as 20261126.",
+        )
     if not RANDOM_SEED_MIN <= value <= RANDOM_SEED_MAX:
         raise StructureSearchSpecError(
-            f"random_seed must be between {RANDOM_SEED_MIN} and {RANDOM_SEED_MAX}.",
+            f"random_seed must be between {RANDOM_SEED_MIN} and {RANDOM_SEED_MAX} "
+            "(bmd-compute's input bound; not a documented USPEX limit).",
             code="out_of_range",
             field="random_seed",
-            suggestion="Leave it blank for no fixRndSeed, or choose a positive seed such as 20261126.",
         )
     return int(value)
 
@@ -584,6 +606,8 @@ __all__ = [
     "RANDOM_SEED_KEYWORD",
     "RANDOM_SEED_MAX",
     "RANDOM_SEED_MIN",
+    "RANDOM_SEED_RANGE_STATUS",
+    "RANDOM_SEED_USPEX_DEFAULT",
     "SEARCH_DEFAULTS_POLICY_ID",
     "SEARCH_DEFAULTS_POLICY_VERSION",
     "SEARCH_DEFAULTS_STATUS",

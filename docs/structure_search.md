@@ -553,9 +553,13 @@ them gives exactly the v1.3.1 plan record, digest, `INPUT.txt` and
 
 - **`random_seed`** (spec field; USPEX `fixRndSeed`, manual section 4.11:
   "For the same random seed, USPEX should produce the same result. Default:
-  0"). A whole number from 1 to 2³¹−1; 0 (the USPEX default, meaning not
-  stated) and negative values (the manual's example is `-2000`; their handling
-  by USPEX 25's generator is not documented) are refused. It is written as one
+  0", format example `-2000 : fixRndSeed`). Any non-zero whole number,
+  negative values included. The manual states no other limit and the USPEX
+  25.0 implementation could not be inspected, so no USPEX range is imposed:
+  0 is refused only because it is USPEX's default (omit the field instead;
+  a requested seed is non-zero by PI decision), and the signed 64-bit range
+  is an input bound, not a USPEX limit. Whether USPEX 25.0 accepts every
+  value in that range is not verified. It is written as one
   `<n> : fixRndSeed` line after `stopCrit`. Three things are kept apart:
   the seed **requested** (plan spec and `search.random_seed`), the seed
   **written** (read back from the rendered `INPUT.txt` and recorded in

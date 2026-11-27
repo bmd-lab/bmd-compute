@@ -469,6 +469,7 @@ def random_seed_record(spec) -> dict[str, Any] | None:
         "requested": spec.random_seed,
         "uspex_keyword": spec_module.RANDOM_SEED_KEYWORD,
         "input_txt_line": f"{spec.random_seed} : {spec_module.RANDOM_SEED_KEYWORD}",
+        "accepted_values": spec_module.RANDOM_SEED_RANGE_STATUS,
         "effective_rng_determinism": spec_module.RANDOM_SEED_DETERMINISM_STATUS,
     }
 

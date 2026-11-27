@@ -287,7 +287,10 @@ SEARCH_KEYS = frozenset(
 )
 # Optional search fields without a default: omitted, they leave the request,
 # its identity and the plan exactly as before they existed.
-SEARCH_RANDOM_SEED_MAX = 2**31 - 1
+# USPEX fixRndSeed: any non-zero integer (manual 4.11: default 0, example -2000);
+# the signed 64-bit range is an input bound only (backend.structure_search.spec).
+SEARCH_RANDOM_SEED_MIN = -(2**63)
+SEARCH_RANDOM_SEED_MAX = 2**63 - 1
 SEARCH_EXCLUDED_NODES_MAX_CHARS = 256
 MAX_FORMULA_CHARS = 64
 # Request fields of the structure-based planner: a search starts from a formula.
@@ -320,7 +323,7 @@ def parse_structure_search_plan_request(document: Any) -> StructureSearchPlanReq
           "formula": "SiO2",                    # required chemical formula
           "search": {"min_atoms": int, "max_atoms": int,
                      "num_generations": int, "walltime": "H:MM:SS",
-                     "random_seed": int,        # USPEX fixRndSeed, 1 .. 2**31 - 1
+                     "random_seed": int,        # USPEX fixRndSeed, non-zero (may be negative)
                      "excluded_nodes": "compute-0-270"},
                                                 # SLURM host list excluded in
                                                 # addition to the deployment's
@@ -377,8 +380,8 @@ def parse_structure_search_plan_request(document: Any) -> StructureSearchPlanReq
                     search["walltime"] = value["walltime"]
             if "random_seed" in value and value["random_seed"] is not None:
                 seed = value["random_seed"]
-                if not _strict_int(seed) or not 1 <= seed <= SEARCH_RANDOM_SEED_MAX:
-                    _error(errors, "search.random_seed", "must_be_integer_1_to_2147483647")
+                if not _strict_int(seed) or seed == 0 or not SEARCH_RANDOM_SEED_MIN <= seed <= SEARCH_RANDOM_SEED_MAX:
+                    _error(errors, "search.random_seed", "must_be_nonzero_64_bit_integer")
                 else:
                     search["random_seed"] = seed
             if "excluded_nodes" in value and value["excluded_nodes"] is not None:

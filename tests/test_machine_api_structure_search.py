@@ -360,12 +360,12 @@ def test_api_refuses_malformed_or_out_of_range_walltimes(client, tokens, walltim
 @pytest.mark.parametrize(
     ("search", "field", "problem"),
     [
-        ({"random_seed": 0}, "search.random_seed", "must_be_integer_1_to_2147483647"),
-        ({"random_seed": -2000}, "search.random_seed", "must_be_integer_1_to_2147483647"),
-        ({"random_seed": 2**31}, "search.random_seed", "must_be_integer_1_to_2147483647"),
-        ({"random_seed": "20261126"}, "search.random_seed", "must_be_integer_1_to_2147483647"),
-        ({"random_seed": True}, "search.random_seed", "must_be_integer_1_to_2147483647"),
-        ({"random_seed": 1.5}, "search.random_seed", "must_be_integer_1_to_2147483647"),
+        ({"random_seed": 0}, "search.random_seed", "must_be_nonzero_64_bit_integer"),
+        ({"random_seed": 2**63}, "search.random_seed", "must_be_nonzero_64_bit_integer"),
+        ({"random_seed": -(2**63) - 1}, "search.random_seed", "must_be_nonzero_64_bit_integer"),
+        ({"random_seed": "20261126"}, "search.random_seed", "must_be_nonzero_64_bit_integer"),
+        ({"random_seed": True}, "search.random_seed", "must_be_nonzero_64_bit_integer"),
+        ({"random_seed": 1.5}, "search.random_seed", "must_be_nonzero_64_bit_integer"),
         ({"excluded_nodes": ""}, "search.excluded_nodes", "must_be_slurm_hostlist_string"),
         ({"excluded_nodes": ["compute-0-270"]}, "search.excluded_nodes", "must_be_slurm_hostlist_string"),
         ({"excluded_nodes": "compute-0-270 compute-0-271"}, "search.excluded_nodes", "must_be_slurm_hostlist_string"),
@@ -413,3 +413,11 @@ def test_null_seed_and_exclusion_mean_omitted(client, tokens):
     nulls = post_search(client, tokens["planner"],
                         {"formula": "Si", "search": {"random_seed": None, "excluded_nodes": None}}).json()
     assert nulls["plan_digest"] == plain["plan_digest"]
+
+
+@pytest.mark.parametrize("seed", [-2000, -1, 2**31, 2**63 - 1, -(2**63)])
+def test_negative_and_large_seeds_are_planned(client, tokens, seed):
+    response = post_search(client, tokens["planner"], {"formula": "Si", "search": {"random_seed": seed}})
+    assert response.status_code == 200, response.text
+    assert response.json()["search"]["random_seed"]["requested"] == seed
+    assert response.json()["search"]["random_seed"]["input_txt_line"] == f"{seed} : fixRndSeed"

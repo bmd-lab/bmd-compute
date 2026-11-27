@@ -211,12 +211,16 @@ Request (`application/json`, closed objects):
   `plan_digest`) if it now plans differently.
 - Two optional `search` fields have **no default**; omitted (or `null`), the
   request, its identity and the plan are exactly as before they existed:
-  - `random_seed`: an integer from 1 to 2147483647, written to USPEX
-    `INPUT.txt` as `<n> : fixRndSeed`. The plan records the seed requested,
-    the line written and `effective_rng_determinism` (not verified: whether
+  - `random_seed`: a non-zero integer, negative values included (USPEX
+    manual 4.11: default 0, example `-2000`), written to USPEX `INPUT.txt` as
+    `<n> : fixRndSeed`. 0 is refused (it is USPEX's default: omit the field
+    instead). The signed 64-bit range bounds the input only; it is not a
+    documented USPEX limit, and whether USPEX 25.0 accepts every value in it
+    is not verified. The plan records the seed requested, the line written,
+    the accepted values and `effective_rng_determinism` (not verified: whether
     USPEX 25.0 reproduces a search with the same seed has not been tested);
     `prepared_inputs.json` records the seed written. Otherwise refused with
-    `must_be_integer_1_to_2147483647`.
+    `must_be_nonzero_64_bit_integer`.
   - `excluded_nodes`: a SLURM host list (`compute-0-270`,
     `compute-0-[270,271]`, at most 64 nodes) excluded **in addition to** the
     deployment's `BMD_SEARCH_EXCLUDED_NODES`, which it can never remove or

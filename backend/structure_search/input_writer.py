@@ -190,7 +190,7 @@ def written_random_seed(text: str) -> int | None:
     values = read_input_keywords(text).get(RANDOM_SEED_KEYWORD)
     if values is None:
         return None
-    if len(values) != 1 or not values[0].isdigit():
+    if len(values) != 1 or not re.fullmatch(r"-?[0-9]+", values[0]):
         raise ValueError(f"Unexpected {RANDOM_SEED_KEYWORD} value in INPUT.txt: {values!r}")
     return int(values[0])
 
