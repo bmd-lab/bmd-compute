@@ -44,6 +44,10 @@ RESPONSE_SCHEMA = "bmd_compute.structure_search_plan_response"
 RESPONSE_SCHEMA_VERSION = 1
 REQUEST_KIND = "structure_search"
 OVERRIDE_FIELDS = ("min_atoms", "max_atoms", "num_generations", "walltime")
+# Optional fields that, unlike OVERRIDE_FIELDS, have no default value: blank
+# means "not requested", and a plan without them is exactly the plan from
+# before they existed (same record, same digest).
+OPTIONAL_REQUEST_FIELDS = ("random_seed", "excluded_nodes")
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,8 @@ class StructureSearchPlanRequest:
     num_generations: Any = None
     walltime: Any = None
     expected_plan_digest: str | None = None
+    random_seed: Any = None
+    excluded_nodes: Any = None
 
     def advanced(self) -> AdvancedSettings:
         return AdvancedSettings(
@@ -69,6 +75,8 @@ class StructureSearchPlanRequest:
             max_atoms=self.max_atoms,
             num_generations=self.num_generations,
             walltime=self.walltime,
+            random_seed=self.random_seed,
+            excluded_nodes=self.excluded_nodes,
         )
 
 
@@ -126,6 +134,10 @@ class StructureSearchPlanningResult:
                 "num_generations": search["spec"]["num_generations"],
                 "stop_criterion": search["spec"]["stop_criterion"],
                 "walltime": search["spec"]["walltime"],
+                **(
+                    {"random_seed": search["random_seed"]}
+                    if "random_seed" in search else {}
+                ),
                 "defaults_status": search["defaults"]["status"],
                 "advanced_overrides": self.advanced_overrides,
             },
@@ -168,6 +180,7 @@ def plan_structure_search(request: StructureSearchPlanRequest, *, runtime_settin
 
 
 __all__ = [
+    "OPTIONAL_REQUEST_FIELDS",
     "OVERRIDE_FIELDS",
     "REQUEST_KIND",
     "RESPONSE_SCHEMA",

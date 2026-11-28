@@ -198,7 +198,8 @@ Request (`application/json`, closed objects):
 ```json
 {
   "formula": "SiO2",
-  "search": {"min_atoms": 3, "max_atoms": 12, "num_generations": 30, "walltime": "168:00:00"},
+  "search": {"min_atoms": 3, "max_atoms": 12, "num_generations": 30, "walltime": "168:00:00",
+             "random_seed": 20261126, "excluded_nodes": "compute-0-270"},
   "expected_plan_digest": "sha256:..."
 }
 ```
@@ -208,6 +209,27 @@ Request (`application/json`, closed objects):
   the provisional search default). `expected_plan_digest` (optional): the
   request is refused with 409 `plan_changed` (carrying the current
   `plan_digest`) if it now plans differently.
+- Two optional `search` fields have **no default**; omitted (or `null`), the
+  request, its identity and the plan are exactly as before they existed:
+  - `random_seed`: a non-zero integer, negative values included (USPEX
+    manual 4.11: default 0, example `-2000`), written to USPEX `INPUT.txt` as
+    `<n> : fixRndSeed`. 0 is refused (it is USPEX's default: omit the field
+    instead). The signed 64-bit range bounds the input only; it is not a
+    documented USPEX limit, and whether USPEX 25.0 accepts every value in it
+    is not verified. The plan records the seed requested, the line written,
+    the accepted values and `effective_rng_determinism` (not verified: whether
+    USPEX 25.0 reproduces a search with the same seed has not been tested);
+    `prepared_inputs.json` records the seed written. Otherwise refused with
+    `must_be_nonzero_64_bit_integer`.
+  - `excluded_nodes`: a SLURM host list (`compute-0-270`,
+    `compute-0-[270,271]`, at most 64 nodes) excluded **in addition to** the
+    deployment's `BMD_SEARCH_EXCLUDED_NODES`, which it can never remove or
+    change. The effective `--exclude` is the deployment default followed by
+    the new nodes; the resource request also records
+    `exclude_deployment_default` and `exclude_additional`. It is covered by
+    the plan digest, the resource acknowledgement and the job script. A
+    non-string value is refused with `must_be_slurm_hostlist_string`; a string
+    that is not a usable host list gives 422 `calculation_invalid`.
 - Settings v1 fixes by policy (pressure, theory, spin, `kresol_start`,
   population sizes, INCAR/POTCAR keys, ...) are refused with
   `fixed_by_bmd_policy`; `structure`, `workflow` and `resources` with
