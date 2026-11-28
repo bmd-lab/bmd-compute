@@ -7,10 +7,17 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from backend.calculations import admission, geometry_convergence, geometry_relaxation
 from backend.calculations.default_treatments import automatic_default_treatment_policy
 from backend.calculations.dispersion import dispersion_modifier_policy
-from backend.calculations.models import Theory
-from backend.calculations.registry import supported_stage_modifier_combinations
+from backend.calculations.models import StageSpec, Theory
+from backend.calculations.registry import (
+    BROWSER_HIDDEN_DESIRED_OUTPUTS,
+    PHONON_SUPPORTED_SCOPE_TEXT,
+    _desired_output_workflows,
+    supported_stage_modifier_combinations,
+    validate_workflow_spec,
+)
 from backend.calculations.vasp_stage_definitions import (
     EXECUTABLE_METHODOLOGY_SCOPE,
     describe_stage,
@@ -25,6 +32,74 @@ SCHEMA_VERSION = 1
 SCOPE = EXECUTABLE_METHODOLOGY_SCOPE
 REPOSITORY_ID = "bmd_compute"
 
+# Validation vocabulary. The record never claims that a capability is
+# scientifically validated or adopted by the lab; the only validation statuses
+# it may carry are these negative ones (tests/test_capabilities_contract.py
+# enforces this structurally).
+VALIDATION_STATUS_NOT_VALIDATED = "not_validated"
+VALIDATION_STATUS_NOT_ASSERTED = "not_asserted"
+VALIDATION_STATUSES = (VALIDATION_STATUS_NOT_VALIDATED, VALIDATION_STATUS_NOT_ASSERTED)
+
+# Availability vocabulary for stage/theory/modifier combinations.
+COMBINATION_IMPLEMENTED = "implemented_internal_stage"
+COMBINATION_LEGACY_RECORD_ONLY = "legacy_record_only"
+
+# TECHNICAL DEBT (restated structure-search description).
+# The structure-search modules (and the machine API router) import runtime
+# configuration and are deliberately not imported by this producer, which must
+# stay free of runtime machinery (tests/test_capabilities_contract.py). These
+# values therefore restate the authoritative constants, including the
+# provisional search limits. They are the only restated scientific constants
+# in this producer; do not add others. tests/test_capability_descriptions.py
+# keeps each one equal to its source:
+#   backend.structure_search.spec.SEARCH_DEFAULTS_POLICY_ID / _VERSION / _STATUS
+#   backend.structure_search.admission.admission_scope_record()
+#   compute_api.router.SEARCH_EXECUTION_ENV and its enabling value
+# The producer never reads the execution setting: it describes the gate, not
+# the state of any running service. Removing this debt requires an
+# import-light module in backend.structure_search that both the runtime and
+# this producer read; see docs/calculation_architecture.md.
+STRUCTURE_SEARCH_DEFAULTS_POLICY = {
+    "policy_id": "bmd_compute.structure_search_defaults",
+    "policy_version": 1,
+    "status": "provisional",
+}
+STRUCTURE_SEARCH_ADMISSION_SCOPE = {
+    "policy_id": "bmd_compute.structure_search_admission",
+    "policy_version": 2,
+    "calculation_type": 300,
+    "theory": "pbe",
+    "spin_polarized": False,
+    "external_pressure_gpa": 0.0,
+    "composition_screens": [
+        "bmd_compute spin-polarisation screen (method_considerations.SPIN_TRIGGER_ELEMENT_CLASSES)",
+        "bmd_compute heavy-element SOC screen (method_considerations.SOC_TRIGGER_ELEMENT_CLASSES)",
+        "bmd_compute.dft_u policy (dft_u_policy.evaluate_dft_u)",
+    ],
+    "not_screened": ["DFT-D3 dispersion (depends on a structure's bonded connectivity)"],
+    "limits": {
+        "max_elements": 4,
+        "max_cell_atoms": 40,
+        "max_generations": 200,
+        "status": "provisional",
+    },
+}
+# Machine API structure-search operations, keyed by their route
+# (compute_api.router; kept equal by tests/test_capability_descriptions.py).
+STRUCTURE_SEARCH_MACHINE_API_OPERATIONS = (
+    {"operation": "plan", "route": "POST /api/v1/structure-search-plans"},
+    {"operation": "prepare", "route": "PUT /api/v1/structure-search-attempts/{attempt_id}"},
+    {"operation": "stage", "route": "PUT /api/v1/structure-search-attempts/{attempt_id}/staging"},
+    {"operation": "promote", "route": "PUT /api/v1/structure-search-attempts/{attempt_id}/promotion"},
+    {"operation": "submit", "route": "PUT /api/v1/structure-search-attempts/{attempt_id}/submission"},
+    {"operation": "record_remote_submission", "route": "PUT /api/v1/structure-search-attempts/{attempt_id}/submission/remote-record"},
+    {"operation": "observe", "route": "POST /api/v1/structure-search-attempts/{attempt_id}/observations"},
+    {"operation": "cancel", "route": "PUT /api/v1/structure-search-attempts/{attempt_id}/cancellation"},
+    {"operation": "read", "route": "GET /api/v1/structure-search-attempts/{attempt_id}"},
+)
+STRUCTURE_SEARCH_EXECUTION_SETTING = "BMD_STRUCTURE_SEARCH_EXECUTION"
+STRUCTURE_SEARCH_EXECUTION_ENABLED_VALUE = "enabled"
+
 
 def build_capability_payload(
     *,
@@ -33,26 +108,267 @@ def build_capability_payload(
 ) -> dict[str, Any]:
     base_stage_definitions = list(list_stage_definitions())
     capabilities = _supported_stage_theory_capabilities(base_stage_definitions)
+    source = (
+        git_provenance(repo_root=repo_root)
+        if include_provenance
+        else unavailable_git_provenance()
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "scope": SCOPE,
-        "source": (
-            git_provenance(repo_root=repo_root)
-            if include_provenance
-            else unavailable_git_provenance()
-        ),
+        "source": source,
         "contract": {
             "base_stage_definitions": "Theory-neutral stage definitions from list_stage_definitions().",
             "capabilities": "Supported stage/theory descriptions from describe_stage(); unsupported combinations are not invented.",
-            "stage_modifier_support": "Complete stage-local explicit modifier sets accepted by the BMD Compute registry for each supported stage/theory pair.",
+            "stage_modifier_support": "Implemented internal stage combinations: every stage-local explicit modifier set the BMD Compute registry accepts for each supported stage/theory pair, including combinations kept only so historical records remain readable. Not a statement of availability for new calculations; see new_calculation_admission.",
             "modifier_policies": "Stage-local executable modifiers with controlled options; unsupported pairings are not invented.",
             "automatic_default_treatments": "Read-only policy describing BMD-managed Desired Output treatment resolution.",
+            "release_identity": "Release tag and source revision of this checkout. Describes source code only; it is never evidence of what a running service executes.",
+            "desired_outputs": "Every Desired Output identifier with its requested stage sequence, from the registry; structure-dependent resolution applies afterwards.",
+            "new_calculation_admission": "Which implemented combinations are available for new calculations and which are legacy-record-only, from the admission policy.",
+            "protocols": "Workflow-level methodology that overrides stage-definition defaults for new calculations: the geometry relaxation protocol, the plane-wave cutoff rule and the adaptive geometry-convergence check.",
+            "experimental_capabilities": "Implemented capabilities outside the stage methodology described in capabilities, with their status.",
+            "validation": "What this record asserts about scientific validation: it makes no validation claims.",
         },
         "base_stage_definitions": base_stage_definitions,
         "capabilities": capabilities,
         "stage_modifier_support": _stage_modifier_support(capabilities),
         "modifier_policies": [dispersion_modifier_policy()],
         "automatic_default_treatments": automatic_default_treatment_policy(),
+        "release_identity": release_identity(
+            source,
+            tag=_release_tag(repo_root=repo_root) if include_provenance else None,
+        ),
+        "desired_outputs": desired_output_catalogue(),
+        "new_calculation_admission": new_calculation_admission_description(capabilities),
+        "protocols": protocol_descriptions(),
+        "experimental_capabilities": experimental_capability_descriptions(),
+        "validation": validation_statement(),
+    }
+
+
+def desired_output_catalogue() -> list[dict[str, Any]]:
+    """Every Desired Output identifier from the registry, read-only.
+
+    Unlike the browser menu, this includes identifiers that are accepted but not
+    offered in the browser (``browser_hidden``) and marks the Custom entry, which
+    has no fixed workflow. Each managed entry carries the registry's menu
+    description and the stage sequence it requests before structure-dependent
+    resolution (automatic treatments and frozen plane-wave cutoffs).
+    """
+
+    return [
+        {
+            "value": value,
+            "label": label,
+            "workflow_mode": "custom_workflow" if workflow_spec is None else "bmd_managed_desired_output",
+            "description": description,
+            "browser_hidden": value in BROWSER_HIDDEN_DESIRED_OUTPUTS,
+            "workflow_spec": validate_workflow_spec(workflow_spec).to_dict() if workflow_spec is not None else None,
+        }
+        for value, label, description, workflow_spec in _desired_output_workflows()
+    ]
+
+
+def release_identity(source: dict[str, Any], *, tag: str | None) -> dict[str, Any]:
+    """Release tag and revision of this checkout; never a deployment claim."""
+
+    commit = source.get("commit")
+    dirty = source.get("dirty")
+    return {
+        "tag": tag,
+        "commit": commit,
+        "dirty": dirty,
+        "released_code": bool(tag) and dirty is False,
+        "tag_source": "git describe --tags --exact-match HEAD on this checkout (tag signature not verified)",
+        "describes": "the source code of this checkout",
+        "deployment_verified": False,
+        "deployment_statement": (
+            "This record is produced from a source checkout. It is not evidence of "
+            "which release, if any, a running BMD Compute service executes."
+        ),
+    }
+
+
+def new_calculation_admission_description(capabilities: list[dict[str, Any]]) -> dict[str, Any]:
+    """The admission policy, as data: implemented versus available combinations."""
+
+    availability = []
+    for capability in capabilities:
+        stage_type = capability["stage_type"]
+        theory = capability["theory"]
+        implemented = []
+        available = []
+        legacy_only = []
+        for modifiers in supported_stage_modifier_combinations(stage_type, theory):
+            names = sorted(modifier.value for modifier in modifiers)
+            implemented.append(names)
+            if admission.stage_is_admissible_for_new_calculation(StageSpec(stage_type, theory, modifiers)):
+                available.append(names)
+            else:
+                legacy_only.append(names)
+        availability.append(
+            {
+                "stage_type": stage_type,
+                "theory": theory,
+                "implemented_modifier_combinations": implemented,
+                "available_for_new_calculations": available,
+                "legacy_record_only": legacy_only,
+                "source": "backend.calculations.admission.stage_is_admissible_for_new_calculation",
+            }
+        )
+    return {
+        "policy_id": admission.ADMISSION_POLICY_ID,
+        "policy_version": admission.ADMISSION_POLICY_VERSION,
+        "applies_to": "every new calculation built, prepared or submitted (browser and machine API), after automatic treatments are resolved",
+        "not_applied_to": "reading historical records, which may contain combinations now closed",
+        "vocabulary": {
+            COMBINATION_IMPLEMENTED: (
+                "accepted by stage validation, so records containing it can be read; "
+                "says nothing about availability for new calculations"
+            ),
+            "available_for_new_calculations": "implemented and accepted by the admission policy for new calculations",
+            COMBINATION_LEGACY_RECORD_ONLY: (
+                "implemented so that historical records remain readable, but refused for "
+                "every new calculation; it must not be presented as available"
+            ),
+        },
+        "relationship_to_stage_modifier_support": (
+            "stage_modifier_support lists implemented internal stage combinations. Only "
+            "modifier_availability[].available_for_new_calculations lists what a new "
+            "calculation may use; combinations in legacy_record_only, such as HSE06 + SOC, "
+            "are refused with the diagnostic code given in closed_combinations."
+        ),
+        "closed_combinations": [
+            {
+                **entry,
+                "status": COMBINATION_LEGACY_RECORD_ONLY,
+                "available_for_new_calculations": False,
+                "diagnostic_code": admission.HSE06_SOC_NOT_SUPPORTED_CODE,
+            }
+            for entry in admission.unsupported_new_calculation_combinations_payload()
+        ],
+        "modifier_availability": availability,
+        "phonon_workflow_restrictions": {
+            "diagnostic_code": admission.PHONONS_UNSUPPORTED_TREATMENT_CODE,
+            "required_theory": Theory.PBE.value,
+            "excluded_modifiers": sorted(modifier.value for modifier in admission.PHONON_EXCLUDED_MODIFIERS),
+            "applies_to": "every stage of a workflow that contains a phonon force stage",
+            "statement": PHONON_SUPPORTED_SCOPE_TEXT,
+        },
+    }
+
+
+def protocol_descriptions() -> dict[str, Any]:
+    """Workflow-level methodology applied on top of stage definitions."""
+
+    managed_relaxing = [
+        entry["value"]
+        for entry in desired_output_catalogue()
+        if entry["workflow_spec"] is not None
+        and any(
+            geometry_relaxation.PROTOCOL_OPTION_KEY in (stage.get("options") or {})
+            for stage in entry["workflow_spec"]["stages"]
+        )
+    ]
+    return {
+        "geometry_relaxation": {
+            **geometry_relaxation.protocol_payload(),
+            "desired_outputs": managed_relaxing,
+            "custom_workflows": (
+                "A Custom workflow uses the protocol only when it marks two consecutive, identical "
+                "Geometry Optimisation stages as pass 1 and pass 2. An unmarked Custom relaxation "
+                "keeps single-stage convergence: pass-1 values, or pass-2 values when it feeds a "
+                "phonon force stage."
+            ),
+        },
+        "plane_wave_cutoff": {
+            **geometry_relaxation.cutoff_rule_payload(),
+            "applies_to_stage_types": sorted(
+                stage_type.value for stage_type in geometry_relaxation._CUTOFF_STAGE_TYPES
+            ),
+            "applies_to": "every new calculation's Geometry Optimisation and phonon force stages, BMD-managed or Custom",
+            "resolved": "per structure at planning, from the POTCARs the executable input generators select, and frozen into the workflow",
+        },
+        "geometry_convergence": {
+            **geometry_convergence.policy_payload(),
+            "applies_to": "the final pass of the geometry relaxation protocol and the phonon force stage it feeds",
+        },
+        "stage_definition_defaults": _relax_stage_defaults_description(),
+    }
+
+
+def _relax_stage_defaults_description() -> dict[str, Any]:
+    replaced = sorted(
+        {"ENCUT", *geometry_relaxation.COMMON_RELAX_SETTINGS, *geometry_relaxation.PASS_CONVERGENCE[1]}
+    )
+    relax_definition = next(
+        definition for definition in list_stage_definitions() if definition["stage_type"] == "relax"
+    )
+    executable_defaults = relax_definition["base_bmd_incar_amendments"]["executable_defaults"]
+    return {
+        "statement": (
+            "For new calculations, every Geometry Optimisation stage runs with the resolved "
+            "plane-wave cutoff, the protocol's common settings and pass convergence. These "
+            "replace the relax stage's executable_defaults for the settings listed here; the "
+            "replaced stage-default values are shown in replaced_stage_default_values and are "
+            "used only to rebuild workflows recorded before the protocol existed. A protocol "
+            "setting whose value is null is left unset."
+        ),
+        "stage_type": "relax",
+        "settings_replaced_for_new_calculations": replaced,
+        "replaced_stage_default_values": {
+            key: executable_defaults[key] for key in replaced if key in executable_defaults
+        },
+        "new_calculation_values": "protocols.geometry_relaxation and protocols.plane_wave_cutoff",
+        "source": "backend.calculations.geometry_relaxation.relaxation_incar_settings",
+    }
+
+
+def experimental_capability_descriptions() -> list[dict[str, Any]]:
+    """Implemented capabilities outside the stage methodology, with their status."""
+
+    defaults_status = STRUCTURE_SEARCH_DEFAULTS_POLICY["status"]
+    return [
+        {
+            "id": "structure_search",
+            "label": "Crystal structure search (USPEX)",
+            "status": "experimental",
+            "part_of_stage_methodology": False,
+            "methodology_status": defaults_status,
+            "validation_status": VALIDATION_STATUS_NOT_VALIDATED,
+            "validation_statement": "Structure search is implemented but not validated; its defaults and limits are provisional.",
+            "description_provenance": (
+                "restated in backend.calculations.capabilities and equality-tested against "
+                "backend.structure_search and compute_api.router (technical debt)"
+            ),
+            "defaults_policy": dict(STRUCTURE_SEARCH_DEFAULTS_POLICY),
+            "admission": json.loads(json.dumps(STRUCTURE_SEARCH_ADMISSION_SCOPE)),
+            "interfaces": "machine API structure-search routes; the browser page is a preview",
+            "machine_api_operations": list(STRUCTURE_SEARCH_MACHINE_API_OPERATIONS),
+            "execution_gate": {
+                "service_setting": STRUCTURE_SEARCH_EXECUTION_SETTING,
+                "enabled_value": STRUCTURE_SEARCH_EXECUTION_ENABLED_VALUE,
+                "default": "disabled",
+                "gates": "operations that write to POWER or submit",
+                "not_gated": "planning, local preparation, observation and cancellation of an attempt already submitted",
+                "reported_state": None,
+                "statement": "This record does not report whether any running service has structure-search execution enabled.",
+            },
+        }
+    ]
+
+
+def validation_statement() -> dict[str, Any]:
+    return {
+        "status": VALIDATION_STATUS_NOT_ASSERTED,
+        "claims": [],
+        "permitted_statuses": list(VALIDATION_STATUSES),
+        "statement": (
+            "This record describes implemented, executable methodology. Nothing in it is "
+            "a claim that a capability is validated or adopted by the lab; that is a "
+            "human judgement recorded separately. Implemented does not mean validated."
+        ),
     }
 
 
@@ -126,6 +442,15 @@ def _stage_modifier_support(capabilities: list[dict[str, Any]]) -> list[dict[str
                     sorted(modifier.value for modifier in modifiers)
                     for modifiers in combinations
                 ],
+                "describes": COMBINATION_IMPLEMENTED,
+                "legacy_record_only_modifier_combinations": [
+                    sorted(modifier.value for modifier in modifiers)
+                    for modifiers in combinations
+                    if not admission.stage_is_admissible_for_new_calculation(
+                        StageSpec(stage_type, theory, modifiers)
+                    )
+                ],
+                "availability_for_new_calculations": "new_calculation_admission.modifier_availability",
                 "source": (
                     "backend.calculations.registry."
                     "supported_stage_modifier_combinations"
@@ -133,6 +458,11 @@ def _stage_modifier_support(capabilities: list[dict[str, Any]]) -> list[dict[str
             }
         )
     return support
+
+
+def _release_tag(*, repo_root: Path | None = None) -> str | None:
+    tag = _git_output(("describe", "--tags", "--exact-match", "HEAD"), repo_root or _repository_root())
+    return tag or None
 
 
 def _repository_root() -> Path:
