@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from backend.calculations.capabilities import (
     SCHEMA_VERSION,
     SCOPE,
+    VALIDATION_STATUSES,
     build_capability_payload,
     emit_json,
 )
@@ -50,8 +54,14 @@ def test_capability_payload_has_versioned_contract_and_provenance_shape():
         "automatic_default_treatments": "Read-only policy describing BMD-managed Desired Output treatment resolution.",
         "base_stage_definitions": "Theory-neutral stage definitions from list_stage_definitions().",
         "capabilities": "Supported stage/theory descriptions from describe_stage(); unsupported combinations are not invented.",
-        "stage_modifier_support": "Complete stage-local explicit modifier sets accepted by the BMD Compute registry for each supported stage/theory pair.",
+        "stage_modifier_support": "Implemented internal stage combinations: every stage-local explicit modifier set the BMD Compute registry accepts for each supported stage/theory pair, including combinations kept only so historical records remain readable. Not a statement of availability for new calculations; see new_calculation_admission.",
         "modifier_policies": "Stage-local executable modifiers with controlled options; unsupported pairings are not invented.",
+        "release_identity": "Release tag and source revision of this checkout. Describes source code only; it is never evidence of what a running service executes.",
+        "desired_outputs": "Every Desired Output identifier with its requested stage sequence, from the registry; structure-dependent resolution applies afterwards.",
+        "new_calculation_admission": "Which implemented combinations are available for new calculations and which are legacy-record-only, from the admission policy.",
+        "protocols": "Workflow-level methodology that overrides stage-definition defaults for new calculations: the geometry relaxation protocol, the plane-wave cutoff rule and the adaptive geometry-convergence check.",
+        "experimental_capabilities": "Implemented capabilities outside the stage methodology described in capabilities, with their status.",
+        "validation": "What this record asserts about scientific validation: it makes no validation claims.",
     }
     assert payload["source"] == {
         "repository": "bmd_compute",
@@ -288,6 +298,9 @@ def test_capability_payload_excludes_forbidden_boundary_information():
     payload = build_capability_payload(include_provenance=False)
     text = json.dumps(payload, sort_keys=True).lower()
 
+    # Access and execution-boundary information never belongs in the record.
+    # (Validation vocabulary is checked structurally below, not by banned words,
+    # so accurate negative statements and registry names remain possible.)
     forbidden_fragments = (
         "ssh",
         "password",
@@ -298,13 +311,104 @@ def test_capability_payload_excludes_forbidden_boundary_information():
         "potcar_content",
         "fastapi",
         "sbatch",
-        "validated",
-        "approved",
-        "adopted",
-        "standard",
     )
     for fragment in forbidden_fragments:
         assert fragment not in text
+
+
+# ---------------------------------------------------------------- validation claims
+#
+# The record may say that something is NOT validated, approved or adopted, and
+# may use registry names such as "BMD Standard Geometry Relaxation"; it may not
+# claim validation, approval or adoption. Three structural rules:
+#   1. any key that names a validation, approval or adoption status carries one
+#      of the negative VALIDATION_STATUSES;
+#   2. no key asserts such a claim with a boolean or other value (``validated``,
+#      ``approved``, ``lab_adopted``...);
+#   3. in prose, a claim word (validated, approved, adopted) is always negated
+#      within its clause, and ``validation.claims`` is empty.
+
+_CLAIM_WORD = re.compile(r"\b(validated|approved|adopted)\b", re.IGNORECASE)
+_NEGATION = re.compile(r"\b(not|never|no|nor|neither|nothing|without)\b", re.IGNORECASE)
+_CLAUSE_BREAK = re.compile(r"[.;:!?]|\b(but|while|whereas|although)\b", re.IGNORECASE)
+_CLAIM_KEY = re.compile(r"(validated|approved|adopted|validation_passed|is_valid_science)", re.IGNORECASE)
+
+
+def _walk(node, path=()):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield path + (key,), key, value
+            yield from _walk(value, path + (key,))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _walk(value, path + (index,))
+
+
+def _strings(node):
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _strings(value)
+
+
+def validation_claim_problems(payload):
+    problems = []
+    for path, key, value in _walk(payload):
+        if not isinstance(key, str):
+            continue
+        in_validation = any(isinstance(p, str) and "validation" in p for p in path[:-1])
+        if re.search(r"(validation|approval|adoption)_?status$", key) or (in_validation and key == "status"):
+            if value not in VALIDATION_STATUSES:
+                problems.append(f"{'.'.join(map(str, path))} = {value!r}")
+        if _CLAIM_KEY.search(key) and not key.startswith(("not_", "no_")):
+            problems.append(f"claim key {'.'.join(map(str, path))}")
+    for text in _strings(payload):
+        for match in _CLAIM_WORD.finditer(text):
+            clause_start = max(
+                [m.end() for m in _CLAUSE_BREAK.finditer(text, 0, match.start())] or [0]
+            )
+            if not _NEGATION.search(text, clause_start, match.start()):
+                problems.append(f"unnegated claim: {text[clause_start:match.end() + 30]!r}")
+    claims = payload.get("validation", {}).get("claims")
+    if claims != []:
+        problems.append(f"validation.claims = {claims!r}")
+    return problems
+
+
+def test_capability_payload_makes_no_validation_claims():
+    assert validation_claim_problems(build_capability_payload(include_provenance=False)) == []
+
+
+def test_negative_statements_and_registry_names_are_permitted():
+    payload = build_capability_payload(include_provenance=False)
+    text = json.dumps(payload)
+    assert "BMD Standard Geometry Relaxation" in text
+    assert "not validated" in text
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda p: p["experimental_capabilities"][0].update(validation_status="validated"),
+        lambda p: p["experimental_capabilities"][0].update(validated=True),
+        lambda p: p["protocols"]["geometry_relaxation"].update(lab_adopted=True),
+        lambda p: p["validation"].update(status="validated"),
+        lambda p: p["validation"].update(claims=["geometry_relaxation"]),
+        lambda p: p["validation"].update(statement="The relaxation protocol is validated against experiment."),
+        lambda p: p["desired_outputs"][0].update(description="Approved by the PI for production use."),
+        lambda p: p["experimental_capabilities"][0].update(
+            validation_statement="Not a preview; it is validated and adopted."
+        ),
+    ],
+)
+def test_the_guard_rejects_affirmative_validation_claims(mutate):
+    payload = build_capability_payload(include_provenance=False)
+    mutate(payload)
+    assert validation_claim_problems(payload) != []
 
 
 def test_machine_readable_contract_identifies_compute_methodology_payload():

@@ -1015,10 +1015,12 @@ def test_the_runtime_package_is_the_reviewed_one():
     ``f31cfab5…``, commit 42a24ce), and the job script's start-up fix (system and module scripts without
     ``set -u``, start-up failures recorded; job 23616052): 80 files, ``b7682918…`` (v1.3.0, accepted with attempt
     209898bc). Then the launcher's ``srun_returned`` event and the evidence record's ``launch.popen`` /
-    ``launch.returned`` (v1.3.1 candidate): still 80 files, ``31837cc6…`` (v1.3.1). Then the optional USPEX random
+    ``launch.returned`` (v1.3.1 candidate): still 80 files, ``31837cc6…`` (v1.3.1). Then, for v1.4.0, the capability
+    record's description sections (``backend/calculations/capabilities.py`` only, read-only producer; planner,
+    admission, INCAR/KPOINTS/POTCAR and job scripts unchanged; ``e1b24bb5…`` alone) and the optional USPEX random
     seed (``fixRndSeed``) and per-search node exclusion for the blind Si8 benchmark (S1, S2; spec, input writer,
-    search plan, resources): still 80 files, ``afbaa18f…``. Attempts staged with an earlier package are refused with
-    ``runtime_package_changed`` and need a new attempt ID.
+    search plan, resources; ``afbaa18f…`` alone): together still 80 files, ``09f75d91…``. Attempts staged with an earlier
+    package are refused with ``runtime_package_changed`` and need a new attempt ID.
     """
 
     from backend.runtime_package import build_runtime_package_manifest, runtime_package_manifest_digest
@@ -1026,7 +1028,7 @@ def test_the_runtime_package_is_the_reviewed_one():
     manifest = build_runtime_package_manifest()
     assert len(manifest) == 80
     assert runtime_package_manifest_digest(manifest) == (
-        "afbaa18fce4274f33245e1359ce099f75c9b35f3b3c6d04a31cee207eb432391")
+        "09f75d912e345e753ac69f2d8064a1dd8b265ae09b879925b91bbe38d7439e51")
 
 
 def test_scancel_command_takes_only_a_numeric_job_id():
